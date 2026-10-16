@@ -6,6 +6,7 @@ import { SessionController } from './session-controller';
 import { PreferencesStore } from './preferences-store';
 import { DEFAULT_PREFERENCES } from '../shared/session-contract';
 import { OverlayServer } from './overlay-server';
+import { ModelDiscovery } from './model-discovery';
 import type { ChatEvent, DesktopInvocations, DesktopArguments } from '../shared/chat-contract';
 
 const rendererDirectory = path.join(__dirname, '../renderer');
@@ -14,6 +15,7 @@ const devOrigin = process.env.LONELY_CHAT_RENDERER_URL;
 const chat = new ChatService();
 const overlay = new OverlayServer(chat, rendererDirectory, devOrigin);
 const preferenceStore = new PreferencesStore(app.getPath('userData'));
+const models = new ModelDiscovery();
 let session: SessionController;
 let mainWindow: BrowserWindow | null = null;
 let quitting = false;
@@ -51,6 +53,7 @@ function registerHandlers(): void {
       const written = await preferenceStore.write(preferences);
       return session.setPreferences(written);
     },
+    'models:discover': (source: string) => models.discover(source),
   } satisfies {
     [K in keyof DesktopInvocations]: (
       ...args: DesktopArguments[K]
@@ -130,7 +133,7 @@ function openMainWindow(): void {
           !result.previewReady ||
           result.session.phase !== 'running' ||
           result.apiKeys.join(',') !==
-            'getChatSnapshot,getOverlayUrl,getPreferences,getSessionSnapshot,onChatEvent,onSessionChange,publishSample,setPreferences,startSession,stopSession'
+            'discoverModels,getChatSnapshot,getOverlayUrl,getPreferences,getSessionSnapshot,onChatEvent,onSessionChange,publishSample,setPreferences,startSession,stopSession'
         ) {
           throw new Error(`Electron smoke failed: ${JSON.stringify(result)}`);
         }
@@ -217,4 +220,5 @@ app.on('will-quit', () => {
   ipcMain.removeHandler('session:stop');
   ipcMain.removeHandler('preferences:get');
   ipcMain.removeHandler('preferences:set');
+  ipcMain.removeHandler('models:discover');
 });

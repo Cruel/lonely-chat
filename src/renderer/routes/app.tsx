@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ChatView } from '@/components/chat-view';
+import { ModelManager } from '@/components/model-manager';
 import { useChat } from '../use-chat';
 import { useSession } from '../use-session';
 import { CYCLE_INTERVAL_OPTIONS } from '../../shared/session-contract';
@@ -153,6 +154,7 @@ export function DesktopPage() {
               </span>
             </div>
           </div>
+          <ModelManager />
           <div className="rounded-xl border border-zinc-800 bg-[#1b1b24] p-5">
             <h3 className="flex items-center gap-2 font-medium">
               <Radio size={18} className="text-zinc-400" /> Overlay source

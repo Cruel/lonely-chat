@@ -35,5 +35,6 @@ const api: DesktopAPI = {
   stopSession: () => invoke('session:stop'),
   getPreferences: () => invoke('preferences:get'),
   setPreferences: (preferences) => invoke('preferences:set', preferences),
+  discoverModels: (source) => invoke('models:discover', source),
 };
 contextBridge.exposeInMainWorld('lonelyChat', api);

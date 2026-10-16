@@ -41,6 +41,9 @@ it('starts and stops manual-context simulation, shows status and only saves pref
     stopSession,
     getPreferences: async () => ({ cycleIntervalMs: 3000 }),
     setPreferences,
+    discoverModels: async () => {
+      throw new Error('Not used in this test');
+    },
   } satisfies DesktopAPI;
   render(<DesktopPage />);
   const start = await screen.findByRole('button', { name: /Start simulation/i });
@@ -87,6 +90,9 @@ it('shows a rejected start error and remains ready to retry', async () => {
     }),
     getPreferences: async () => ({ cycleIntervalMs: 3000 }),
     setPreferences: async (value) => value,
+    discoverModels: async () => {
+      throw new Error('Not used in this test');
+    },
   };
   render(<DesktopPage />);
   const start = await screen.findByRole('button', { name: /Start simulation/i });

@@ -22,6 +22,7 @@ export interface ChatAppend {
 export type ChatEvent = ChatSnapshot | ChatAppend;
 
 import type { SessionPreferences, SessionSnapshot } from './session-contract';
+import type { ModelDiscoveryResult } from './model-contract';
 
 /** IPC return contract: renderer methods and main handlers share the same mapped channels. */
 export interface DesktopInvocations {
@@ -33,6 +34,7 @@ export interface DesktopInvocations {
   'session:stop': SessionSnapshot;
   'preferences:get': SessionPreferences;
   'preferences:set': SessionPreferences;
+  'models:discover': ModelDiscoveryResult;
 }
 
 /** Method arguments are also a shared contract, not renderer-defined strings. */
@@ -45,6 +47,7 @@ export interface DesktopArguments {
   'session:stop': [];
   'preferences:get': [];
   'preferences:set': [preferences: SessionPreferences];
+  'models:discover': [source: string];
 }
 
 export interface DesktopAPI {
@@ -58,4 +61,5 @@ export interface DesktopAPI {
   stopSession(): Promise<SessionSnapshot>;
   getPreferences(): Promise<SessionPreferences>;
   setPreferences(preferences: SessionPreferences): Promise<SessionPreferences>;
+  discoverModels(source: string): Promise<ModelDiscoveryResult>;
 }

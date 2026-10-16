@@ -1,6 +1,6 @@
 # Lonely Chat
 
-Local simulated stream chat with an Electron app and browser-source overlay. The application can now run a continuous **zero-input test simulation** using manual context and deterministic fake inference. It runs **without a model, camera, microphone or OBS**. Real capture and model integration are later milestones.
+Local simulated stream chat with an Electron app and browser-source overlay. The application can run a continuous **zero-input test simulation** using manual context and deterministic fake inference. It also browses public Hugging Face GGUF and native whisper.cpp model candidates from the desktop UI. It runs **without a model, camera, microphone or OBS**. Model downloads, real capture and real inference are later milestones.
 
 ## Requirements
 
@@ -14,6 +14,8 @@ Local simulated stream chat with an Electron app and browser-source overlay. The
 pnpm install --frozen-lockfile
 pnpm dev
 ```
+
+Paste a Hugging Face owner/repository name, repository URL, or direct file URL under **Hugging Face model discovery** to browse weight variants, sizes, split shards and possible multimodal projectors. Direct file URLs preselect the referenced artifact. When multiple projectors are possible you must choose one; discovery does not prove runtime compatibility or install any files. Only public repositories are supported in this stage.
 
 Enter stream context, then click **Start simulation**. Application-owned inference cycles produce validated chat batches; the scheduler plays them at their offsets in both the preview and browser overlay. **Stop simulation** cancels all pending output without clearing the existing chat, and **Start** can be used again immediately. You can still publish a single independent sample message. The overlay URL is shown in the app, normally **http://127.0.0.1:45939/overlay**; load it in any browser or a browser source. The application binds the HTTP/WebSocket server **only to 127.0.0.1**. If that port is occupied, quit the conflicting service or set `LONELY_CHAT_OVERLAY_PORT` to a free port before launching Electron.
 
@@ -35,6 +37,8 @@ For `test:overlay`, install Chromium as needed: `pnpm exec playwright install ch
 - `src/main/session-controller.ts`: authoritative Start/Stop, one in-flight inference at a time, fake provider, error states and restart cancellation. It is independent of renderer lifecycle and remains active while the app is minimized.
 - `src/main/fake-inference.ts`: deterministic validated chat batches with relative playback offsets. Replaceable with the later inference adapter.
 - `src/main/chat-scheduler.ts`: one monotonic, deadline-ordered queue across overlapping inference batches. Pending output is canceled on Stop; delivered messages remain.
+- `src/main/model-discovery.ts` + `src/shared/model-contract.ts`: desktop-only Hugging Face model URL validation, recursive paginated Hub file listing, GGUF and native Whisper weight identification, shard/projector grouping and safe artifact selection. This is discovery only, not downloading or registration.
+- `src/renderer/components/model-manager.tsx`: candidate/quantization picker and explicit projector selection, reporting unknown sizes and incompatible repositories without affecting the chat overlay.
 - `src/main/preferences-store.ts`: versioned `preferences.json` in Electron user data, storing only the approved cycle interval setting (1.5, 3, or 5 seconds). Manual context and chat history are never written to disk.
 - `src/main/chat-service.ts`: authoritative, in-memory visible chat. Its only published data are safe display messages with monotonic sequence IDs.
 - `src/main/overlay-server.ts`: public loopback HTTP `/overlay` and read-only WebSocket `/overlay/live`. New clients receive one snapshot, followed by ordered append events; reconnect obtains a new snapshot. The server does not expose configuration, transcript, inference, or control endpoints.
