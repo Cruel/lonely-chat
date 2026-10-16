@@ -21,11 +21,30 @@ export interface ChatAppend {
 
 export type ChatEvent = ChatSnapshot | ChatAppend;
 
+import type { SessionPreferences, SessionSnapshot } from './session-contract';
+
 /** IPC return contract: renderer methods and main handlers share the same mapped channels. */
 export interface DesktopInvocations {
   'chat:snapshot': ChatSnapshot;
   'chat:sample': void;
   'overlay:url': string;
+  'session:snapshot': SessionSnapshot;
+  'session:start': SessionSnapshot;
+  'session:stop': SessionSnapshot;
+  'preferences:get': SessionPreferences;
+  'preferences:set': SessionPreferences;
+}
+
+/** Method arguments are also a shared contract, not renderer-defined strings. */
+export interface DesktopArguments {
+  'chat:snapshot': [];
+  'chat:sample': [];
+  'overlay:url': [];
+  'session:snapshot': [];
+  'session:start': [manualContext: string];
+  'session:stop': [];
+  'preferences:get': [];
+  'preferences:set': [preferences: SessionPreferences];
 }
 
 export interface DesktopAPI {
@@ -33,4 +52,10 @@ export interface DesktopAPI {
   onChatEvent(listener: (event: ChatEvent) => void): () => void;
   publishSample(): Promise<void>;
   getOverlayUrl(): Promise<string>;
+  getSessionSnapshot(): Promise<SessionSnapshot>;
+  onSessionChange(listener: (status: SessionSnapshot) => void): () => void;
+  startSession(manualContext: string): Promise<SessionSnapshot>;
+  stopSession(): Promise<SessionSnapshot>;
+  getPreferences(): Promise<SessionPreferences>;
+  setPreferences(preferences: SessionPreferences): Promise<SessionPreferences>;
 }

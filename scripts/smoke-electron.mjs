@@ -11,7 +11,7 @@ for (const stream of [child.stdout, child.stderr]) {
   stream.on('data', (chunk) => {
     const line = chunk.toString();
     process.stdout.write(line);
-    if (line.includes('PASS: Electron main window')) succeeded = true;
+    if (line.includes('PASS: Electron preload IPC')) succeeded = true;
   });
 }
 const timeout = setTimeout(() => child.kill(), 20000);

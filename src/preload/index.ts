@@ -1,8 +1,16 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { ChatEvent, DesktopAPI, DesktopInvocations } from '../shared/chat-contract';
+import type {
+  ChatEvent,
+  DesktopAPI,
+  DesktopArguments,
+  DesktopInvocations,
+} from '../shared/chat-contract';
 
-function invoke<K extends keyof DesktopInvocations>(channel: K): Promise<DesktopInvocations[K]> {
-  return ipcRenderer.invoke(channel) as Promise<DesktopInvocations[K]>;
+function invoke<K extends keyof DesktopInvocations>(
+  channel: K,
+  ...args: DesktopArguments[K]
+): Promise<DesktopInvocations[K]> {
+  return ipcRenderer.invoke(channel, ...args) as Promise<DesktopInvocations[K]>;
 }
 
 const api: DesktopAPI = {
@@ -14,5 +22,18 @@ const api: DesktopAPI = {
   },
   publishSample: () => invoke('chat:sample'),
   getOverlayUrl: () => invoke('overlay:url'),
+  getSessionSnapshot: () => invoke('session:snapshot'),
+  onSessionChange: (listener) => {
+    const receive = (
+      _event: Electron.IpcRendererEvent,
+      status: import('../shared/session-contract').SessionSnapshot,
+    ) => listener(status);
+    ipcRenderer.on('session:change', receive);
+    return () => ipcRenderer.removeListener('session:change', receive);
+  },
+  startSession: (manualContext) => invoke('session:start', manualContext),
+  stopSession: () => invoke('session:stop'),
+  getPreferences: () => invoke('preferences:get'),
+  setPreferences: (preferences) => invoke('preferences:set', preferences),
 };
 contextBridge.exposeInMainWorld('lonelyChat', api);

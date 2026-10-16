@@ -2,14 +2,19 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { app, BrowserWindow, ipcMain, shell } from 'electron';
 import { ChatService, publishSample } from './chat-service';
+import { SessionController } from './session-controller';
+import { PreferencesStore } from './preferences-store';
+import { DEFAULT_PREFERENCES } from '../shared/session-contract';
 import { OverlayServer } from './overlay-server';
-import type { ChatEvent, DesktopInvocations } from '../shared/chat-contract';
+import type { ChatEvent, DesktopInvocations, DesktopArguments } from '../shared/chat-contract';
 
 const rendererDirectory = path.join(__dirname, '../renderer');
 const preloadPath = path.join(__dirname, '../preload/preload.cjs');
 const devOrigin = process.env.LONELY_CHAT_RENDERER_URL;
 const chat = new ChatService();
 const overlay = new OverlayServer(chat, rendererDirectory, devOrigin);
+const preferenceStore = new PreferencesStore(app.getPath('userData'));
+let session: SessionController;
 let mainWindow: BrowserWindow | null = null;
 let quitting = false;
 
@@ -36,11 +41,26 @@ function registerHandlers(): void {
       publishSample(chat);
     },
     'overlay:url': () => overlay.url,
-  } satisfies { [K in keyof DesktopInvocations]: () => DesktopInvocations[K] };
+    'session:snapshot': () => session.snapshot(),
+    'session:start': (context: string) => session.start(context),
+    'session:stop': () => session.stop(),
+    'preferences:get': () => session.getPreferences(),
+    'preferences:set': async (
+      preferences: import('../shared/session-contract').SessionPreferences,
+    ) => {
+      const written = await preferenceStore.write(preferences);
+      return session.setPreferences(written);
+    },
+  } satisfies {
+    [K in keyof DesktopInvocations]: (
+      ...args: DesktopArguments[K]
+    ) => DesktopInvocations[K] | Promise<DesktopInvocations[K]>;
+  };
   for (const channel of Object.keys(actions) as Array<keyof DesktopInvocations>) {
-    ipcMain.handle(channel, (event) => {
+    ipcMain.handle(channel, (event, ...args: unknown[]) => {
       requireDesktop(event);
-      return actions[channel]();
+      // Channel-specific input validation occurs in the owning service/store.
+      return (actions[channel] as (...values: unknown[]) => unknown)(...args);
     });
   }
 }
@@ -82,6 +102,7 @@ function openMainWindow(): void {
           overlayUrl: string;
           previewReady: boolean;
           apiKeys: string[];
+          session: import('../shared/session-contract').SessionSnapshot;
         } = await window.webContents.executeJavaScript(`(async () => {
           let previewReady = false;
           for (let attempt = 0; attempt < 100; attempt++) {
@@ -92,10 +113,12 @@ function openMainWindow(): void {
           const initial = await window.lonelyChat.getChatSnapshot();
           await window.lonelyChat.publishSample();
           const later = await window.lonelyChat.getChatSnapshot();
+          const session = await window.lonelyChat.startSession('smoke test from Electron');
           return {
             initial: initial.sequence,
             later: later.sequence,
             previewReady,
+            session,
             apiKeys: Object.keys(window.lonelyChat).sort(),
             overlayUrl: await window.lonelyChat.getOverlayUrl()
           };
@@ -105,11 +128,32 @@ function openMainWindow(): void {
           result.later !== 2 ||
           result.overlayUrl !== overlay.url ||
           !result.previewReady ||
-          result.apiKeys.join(',') !== 'getChatSnapshot,getOverlayUrl,onChatEvent,publishSample'
+          result.session.phase !== 'running' ||
+          result.apiKeys.join(',') !==
+            'getChatSnapshot,getOverlayUrl,getPreferences,getSessionSnapshot,onChatEvent,onSessionChange,publishSample,setPreferences,startSession,stopSession'
         ) {
           throw new Error(`Electron smoke failed: ${JSON.stringify(result)}`);
         }
-        console.info('PASS: Electron main window, sandboxed preload IPC, and app-owned sample');
+        window.minimize();
+        await new Promise((resolve) => setTimeout(resolve, 1150));
+        const visibleWhileMinimized = chat.snapshot();
+        if (visibleWhileMinimized.sequence < 4 || session.snapshot().phase !== 'running') {
+          throw new Error('Simulation stopped publishing while minimized');
+        }
+        await window.webContents.executeJavaScript('window.lonelyChat.stopSession()');
+        const retained = chat.snapshot().sequence;
+        await new Promise((resolve) => setTimeout(resolve, 2200));
+        if (chat.snapshot().sequence !== retained || session.snapshot().pendingMessages !== 0) {
+          throw new Error('Stop failed to cancel pending playback');
+        }
+        const restarted = await window.webContents.executeJavaScript(
+          "window.lonelyChat.startSession('restarted smoke')",
+        );
+        if (restarted.phase !== 'running') throw new Error('Simulation did not restart');
+        session.stop();
+        console.info(
+          'PASS: Electron preload IPC, Start/Stop/Restart, minimized playback, retained chat',
+        );
         app.quit();
       })().catch((error: unknown) => {
         console.error('FAIL: Electron smoke', error);
@@ -123,6 +167,17 @@ function openMainWindow(): void {
 }
 
 async function boot(): Promise<void> {
+  let preferences = DEFAULT_PREFERENCES;
+  try {
+    preferences = await preferenceStore.read();
+  } catch (error) {
+    console.error('Invalid local preferences; using safe defaults', error);
+  }
+  session = new SessionController(chat, undefined, undefined, preferences);
+  session.subscribe((status) => {
+    if (mainWindow && !mainWindow.isDestroyed())
+      mainWindow.webContents.send('session:change', status);
+  });
   registerHandlers();
   chat.subscribe((event: ChatEvent) => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('chat:event', event);
@@ -150,10 +205,16 @@ app.on('before-quit', (event) => {
   if (quitting) return;
   event.preventDefault();
   quitting = true;
+  session?.stop();
   void overlay.stop().finally(() => app.quit());
 });
 app.on('will-quit', () => {
   ipcMain.removeHandler('chat:snapshot');
   ipcMain.removeHandler('chat:sample');
   ipcMain.removeHandler('overlay:url');
+  ipcMain.removeHandler('session:snapshot');
+  ipcMain.removeHandler('session:start');
+  ipcMain.removeHandler('session:stop');
+  ipcMain.removeHandler('preferences:get');
+  ipcMain.removeHandler('preferences:set');
 });
