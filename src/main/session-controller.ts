@@ -1,18 +1,16 @@
 import type { ChatService } from './chat-service';
 import { ChatScheduler, systemClock, type TimerClock } from './chat-scheduler';
-import { FakeInference, parseChatBatch, type InferenceProvider } from './fake-inference';
+import { FakeInference, parseInferenceResult, type InferenceProvider } from './fake-inference';
 import {
   DEFAULT_PREFERENCES,
   validateContext,
   validatePreferences,
+  type InferenceMode,
   type SessionPreferences,
   type SessionSnapshot,
 } from '../shared/session-contract';
 
-/**
- * Owns Start/Stop, one in-flight inference request, and all message presentation timers.
- * React and browser overlay are read-only projections of already-visible chat.
- */
+/** Owns lifecycle, event history and scheduled chat, independent of renderer windows. */
 export class SessionController {
   private state: SessionSnapshot = {
     revision: 0,
@@ -20,6 +18,8 @@ export class SessionController {
     error: null,
     cycle: 0,
     pendingMessages: 0,
+    mode: 'fake',
+    events: [],
   };
   private subscribers = new Set<(snapshot: SessionSnapshot) => void>();
   private readonly scheduler: ChatScheduler;
@@ -28,19 +28,23 @@ export class SessionController {
   private inferenceTimer: unknown = null;
   private preferences: SessionPreferences;
   private context = '';
+  private activeInference: InferenceProvider;
+  private shutdownPromise: Promise<void> = Promise.resolve();
 
   constructor(
     chat: ChatService,
     private readonly inference: InferenceProvider = new FakeInference(),
     private readonly clock: TimerClock = systemClock,
     initialPreferences: SessionPreferences = DEFAULT_PREFERENCES,
+    private readonly nativeInference?: InferenceProvider,
   ) {
+    this.activeInference = inference;
     this.preferences = validatePreferences(initialPreferences);
     this.scheduler = new ChatScheduler(chat, clock, () => this.updatePending());
   }
 
   snapshot(): SessionSnapshot {
-    return { ...this.state };
+    return { ...this.state, events: [...this.state.events] };
   }
 
   getPreferences(): SessionPreferences {
@@ -57,13 +61,26 @@ export class SessionController {
     return () => this.subscribers.delete(listener);
   }
 
-  start(rawContext: unknown): SessionSnapshot {
-    if (this.state.phase === 'running') throw new Error('The simulation is already running.');
+  start(rawContext: unknown, mode: InferenceMode = 'fake'): SessionSnapshot {
+    if (this.state.phase === 'running' || this.state.phase === 'starting') {
+      throw new Error('The simulation is already running.');
+    }
     const context = validateContext(rawContext);
+    if (mode !== 'fake' && mode !== 'native') throw new Error('Unknown inference mode.');
+    if (mode === 'native' && !this.nativeInference) {
+      throw new Error('The native inference runtime is not configured.');
+    }
+    this.activeInference = mode === 'native' ? this.nativeInference! : this.inference;
     this.context = context;
     this.epoch++;
     this.scheduler.start();
-    this.setState({ phase: 'running', cycle: 0, error: null });
+    this.setState({
+      phase: mode === 'native' ? 'starting' : 'running',
+      mode,
+      events: [],
+      cycle: 0,
+      error: null,
+    });
     this.runCycle(this.epoch);
     return this.snapshot();
   }
@@ -71,6 +88,7 @@ export class SessionController {
   stop(): SessionSnapshot {
     this.epoch++;
     this.abort?.abort();
+    this.shutdownPromise = Promise.resolve(this.activeInference.stop?.());
     this.abort = null;
     if (this.inferenceTimer !== null) this.clock.clearTimeout(this.inferenceTimer);
     this.inferenceTimer = null;
@@ -80,35 +98,57 @@ export class SessionController {
     return this.snapshot();
   }
 
+  async terminate(): Promise<void> {
+    this.stop();
+    await this.shutdownPromise;
+  }
+
   private runCycle(epoch: number): void {
-    if (epoch !== this.epoch || this.state.phase !== 'running') return;
+    if (epoch !== this.epoch || (this.state.phase !== 'running' && this.state.phase !== 'starting'))
+      return;
     const cycle = this.state.cycle + 1;
     this.setState({ cycle });
     const abort = new AbortController();
     this.abort = abort;
     const started = this.clock.now();
-    // Never launch an inference whose session has already been stopped or replaced.
     const context = this.context;
+    const provider = this.activeInference;
     void Promise.resolve()
-      .then(() => {
+      .then(async () => {
         if (epoch !== this.epoch || abort.signal.aborted) return undefined;
-        return this.inference.generate({ context, cycle }, abort.signal);
+        await provider.prepare?.(abort.signal);
+        if (epoch !== this.epoch || abort.signal.aborted) return undefined;
+        if (this.state.phase === 'starting') this.setState({ phase: 'running' });
+        return provider.generate({ context, cycle, recentEvents: this.state.events }, abort.signal);
       })
       .then((raw) => {
         if (epoch !== this.epoch || this.state.phase !== 'running') return;
-        const batch = parseChatBatch(raw);
-        this.scheduler.enqueue(batch, this.clock.now());
+        const result = parseInferenceResult(raw, this.clock.wallNow());
+        // Validate both collections before committing either one.
+        if (result.events.length) {
+          this.setState({ events: [...this.state.events, ...result.events].slice(-32) });
+        }
+        this.scheduler.enqueue(result.messages, this.clock.now());
         this.abort = null;
-        const delay = Math.max(0, this.preferences.cycleIntervalMs - (this.clock.now() - started));
+        const delayMs = Math.max(
+          0,
+          this.preferences.cycleIntervalMs - (this.clock.now() - started),
+        );
         this.inferenceTimer = this.clock.setTimeout(() => {
           this.inferenceTimer = null;
           this.runCycle(epoch);
-        }, delay);
+        }, delayMs);
       })
       .catch((error: unknown) => {
-        if (epoch !== this.epoch || this.state.phase !== 'running') return;
+        if (
+          epoch !== this.epoch ||
+          (this.state.phase !== 'running' && this.state.phase !== 'starting')
+        )
+          return;
         this.abort = null;
-        this.scheduler.stop();
+        // A rejected cycle cannot revoke already-validated messages from prior cycles.
+        // Those scheduled messages may finish displaying until the user explicitly stops.
+        void provider.stop?.();
         this.context = '';
         this.setState({
           phase: 'error',

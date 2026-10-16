@@ -21,7 +21,7 @@ export interface ChatAppend {
 
 export type ChatEvent = ChatSnapshot | ChatAppend;
 
-import type { SessionPreferences, SessionSnapshot } from './session-contract';
+import type { InferenceMode, SessionPreferences, SessionSnapshot } from './session-contract';
 import type { ModelDiscoveryResult, ModelRole } from './model-contract';
 import type { ModelInstallRequest, ModelManagerSnapshot } from './model-install-contract';
 
@@ -50,7 +50,7 @@ export interface DesktopArguments {
   'chat:sample': [];
   'overlay:url': [];
   'session:snapshot': [];
-  'session:start': [manualContext: string];
+  'session:start': [manualContext: string, mode?: InferenceMode];
   'session:stop': [];
   'preferences:get': [];
   'preferences:set': [preferences: SessionPreferences];
@@ -70,7 +70,7 @@ export interface DesktopAPI {
   getOverlayUrl(): Promise<string>;
   getSessionSnapshot(): Promise<SessionSnapshot>;
   onSessionChange(listener: (status: SessionSnapshot) => void): () => void;
-  startSession(manualContext: string): Promise<SessionSnapshot>;
+  startSession(manualContext: string, mode?: InferenceMode): Promise<SessionSnapshot>;
   stopSession(): Promise<SessionSnapshot>;
   getPreferences(): Promise<SessionPreferences>;
   setPreferences(preferences: SessionPreferences): Promise<SessionPreferences>;

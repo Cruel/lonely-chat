@@ -22,7 +22,7 @@ import { ChatView } from '@/components/chat-view';
 import { ModelManager } from '@/components/model-manager';
 import { useChat } from '../use-chat';
 import { useSession } from '../use-session';
-import { CYCLE_INTERVAL_OPTIONS } from '../../shared/session-contract';
+import { CYCLE_INTERVAL_OPTIONS, type InferenceMode } from '../../shared/session-contract';
 
 export function OverlayPage() {
   const { snapshot } = useChat();
@@ -38,6 +38,7 @@ export function DesktopPage() {
   const session = useSession();
   const [overlayUrl, setOverlayUrl] = useState('');
   const [manualContext, setManualContext] = useState('');
+  const [inferenceMode, setInferenceMode] = useState<InferenceMode>('fake');
   const [sampleBusy, setSampleBusy] = useState(false);
   useEffect(() => {
     void window.lonelyChat?.getOverlayUrl().then(setOverlayUrl);
@@ -53,7 +54,7 @@ export function DesktopPage() {
     }
   };
 
-  const running = session.status.phase === 'running';
+  const running = session.status.phase === 'running' || session.status.phase === 'starting';
 
   return (
     <div className="min-h-dvh bg-[#101015] text-zinc-100">
@@ -83,18 +84,39 @@ export function DesktopPage() {
           <div>
             <h2 className="text-2xl font-semibold tracking-tight">Simulation</h2>
             <p className="mt-1 text-sm text-zinc-400">
-              Try continuous chat without a model, camera or microphone.
+              Simulate an audience from manual context, with or without a local model.
             </p>
           </div>
           <div className="rounded-xl border border-zinc-800 bg-[#1b1b24] p-5">
             <div className="flex items-center gap-2 text-violet-300">
               <Sparkles size={18} />
-              <h3 className="font-medium">Manual-context test mode</h3>
+              <h3 className="font-medium">Manual-context inference</h3>
             </div>
             <p className="mt-3 text-sm leading-6 text-zinc-300">
-              Describe what is happening on your stream. Deterministic fake inference creates
-              scheduled viewer comments. Real inference and media input arrive in later milestones.
+              Describe what is happening on your stream. Use deterministic fixture replies or
+              generate actual chat from an active, installed GGUF model via local llama.cpp.
             </p>
+            <Label htmlFor="inference-mode" className="mt-4 text-sm text-zinc-200">
+              Inference provider
+            </Label>
+            <Select
+              items={[
+                { value: 'fake', label: 'Deterministic fixture (no model)' },
+                { value: 'native', label: 'Local llama.cpp (active GGUF)' },
+              ]}
+              value={inferenceMode}
+              onValueChange={(value) => {
+                if (value === 'fake' || value === 'native') setInferenceMode(value);
+              }}
+            >
+              <SelectTrigger id="inference-mode" disabled={running} className="mt-2 w-full text-sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="fake">Deterministic fixture (no model)</SelectItem>
+                <SelectItem value="native">Local llama.cpp (active GGUF)</SelectItem>
+              </SelectContent>
+            </Select>
             <Label htmlFor="simulation-context" className="mt-4 text-sm text-zinc-200">
               Stream context
             </Label>
@@ -118,14 +140,16 @@ export function DesktopPage() {
               ) : (
                 <Button
                   disabled={!session.ready || session.busy}
-                  onClick={() => void session.start(manualContext)}
+                  onClick={() => void session.start(manualContext, inferenceMode)}
                 >
                   <Play size={15} /> Start simulation
                 </Button>
               )}
               <span role="status" aria-live="polite" className="text-sm text-zinc-400">
                 {running
-                  ? `Running · cycle ${session.status.cycle} · ${session.status.pendingMessages} queued`
+                  ? session.status.phase === 'starting'
+                    ? 'Loading local llama.cpp model…'
+                    : `Running · cycle ${session.status.cycle} · ${session.status.pendingMessages} queued`
                   : session.status.phase === 'error'
                     ? 'Simulation error'
                     : 'Stopped'}
@@ -135,6 +159,16 @@ export function DesktopPage() {
               <p role="alert" className="mt-3 text-sm text-rose-300">
                 {session.actionError || session.status.error}
               </p>
+            )}
+            {session.status.events.length > 0 && (
+              <div className="mt-4 space-y-1" aria-label="Recent inferred events">
+                <p className="text-xs font-medium text-zinc-300">Recent inferred events</p>
+                {session.status.events.slice(-3).map((event, index) => (
+                  <p key={`${event.observedAt}-${index}`} className="text-xs text-zinc-400">
+                    {event.kind}: {event.summary}
+                  </p>
+                ))}
+              </div>
             )}
             <div className="mt-5 flex flex-wrap items-center gap-3 border-t border-zinc-800 pt-4">
               <Label htmlFor="simulation-pace" className="text-sm text-zinc-300">

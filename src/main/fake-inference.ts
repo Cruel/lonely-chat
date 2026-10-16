@@ -1,15 +1,19 @@
 import type { ScheduledChat } from './chat-scheduler';
+import type { InferredEvent } from '../shared/session-contract';
 
 export interface InferenceInput {
+  readonly recentEvents?: readonly InferredEvent[];
   readonly context: string;
   readonly cycle: number;
 }
 
 export interface InferenceProvider {
   generate(input: InferenceInput, signal: AbortSignal): Promise<unknown>;
+  prepare?(signal: AbortSignal): Promise<void>;
+  stop?(): Promise<void> | void;
 }
 
-const AUDIENCE = [
+export const AUDIENCE = [
   { author: 'pixelpilot', color: '#bba5ff' },
   { author: 'lunar_fox', color: '#62d9b4' },
   { author: 'nightowl', color: '#ffbb78' },
@@ -41,6 +45,49 @@ export class FakeInference implements InferenceProvider {
 }
 
 const MAX_BATCH_MESSAGES = 64;
+const MAX_EVENTS = 24;
+const MAX_EVENT_AGE_MS = 60000;
+
+/** Validate an entire inference cycle before publishing events or scheduling chat. */
+export function parseInferenceResult(
+  output: unknown,
+  now: number,
+): { messages: ScheduledChat[]; events: InferredEvent[] } {
+  if (!output || typeof output !== 'object' || Array.isArray(output)) {
+    throw new Error('Inference result must be an object.');
+  }
+  const record = output as Record<string, unknown>;
+  if (Object.keys(record).some((key) => key !== 'messages' && key !== 'events')) {
+    throw new Error('Inference returned unexpected fields.');
+  }
+  const messages = parseChatBatch({ messages: record.messages });
+  if (record.events === undefined) return { messages, events: [] }; // Existing fake fixture.
+  if (!Array.isArray(record.events) || record.events.length > MAX_EVENTS) {
+    throw new Error('Inference returned an invalid event batch.');
+  }
+  const events: InferredEvent[] = record.events.map((value: unknown) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('Inference returned an invalid event.');
+    }
+    const item = value as Record<string, unknown>;
+    if (
+      Object.keys(item).length !== 3 ||
+      (item.kind !== 'context' && item.kind !== 'reaction') ||
+      typeof item.summary !== 'string' ||
+      item.summary.trim().length < 1 ||
+      item.summary.length > 300 ||
+      typeof item.ageMs !== 'number' ||
+      !Number.isFinite(item.ageMs) ||
+      item.ageMs < 0 ||
+      item.ageMs > MAX_EVENT_AGE_MS
+    ) {
+      throw new Error('Inference returned an invalid event.');
+    }
+    return { kind: item.kind, summary: item.summary, observedAt: now - item.ageMs };
+  });
+  return { messages, events };
+}
+
 const MAX_OFFSET_MS = 60000;
 
 /** Validate the complete untrusted inference batch before any output is scheduled. */

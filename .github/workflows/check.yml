@@ -19,6 +19,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm check
+      - run: pnpm stage:llama
+      - run: pnpm smoke:llama
       - run: xvfb-run -a pnpm smoke:electron
       - run: pnpm exec electron-builder --linux --publish never
   cross-platform:
@@ -44,4 +46,5 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
+      - run: node scripts/stage-llama.mjs ${{ matrix.target == '--win' && 'win32-x64' || 'darwin-arm64' }}
       - run: pnpm exec electron-builder ${{ matrix.target }} --publish never

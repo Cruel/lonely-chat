@@ -8,6 +8,11 @@ files:
   - dist-electron/renderer/**
   - package.json
 asar: true
+extraResources:
+  - from: native/llama
+    to: llama
+    filter:
+      - '**/*'
 npmRebuild: false
 linux:
   target: [AppImage]

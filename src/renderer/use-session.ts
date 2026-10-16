@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import type { SessionPreferences, SessionSnapshot } from '../shared/session-contract';
+import type {
+  InferenceMode,
+  SessionPreferences,
+  SessionSnapshot,
+} from '../shared/session-contract';
 import { DEFAULT_PREFERENCES } from '../shared/session-contract';
 
 const INITIAL_STATUS: SessionSnapshot = {
@@ -8,6 +12,8 @@ const INITIAL_STATUS: SessionSnapshot = {
   error: null,
   cycle: 0,
   pendingMessages: 0,
+  mode: 'fake',
+  events: [],
 };
 
 export function useSession() {
@@ -78,7 +84,8 @@ export function useSession() {
     ready,
     busy,
     actionError,
-    start: (context: string) => perform(() => window.lonelyChat!.startSession(context)),
+    start: (context: string, mode: InferenceMode = 'fake') =>
+      perform(() => window.lonelyChat!.startSession(context, mode)),
     stop: () => perform(() => window.lonelyChat!.stopSession()),
     updatePreferences,
   };

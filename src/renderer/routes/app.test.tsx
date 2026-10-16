@@ -37,6 +37,8 @@ it('starts and stops manual-context simulation, shows status and only saves pref
     error: null,
     cycle: 0,
     pendingMessages: 0,
+    mode: 'fake',
+    events: [],
   };
   const startSession = vi.fn(async (manualContext: string) => {
     expect(manualContext).toBe('I am playing a spooky game');
@@ -100,6 +102,8 @@ it('shows a rejected start error and remains ready to retry', async () => {
       error: null,
       cycle: 0,
       pendingMessages: 0,
+      mode: 'fake',
+      events: [],
     }),
     onSessionChange: () => () => {},
     startSession: async () => {
@@ -111,6 +115,8 @@ it('shows a rejected start error and remains ready to retry', async () => {
       error: null,
       cycle: 0,
       pendingMessages: 0,
+      mode: 'fake',
+      events: [],
     }),
     getPreferences: async () => ({ cycleIntervalMs: 3000 }),
     setPreferences: async (value) => value,

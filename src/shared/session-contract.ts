@@ -1,4 +1,11 @@
-export type SessionPhase = 'stopped' | 'running' | 'error';
+export type SessionPhase = 'stopped' | 'starting' | 'running' | 'error';
+export type InferenceMode = 'fake' | 'native';
+
+export interface InferredEvent {
+  readonly kind: 'context' | 'reaction';
+  readonly summary: string;
+  readonly observedAt: number;
+}
 
 /** Private desktop-only lifecycle information. Never served through /overlay. */
 export interface SessionSnapshot {
@@ -7,6 +14,8 @@ export interface SessionSnapshot {
   readonly error: string | null;
   readonly cycle: number;
   readonly pendingMessages: number;
+  readonly mode: InferenceMode;
+  readonly events: readonly InferredEvent[];
 }
 
 export interface SessionPreferences {

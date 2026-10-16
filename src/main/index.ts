@@ -8,6 +8,8 @@ import { DEFAULT_PREFERENCES } from '../shared/session-contract';
 import { OverlayServer } from './overlay-server';
 import { ModelDiscovery } from './model-discovery';
 import { ModelInstallManager } from './model-install-manager';
+import { NativeInference } from './native-inference';
+import { bundledLlamaServer } from './native-runtime-path';
 import type { ChatEvent, DesktopInvocations, DesktopArguments } from '../shared/chat-contract';
 
 const rendererDirectory = path.join(__dirname, '../renderer');
@@ -46,7 +48,8 @@ function registerHandlers(): void {
     },
     'overlay:url': () => overlay.url,
     'session:snapshot': () => session.snapshot(),
-    'session:start': (context: string) => session.start(context),
+    'session:start': (context: string, mode?: import('../shared/session-contract').InferenceMode) =>
+      session.start(context, mode),
     'session:stop': () => session.stop(),
     'preferences:get': () => session.getPreferences(),
     'preferences:set': async (
@@ -60,9 +63,18 @@ function registerHandlers(): void {
     'models:install': (selection: import('../shared/model-install-contract').ModelInstallRequest) =>
       installs.install(selection),
     'models:cancel': () => installs.cancel(),
-    'models:activate': (role: import('../shared/model-contract').ModelRole, id: string | null) =>
-      installs.setActive(role, id),
-    'models:remove': (id: string) => installs.remove(id),
+    'models:activate': (role: import('../shared/model-contract').ModelRole, id: string | null) => {
+      if (session.snapshot().phase === 'running' || session.snapshot().phase === 'starting') {
+        throw new Error('Stop the simulation before changing the active model.');
+      }
+      return installs.setActive(role, id);
+    },
+    'models:remove': (id: string) => {
+      if (session.snapshot().phase === 'running' || session.snapshot().phase === 'starting') {
+        throw new Error('Stop the simulation before removing a model.');
+      }
+      return installs.remove(id);
+    },
     'models:choose-directory': async () => {
       if (!mainWindow) throw new Error('Desktop window is unavailable.');
       const choice = await dialog.showOpenDialog(mainWindow, {
@@ -200,7 +212,16 @@ async function boot(): Promise<void> {
     if (mainWindow && !mainWindow.isDestroyed())
       mainWindow.webContents.send('models:change', snapshot);
   });
-  session = new SessionController(chat, undefined, undefined, preferences);
+  session = new SessionController(
+    chat,
+    undefined,
+    undefined,
+    preferences,
+    new NativeInference({
+      executable: bundledLlamaServer(app.getAppPath(), app.isPackaged, process.resourcesPath),
+      resolveModel: () => installs.activeVisionFiles(),
+    }),
+  );
   session.subscribe((status) => {
     if (mainWindow && !mainWindow.isDestroyed())
       mainWindow.webContents.send('session:change', status);
@@ -232,9 +253,8 @@ app.on('before-quit', (event) => {
   if (quitting) return;
   event.preventDefault();
   quitting = true;
-  session?.stop();
   installs.cancel();
-  void overlay.stop().finally(() => app.quit());
+  void Promise.all([session?.terminate(), overlay.stop()]).finally(() => app.quit());
 });
 app.on('will-quit', () => {
   ipcMain.removeHandler('chat:snapshot');

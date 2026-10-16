@@ -159,6 +159,23 @@ describe('managed model packages via public model-manager service', () => {
     expect((await app.make().open()).active['vision-language']).toBeNull();
   });
 
+  it('resolves verified active model shards/projector and rejects modified weights before launch', async () => {
+    const app = await fixture();
+    await expect(app.manager.activeVisionFiles()).rejects.toThrow(/Activate an installed/);
+    const installed = await app.manager.install(selection);
+    const model = installed.installations[0];
+    await app.manager.setActive('vision-language', model.id);
+    const resolved = await app.manager.activeVisionFiles();
+    expect(resolved.modelPath).toBe(
+      path.join(installed.storageDirectory, 'installed', model.id, 'files', q4),
+    );
+    expect(resolved.projectorPath).toBe(
+      path.join(installed.storageDirectory, 'installed', model.id, 'files', proj),
+    );
+    await writeFile(resolved.modelPath, 'tampered model');
+    await expect(app.manager.activeVisionFiles()).rejects.toThrow(/verification/);
+  });
+
   it('keeps interrupted bytes private, resumes with HTTP Range and publishes only after verification', async () => {
     const app = await fixture();
     app.setInterrupt(q4);

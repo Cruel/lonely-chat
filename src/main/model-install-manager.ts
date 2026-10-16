@@ -319,6 +319,29 @@ export class ModelInstallManager {
     return this.snapshot();
   }
 
+  /** Resolve only manager-verified bytes for a new native inference session. */
+  async activeVisionFiles(): Promise<{ modelPath: string; projectorPath: string | null }> {
+    this.requireReady();
+    const active = this.config.active['vision-language'];
+    const entry = this.config.installations.find((item) => item.id === active);
+    if (!entry) throw new Error('Activate an installed vision/language GGUF model first.');
+    await this.verifyInstallation(entry);
+    const root = path.join(this.config.storageDirectory, 'installed', entry.id);
+    const base = (value: string) => value.replace(/-\d{5}-of-\d{5}(?=\.gguf$)/i, '');
+    const model = entry.files.find((file) => base(file.path) === entry.candidateId);
+    if (!model) throw new Error('Installed GGUF model files do not match their selection.');
+    const projector = entry.projectorId
+      ? entry.files.find((file) => base(file.path) === entry.projectorId)
+      : null;
+    if (entry.projectorId && !projector) {
+      throw new Error('The selected vision projector is missing from this installation.');
+    }
+    return {
+      modelPath: checkedPath(root, model.relativePath),
+      projectorPath: projector ? checkedPath(root, projector.relativePath) : null,
+    };
+  }
+
   async remove(id: string): Promise<ModelManagerSnapshot> {
     this.requireReady();
     if (this.busy) throw new Error('Wait for the current download to finish.');

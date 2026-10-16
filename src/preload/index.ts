@@ -31,7 +31,7 @@ const api: DesktopAPI = {
     ipcRenderer.on('session:change', receive);
     return () => ipcRenderer.removeListener('session:change', receive);
   },
-  startSession: (manualContext) => invoke('session:start', manualContext),
+  startSession: (manualContext, mode) => invoke('session:start', manualContext, mode),
   stopSession: () => invoke('session:stop'),
   getPreferences: () => invoke('preferences:get'),
   setPreferences: (preferences) => invoke('preferences:set', preferences),
