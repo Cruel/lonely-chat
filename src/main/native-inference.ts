@@ -13,8 +13,10 @@ export interface NativeModelFiles {
 const ROSTER = Object.fromEntries(AUDIENCE.map(({ author, color }) => [author, color]));
 const AUTHORS = AUDIENCE.map(({ author }) => author);
 const MAX_REPLY_BYTES = 1024 * 1024;
-const STARTUP_TIMEOUT_MS = 120_000;
-const INFERENCE_TIMEOUT_MS = 120_000;
+const STARTUP_TIMEOUT_MS = 300_000;
+// CPU-only models can be slow. A generous timeout must not be confused with token limits.
+const INFERENCE_TIMEOUT_MS = 600_000;
+const COMPLETION_MAX_TOKENS = 2048;
 
 /** Schema is a generation hint, never a substitute for parseInferenceResult. */
 export const INFERENCE_SCHEMA = {
@@ -63,7 +65,7 @@ export function nativeChatRequest(input: InferenceInput) {
   return {
     stream: false,
     temperature: 0.7,
-    max_tokens: 800,
+    max_tokens: COMPLETION_MAX_TOKENS,
     // Pinned llama-server b11700 enforces this schema via json_object. Its json_schema
     // response_format variant silently ignored the schema for tested GGUF models.
     response_format: { type: 'json_object', schema: INFERENCE_SCHEMA },
@@ -102,7 +104,33 @@ export function extractNativeChat(body: unknown): unknown {
     throw new Error('llama.cpp did not return exactly one chat completion.');
   }
   if (choice[0]?.finish_reason !== 'stop') {
-    throw new Error('llama.cpp response was incomplete (token limit or interruption).');
+    const reason = choice[0]?.finish_reason;
+    const usage = (
+      body as {
+        usage?: {
+          prompt_tokens?: unknown;
+          completion_tokens?: unknown;
+          completion_tokens_details?: { reasoning_tokens?: unknown };
+        };
+      }
+    ).usage;
+    const counts = [
+      typeof usage?.prompt_tokens === 'number' ? `prompt=${usage.prompt_tokens}` : null,
+      typeof usage?.completion_tokens === 'number' ? `completion=${usage.completion_tokens}` : null,
+      typeof usage?.completion_tokens_details?.reasoning_tokens === 'number'
+        ? `reasoning=${usage.completion_tokens_details.reasoning_tokens}`
+        : null,
+    ].filter(Boolean);
+    const detail = counts.length > 0 ? ` Usage: ${counts.join(', ')} tokens.` : '';
+    const explanation =
+      reason === 'length'
+        ? `The model hit the ${COMPLETION_MAX_TOKENS}-token output limit before finishing its structured reply.`
+        : reason === 'content_filter'
+          ? 'The model reported content filtering.'
+          : 'The completion was interrupted or terminated unexpectedly.';
+    throw new Error(
+      `llama.cpp finish_reason=${JSON.stringify(reason ?? null)}. ${explanation}${detail}`,
+    );
   }
   const content: unknown = choice[0]?.message?.content;
   if (typeof content !== 'string') throw new Error('llama.cpp returned no JSON chat content.');
@@ -179,6 +207,8 @@ interface NativeOptions {
     options: SpawnOptions,
   ) => ChildProcess;
   readonly allocatePort?: () => Promise<number>;
+  /** Evaluated when a new worker launches; defaults to non-thinking inference. */
+  readonly reasoningEnabled?: () => boolean;
 }
 
 /**
@@ -247,6 +277,8 @@ export class NativeInference implements InferenceProvider {
       '4096',
       '--n-gpu-layers',
       '0',
+      '--reasoning',
+      this.options.reasoningEnabled?.() ? 'on' : 'off',
     ];
     if (files.projectorPath) args.push('--mmproj', files.projectorPath);
     this.port = port;
@@ -356,6 +388,11 @@ export class NativeInference implements InferenceProvider {
       if (this.failure) throw this.failure;
       if (signal.aborted || this.lifecycle?.signal.aborted)
         throw new Error('Native inference cancelled.');
+      if (error instanceof Error && error.name === 'TimeoutError') {
+        throw new Error(
+          `llama.cpp inference timed out after ${INFERENCE_TIMEOUT_MS / 1000} seconds. The CPU model did not finish within the request deadline.`,
+        );
+      }
       throw error;
     }
   }

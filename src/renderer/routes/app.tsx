@@ -509,6 +509,38 @@ export function DesktopPage() {
                     onChange={(historyMaxAgeMs) => update({ historyMaxAgeMs })}
                   />
                 </div>
+                <div className="mt-5 max-w-sm">
+                  <Label htmlFor="native-reasoning" className="text-sm text-zinc-200">
+                    Local model reasoning
+                  </Label>
+                  <Select
+                    items={[
+                      { value: 'off', label: 'Disabled (recommended)' },
+                      { value: 'on', label: 'Enabled' },
+                    ]}
+                    value={session.preferences.reasoningEnabled ? 'on' : 'off'}
+                    onValueChange={(value) => {
+                      if (value === 'off' || value === 'on')
+                        update({ reasoningEnabled: value === 'on' });
+                    }}
+                  >
+                    <SelectTrigger
+                      id="native-reasoning"
+                      className="mt-2 w-full text-sm"
+                      disabled={!session.ready || session.busy || running}
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="off">Disabled (recommended)</SelectItem>
+                      <SelectItem value="on">Enabled</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="mt-2 text-xs text-zinc-500">
+                    Disabling thinking saves output tokens and CPU time on supported models. Changes
+                    take effect when the next native session starts.
+                  </p>
+                </div>
                 {session.actionError && (
                   <p role="alert" className="mt-4 text-sm text-rose-300">
                     {session.actionError}

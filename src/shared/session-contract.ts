@@ -43,6 +43,8 @@ export interface SessionPreferences {
   readonly baselineMs: number;
   readonly historyMaxCount: number;
   readonly historyMaxAgeMs: number;
+  /** Thinking/reasoning mode for the native model, applied at the next server start. */
+  readonly reasoningEnabled: boolean;
 }
 
 export const DEFAULT_PREFERENCES: SessionPreferences = {
@@ -50,6 +52,7 @@ export const DEFAULT_PREFERENCES: SessionPreferences = {
   baselineMs: 0,
   historyMaxCount: 32,
   historyMaxAgeMs: 60000,
+  reasoningEnabled: false,
 };
 export const CYCLE_INTERVAL_OPTIONS = [1500, 3000, 5000] as const;
 export const BASELINE_OPTIONS = [0, 1000, 3000] as const;
@@ -77,7 +80,8 @@ export function validatePreferences(value: unknown): SessionPreferences {
     (record.historyMaxCount !== undefined &&
       !HISTORY_COUNT_OPTIONS.some((value) => value === record.historyMaxCount)) ||
     (record.historyMaxAgeMs !== undefined &&
-      !HISTORY_AGE_OPTIONS.some((value) => value === record.historyMaxAgeMs))
+      !HISTORY_AGE_OPTIONS.some((value) => value === record.historyMaxAgeMs)) ||
+    (record.reasoningEnabled !== undefined && typeof record.reasoningEnabled !== 'boolean')
   ) {
     throw new Error('Invalid simulation preferences.');
   }

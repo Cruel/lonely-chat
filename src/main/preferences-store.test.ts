@@ -25,7 +25,7 @@ describe('versioned preferences', () => {
     expect(await settings.read()).toEqual(DEFAULT_PREFERENCES);
     expect(await settings.write(pace(1500))).toEqual(pace(1500));
     const data = JSON.parse(await readFile(path.join(directory, 'preferences.json'), 'utf8'));
-    expect(data).toEqual({ version: 2, simulation: pace(1500) });
+    expect(data).toEqual({ version: 3, simulation: pace(1500) });
     expect(await settings.read()).toEqual(pace(1500));
     expect(await readdir(directory)).toEqual(['preferences.json']);
     expect(JSON.stringify(data)).not.toContain('manual context');
@@ -63,7 +63,21 @@ describe('versioned preferences', () => {
     ).toMatchObject({ baselineMs: 1000, historyMaxCount: 16, historyMaxAgeMs: 30000 });
     expect(
       JSON.parse(await readFile(path.join(directory, 'preferences.json'), 'utf8')).version,
-    ).toBe(2);
+    ).toBe(3);
+  });
+
+  it('migrates existing version-two preferences with reasoning disabled by default', async () => {
+    const { store: settings, directory } = await store();
+    const { reasoningEnabled: _ignored, ...previous } = pace(5000);
+    await writeFile(
+      path.join(directory, 'preferences.json'),
+      JSON.stringify({ version: 2, simulation: previous }),
+    );
+    expect(await settings.read()).toEqual(pace(5000));
+    expect(await settings.write({ ...pace(5000), reasoningEnabled: true })).toMatchObject({
+      reasoningEnabled: true,
+    });
+    expect(await settings.read()).toMatchObject({ reasoningEnabled: true });
   });
 
   it('refuses unexpected keys or future versions without overwriting existing values', async () => {
@@ -74,7 +88,7 @@ describe('versioned preferences', () => {
     await writeFile(
       path.join(directory, 'preferences.json'),
       JSON.stringify({
-        version: 3,
+        version: 4,
         simulation: { cycleIntervalMs: 3000 },
       }),
     );

@@ -105,6 +105,17 @@ it('starts and stops manual-context simulation, shows status and only saves pref
     expect(setPreferences).toHaveBeenCalledWith({ ...DEFAULT_PREFERENCES, cycleIntervalMs: 1500 }),
   );
   expect(JSON.stringify(setPreferences.mock.calls)).not.toContain('spooky game');
+  const reasoning = screen.getByRole('combobox', { name: 'Local model reasoning' });
+  expect(reasoning.textContent).toContain('Disabled (recommended)');
+  await user.click(reasoning);
+  await user.click(await screen.findByRole('option', { name: 'Enabled' }));
+  await waitFor(() =>
+    expect(setPreferences).toHaveBeenCalledWith({
+      ...DEFAULT_PREFERENCES,
+      cycleIntervalMs: 1500,
+      reasoningEnabled: true,
+    }),
+  );
   fireEvent.click(screen.getByRole('button', { name: 'Simulation' }));
   expect(screen.getByLabelText('Stream context')).toHaveProperty(
     'value',

@@ -45,6 +45,7 @@ describe('native llama.cpp adapter', () => {
   it('creates bounded structured prompts and rejects untrusted output atomically', () => {
     const prompt = nativeChatRequest({ context: 'campfire', cycle: 1 });
     expect(prompt.response_format.type).toBe('json_object');
+    expect(prompt.max_tokens).toBe(2048);
     expect(prompt).not.toHaveProperty('json_schema');
     expect(
       prompt.response_format.schema.properties.messages.items.properties.author.enum,
@@ -68,8 +69,20 @@ describe('native llama.cpp adapter', () => {
     expect(() =>
       extractNativeChat({
         choices: [{ finish_reason: 'length', message: { content: '{}' } }],
+        usage: {
+          prompt_tokens: 560,
+          completion_tokens: 2048,
+          completion_tokens_details: { reasoning_tokens: 1800 },
+        },
       }),
-    ).toThrow(/incomplete/);
+    ).toThrow(
+      /finish_reason="length".*2048-token output limit.*prompt=560, completion=2048, reasoning=1800/,
+    );
+    expect(() =>
+      extractNativeChat({
+        choices: [{ finish_reason: 'content_filter', message: { content: null } }],
+      }),
+    ).toThrow(/finish_reason="content_filter".*filtering/);
     expect(() =>
       extractNativeChat({
         choices: [
@@ -122,6 +135,12 @@ describe('native llama.cpp adapter', () => {
     );
     expect(parseInferenceResult(result, 1000).messages[0].text).toBe('warm fire');
     expect(launchedArgs).toContain('--no-webui');
+    expect(
+      launchedArgs.slice(
+        launchedArgs.indexOf('--reasoning'),
+        launchedArgs.indexOf('--reasoning') + 2,
+      ),
+    ).toEqual(['--reasoning', 'off']);
     // Current pinned llama-server uses --load-mode; --no-mmap was removed upstream.
     expect(launchedArgs).not.toContain('--no-mmap');
     expect(
@@ -136,6 +155,33 @@ describe('native llama.cpp adapter', () => {
     expect(anonymous.status).toBe(401);
     await provider.stop();
     await expect(fetch(`http://127.0.0.1:${port}/health`)).rejects.toThrow();
+  });
+
+  it('enables reasoning only when explicitly configured', async () => {
+    let launchedArgs: string[] = [];
+    const provider = new NativeInference({
+      executable: process.execPath,
+      reasoningEnabled: () => true,
+      resolveModel: async () => ({ modelPath: '/installed/weights.gguf', projectorPath: null }),
+      launch: (_binary, args, options) => {
+        launchedArgs = [...args];
+        const port = args[args.indexOf('--port') + 1];
+        const key = args[args.indexOf('--api-key') + 1];
+        return spawn(
+          process.execPath,
+          ['--input-type=module', '-e', childScript, port, key],
+          options,
+        );
+      },
+    });
+    providers.push(provider);
+    await provider.prepare(new AbortController().signal);
+    expect(
+      launchedArgs.slice(
+        launchedArgs.indexOf('--reasoning'),
+        launchedArgs.indexOf('--reasoning') + 2,
+      ),
+    ).toEqual(['--reasoning', 'on']);
   });
 
   it('fails clearly on missing binary and permits stop while loading', async () => {
@@ -156,18 +202,21 @@ describe('native llama.cpp adapter', () => {
       const modelPath = process.env.LONELY_CHAT_CPU_SMOKE_MODEL!;
       const provider = new NativeInference({
         executable: bundledLlamaServer(process.cwd(), false, '', process.platform, process.arch),
-        resolveModel: async () => ({ modelPath, projectorPath: null }),
+        resolveModel: async () => ({
+          modelPath,
+          projectorPath: process.env.LONELY_CHAT_CPU_SMOKE_PROJECTOR ?? null,
+        }),
       });
       providers.push(provider);
       await provider.prepare(new AbortController().signal);
       const output = await provider.generate(
-        { context: 'Playing chess.', cycle: 1 },
+        { context: "I'm playing Sonic", cycle: 1 },
         new AbortController().signal,
       );
       expect(parseInferenceResult(output, Date.now()).messages.length).toBeGreaterThan(0);
       await provider.stop();
     },
-    120000,
+    660000,
   );
 
   it('uses out-of-ASAR platform-specific runtime paths', () => {

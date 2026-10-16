@@ -226,6 +226,7 @@ async function boot(): Promise<void> {
     new NativeInference({
       executable: bundledLlamaServer(app.getAppPath(), app.isPackaged, process.resourcesPath),
       resolveModel: () => installs.activeVisionFiles(),
+      reasoningEnabled: () => session.getPreferences().reasoningEnabled,
     }),
   );
   session.subscribe((status) => {
