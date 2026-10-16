@@ -1,0 +1,11 @@
+packages:
+  - .
+allowBuilds:
+  electron: true
+  esbuild: true
+  electron-winstaller: true
+
+# Vite+ core exports the Vite API under its own version, which peer version checks cannot detect.
+peerDependencyRules:
+  allowedVersions:
+    vite: '*'

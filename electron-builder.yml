@@ -1,0 +1,21 @@
+appId: org.lonelychat.desktop
+productName: Lonely Chat
+directories:
+  output: out
+files:
+  - dist-electron/main/**
+  - dist-electron/preload/**
+  - dist-electron/renderer/**
+  - package.json
+asar: true
+npmRebuild: false
+linux:
+  target: [AppImage]
+  category: AudioVideo
+  artifactName: lonely-chat-${version}-linux-${arch}.${ext}
+win:
+  target: [nsis]
+  artifactName: lonely-chat-${version}-windows-${arch}.${ext}
+mac:
+  target: [dmg]
+  artifactName: lonely-chat-${version}-macos-${arch}.${ext}
