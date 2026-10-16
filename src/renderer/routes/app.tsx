@@ -9,6 +9,15 @@ import {
   Square,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { ChatView } from '@/components/chat-view';
 import { ModelManager } from '@/components/model-manager';
 import { useChat } from '../use-chat';
@@ -86,15 +95,12 @@ export function DesktopPage() {
               Describe what is happening on your stream. Deterministic fake inference creates
               scheduled viewer comments. Real inference and media input arrive in later milestones.
             </p>
-            <label
-              htmlFor="simulation-context"
-              className="mt-4 block text-sm font-medium text-zinc-200"
-            >
+            <Label htmlFor="simulation-context" className="mt-4 text-sm text-zinc-200">
               Stream context
-            </label>
-            <textarea
+            </Label>
+            <Textarea
               id="simulation-context"
-              className="mt-2 min-h-24 w-full resize-y rounded-lg border border-zinc-700 bg-[#111116] p-3 text-sm text-zinc-100 outline-none focus-visible:border-violet-400 focus-visible:ring-2 focus-visible:ring-violet-400/30 disabled:opacity-60"
+              className="mt-2 min-h-24 resize-y text-sm"
               maxLength={2000}
               value={manualContext}
               disabled={running}
@@ -131,24 +137,35 @@ export function DesktopPage() {
               </p>
             )}
             <div className="mt-5 flex flex-wrap items-center gap-3 border-t border-zinc-800 pt-4">
-              <label htmlFor="simulation-pace" className="text-sm text-zinc-300">
+              <Label htmlFor="simulation-pace" className="text-sm text-zinc-300">
                 Inference cycle
-              </label>
-              <select
-                id="simulation-pace"
-                className="rounded-md border border-zinc-700 bg-[#111116] px-3 py-2 text-sm text-zinc-100 focus-visible:outline-2 focus-visible:outline-violet-400 disabled:opacity-50"
-                disabled={!session.ready || session.busy}
-                value={session.preferences.cycleIntervalMs}
-                onChange={(event) =>
-                  void session.updatePreferences({ cycleIntervalMs: Number(event.target.value) })
-                }
+              </Label>
+              <Select
+                items={CYCLE_INTERVAL_OPTIONS.map((interval) => ({
+                  value: String(interval),
+                  label: `${(interval / 1000).toFixed(1)} seconds`,
+                }))}
+                value={String(session.preferences.cycleIntervalMs)}
+                onValueChange={(interval) => {
+                  if (interval)
+                    void session.updatePreferences({ cycleIntervalMs: Number(interval) });
+                }}
               >
-                {CYCLE_INTERVAL_OPTIONS.map((interval) => (
-                  <option key={interval} value={interval}>
-                    {(interval / 1000).toFixed(1)} seconds
-                  </option>
-                ))}
-              </select>
+                <SelectTrigger
+                  id="simulation-pace"
+                  disabled={!session.ready || session.busy}
+                  className="h-9 min-w-32 text-sm"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {CYCLE_INTERVAL_OPTIONS.map((interval) => (
+                    <SelectItem key={interval} value={String(interval)}>
+                      {(interval / 1000).toFixed(1)} seconds
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               <span className="text-xs text-zinc-500">
                 Saved on this computer; manual context is not saved.
               </span>

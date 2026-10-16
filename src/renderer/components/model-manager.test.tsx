@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { ModelManager } from './model-manager';
 import type { DesktopAPI } from '../../shared/chat-contract';
 import type { ModelDiscoveryResult } from '../../shared/model-contract';
@@ -53,17 +54,50 @@ it('browses a direct file URL, preselects weights and requires a choice for ambi
   fireEvent.change(screen.getByLabelText('Repository or file URL'), { target: { value: source } });
   fireEvent.click(screen.getByRole('button', { name: 'Discover files' }));
   await waitFor(() => expect(discoverModels).toHaveBeenCalledWith(source));
-  const radio = await screen.findByRole('radio', { name: /model-Q4_K_M.gguf/i });
-  expect((radio as HTMLInputElement).checked).toBe(true);
+  const model = await screen.findByRole('combobox', { name: 'Choose model weights' });
+  expect(model.textContent).toContain('model-Q4_K_M.gguf');
+  expect(screen.queryByRole('radio')).toBeNull();
   expect(screen.getByText(/Several companions are available/)).toBeTruthy();
-  expect((screen.getByLabelText('Vision projector companion') as HTMLSelectElement).value).toBe('');
-  fireEvent.change(screen.getByLabelText('Vision projector companion'), {
-    target: { value: 'mmproj-F16.gguf' },
-  });
-  expect((screen.getByLabelText('Vision projector companion') as HTMLSelectElement).value).toBe(
-    'mmproj-F16.gguf',
-  );
+  const projector = screen.getByRole('combobox', { name: 'Vision projector companion' });
+  expect(projector.textContent).toContain('Choose a projector');
+  const user = userEvent.setup();
+  await user.click(projector);
+  expect(
+    document.querySelector('[data-slot="select-content"]')?.getAttribute('data-align-trigger'),
+  ).toBe('true');
+  await user.click(await screen.findByRole('option', { name: /mmproj-F16.gguf/i }));
+  expect(projector.textContent).toContain('mmproj-F16.gguf');
   expect(screen.getByText(/projector: mmproj-F16.gguf/)).toBeTruthy();
+});
+
+it('changes a preselected model through a Select without retaining an incompatible projector', async () => {
+  const second = {
+    ...discovered.candidates[0],
+    id: 'model-Q8_0.gguf',
+    quantization: 'Q8_0',
+    sizeBytes: 8192,
+    files: [{ path: 'model-Q8_0.gguf', sizeBytes: 8192 }],
+    compatibleProjectorIds: [],
+  };
+  const discoverModels = vi.fn(async () => ({
+    ...discovered,
+    candidates: [...discovered.candidates, second],
+  }));
+  window.lonelyChat = { discoverModels } as unknown as DesktopAPI;
+  render(<ModelManager />);
+  fireEvent.change(screen.getByLabelText('Repository or file URL'), {
+    target: { value: 'acme/stream-model' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Discover files' }));
+  const model = await screen.findByRole('combobox', { name: 'Choose model weights' });
+  expect(model.textContent).toContain('model-Q4_K_M.gguf');
+  const user = userEvent.setup();
+  await user.click(model);
+  await user.click(await screen.findByRole('option', { name: /model-Q8_0.gguf/i }));
+  expect(model.textContent).toContain('model-Q8_0.gguf');
+  expect(screen.queryByRole('combobox', { name: 'Vision projector companion' })).toBeNull();
+  expect(screen.getByText(/Selected 1 model file/).textContent).not.toContain('projector:');
+  expect(screen.queryByText(/Select a projector explicitly for model-Q4_K_M.gguf/)).toBeNull();
 });
 
 it('shows actionable API failures and does not keep stale results from superseded searches', async () => {

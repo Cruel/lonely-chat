@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { DesktopPage } from './app';
 import type { DesktopAPI } from '../../shared/chat-contract';
 import type { SessionSnapshot } from '../../shared/session-contract';
@@ -59,7 +60,11 @@ it('starts and stops manual-context simulation, shows status and only saves pref
   await screen.findByRole('button', { name: /Start simulation/i });
   expect(stopSession).toHaveBeenCalledOnce();
   expect(screen.getByRole('status').textContent).toContain('Stopped');
-  fireEvent.change(screen.getByLabelText('Inference cycle'), { target: { value: '1500' } });
+  const pace = screen.getByRole('combobox', { name: 'Inference cycle' });
+  await waitFor(() => expect(pace.hasAttribute('disabled')).toBe(false));
+  const user = userEvent.setup();
+  await user.click(pace);
+  await user.click(await screen.findByRole('option', { name: '1.5 seconds' }));
   await waitFor(() => expect(setPreferences).toHaveBeenCalledWith({ cycleIntervalMs: 1500 }));
   expect(JSON.stringify(setPreferences.mock.calls)).not.toContain('spooky game');
 });
