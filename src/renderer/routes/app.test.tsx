@@ -92,6 +92,10 @@ it('starts and stops manual-context simulation, shows status and only saves pref
   await screen.findByRole('button', { name: /Start simulation/i });
   expect(stopSession).toHaveBeenCalledOnce();
   expect(screen.getByRole('status').textContent).toContain('Stopped');
+  fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+  expect(screen.getByRole('button', { name: 'Settings' }).getAttribute('aria-current')).toBe(
+    'page',
+  );
   const pace = screen.getByRole('combobox', { name: 'Inference cycle' });
   await waitFor(() => expect(pace.hasAttribute('disabled')).toBe(false));
   const user = userEvent.setup();
@@ -101,6 +105,96 @@ it('starts and stops manual-context simulation, shows status and only saves pref
     expect(setPreferences).toHaveBeenCalledWith({ ...DEFAULT_PREFERENCES, cycleIntervalMs: 1500 }),
   );
   expect(JSON.stringify(setPreferences.mock.calls)).not.toContain('spooky game');
+  fireEvent.click(screen.getByRole('button', { name: 'Simulation' }));
+  expect(screen.getByLabelText('Stream context')).toHaveProperty(
+    'value',
+    'I am playing a spooky game',
+  );
+  expect(screen.getByRole('button', { name: 'Simulation' }).getAttribute('aria-current')).toBe(
+    'page',
+  );
+});
+
+it('navigates across all categories without losing the session or private draft context', async () => {
+  let status: SessionSnapshot = { ...emptyStatus };
+  let subscriber: ((value: SessionSnapshot) => void) | null = null;
+  const startSession = vi.fn(async () => {
+    status = {
+      ...status,
+      revision: 1,
+      phase: 'running',
+      cycle: 1,
+      pendingMessages: 3,
+    };
+    subscriber?.(status);
+    return status;
+  });
+  window.lonelyChat = {
+    ...modelsAPI,
+    getChatSnapshot: async () => ({ type: 'snapshot', sequence: 0, messages: [] }),
+    onChatEvent: () => () => {},
+    publishSample: async () => {},
+    getOverlayUrl: async () => 'http://127.0.0.1:45939/overlay',
+    getSessionSnapshot: async () => status,
+    onSessionChange: (listener) => {
+      subscriber = listener;
+      return () => {
+        subscriber = null;
+      };
+    },
+    startSession,
+    stopSession: async () => ({ ...emptyStatus }),
+    getPreferences: async () => DEFAULT_PREFERENCES,
+    setPreferences: async (value) => value,
+    discoverModels: async () => {
+      throw new Error('Not used');
+    },
+  } satisfies DesktopAPI;
+
+  render(<DesktopPage />);
+  expect(screen.getByRole('navigation', { name: 'Main navigation' })).toBeTruthy();
+  const categories = [
+    'Simulation',
+    'Audience',
+    'Inputs',
+    'Models',
+    'Chat & Overlay',
+    'Logs',
+    'Settings',
+  ];
+  for (const category of categories) {
+    const button = screen.getByRole('button', { name: category });
+    fireEvent.click(button);
+    expect(button.getAttribute('aria-current')).toBe('page');
+    expect(screen.getByRole('region', { name: category })).toBeTruthy();
+  }
+
+  fireEvent.click(screen.getByRole('button', { name: 'Models' }));
+  expect(await screen.findByRole('region', { name: 'Hugging Face model discovery' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Chat & Overlay' }));
+  expect(screen.getByText('Live chat preview')).toBeTruthy();
+  expect(screen.getByText('http://127.0.0.1:45939/overlay')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Simulation' }));
+  await waitFor(() =>
+    expect(screen.getByRole('button', { name: 'Start simulation' }).hasAttribute('disabled')).toBe(
+      false,
+    ),
+  );
+  fireEvent.change(screen.getByLabelText('Stream context'), { target: { value: 'Playing Sonic' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Start simulation' }));
+  await screen.findByRole('button', { name: 'Stop simulation' });
+  fireEvent.click(screen.getByRole('button', { name: 'Logs' }));
+  expect(
+    screen
+      .getByRole('button', { name: 'Simulation' })
+      .querySelector('[aria-label="Simulation running"]'),
+  ).toBeTruthy();
+  expect(screen.getByText('Session diagnostics')).toBeTruthy();
+  expect(screen.getByRole('region', { name: 'Logs' }).textContent).toContain('running');
+  fireEvent.click(screen.getByRole('button', { name: 'Simulation' }));
+  expect(screen.getByRole('button', { name: 'Stop simulation' })).toBeTruthy();
+  expect(screen.getByLabelText('Stream context')).toHaveProperty('value', 'Playing Sonic');
+  expect(startSession).toHaveBeenCalledTimes(1);
 });
 
 it('shows a rejected start error and remains ready to retry', async () => {

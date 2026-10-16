@@ -138,6 +138,12 @@ function openMainWindow(): void {
           apiKeys: string[];
           session: import('../shared/session-contract').SessionSnapshot;
         } = await window.webContents.executeJavaScript(`(async () => {
+          // The chat preview now belongs to its own desktop category.
+          for (let attempt = 0; attempt < 100; attempt++) {
+            const chatNavigation = document.querySelector('nav[aria-label="Main navigation"] button[aria-label="Chat & Overlay"]');
+            if (chatNavigation) { chatNavigation.click(); break; }
+            await new Promise(resolve => setTimeout(resolve, 50));
+          }
           let previewReady = false;
           for (let attempt = 0; attempt < 100; attempt++) {
             previewReady = document.querySelector('[role="log"]')?.textContent?.includes('pixelpilot') === true;
