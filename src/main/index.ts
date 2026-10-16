@@ -1,12 +1,13 @@
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { app, BrowserWindow, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, shell, dialog } from 'electron';
 import { ChatService, publishSample } from './chat-service';
 import { SessionController } from './session-controller';
 import { PreferencesStore } from './preferences-store';
 import { DEFAULT_PREFERENCES } from '../shared/session-contract';
 import { OverlayServer } from './overlay-server';
 import { ModelDiscovery } from './model-discovery';
+import { ModelInstallManager } from './model-install-manager';
 import type { ChatEvent, DesktopInvocations, DesktopArguments } from '../shared/chat-contract';
 
 const rendererDirectory = path.join(__dirname, '../renderer');
@@ -16,6 +17,7 @@ const chat = new ChatService();
 const overlay = new OverlayServer(chat, rendererDirectory, devOrigin);
 const preferenceStore = new PreferencesStore(app.getPath('userData'));
 const models = new ModelDiscovery();
+const installs = new ModelInstallManager(app.getPath('userData'), models);
 let session: SessionController;
 let mainWindow: BrowserWindow | null = null;
 let quitting = false;
@@ -54,6 +56,23 @@ function registerHandlers(): void {
       return session.setPreferences(written);
     },
     'models:discover': (source: string) => models.discover(source),
+    'models:snapshot': () => installs.snapshot(),
+    'models:install': (selection: import('../shared/model-install-contract').ModelInstallRequest) =>
+      installs.install(selection),
+    'models:cancel': () => installs.cancel(),
+    'models:activate': (role: import('../shared/model-contract').ModelRole, id: string | null) =>
+      installs.setActive(role, id),
+    'models:remove': (id: string) => installs.remove(id),
+    'models:choose-directory': async () => {
+      if (!mainWindow) throw new Error('Desktop window is unavailable.');
+      const choice = await dialog.showOpenDialog(mainWindow, {
+        title: 'Select model storage directory',
+        properties: ['openDirectory', 'createDirectory'],
+        defaultPath: installs.snapshot().storageDirectory,
+      });
+      if (choice.canceled || !choice.filePaths[0]) return installs.snapshot();
+      return installs.changeDirectory(choice.filePaths[0]);
+    },
   } satisfies {
     [K in keyof DesktopInvocations]: (
       ...args: DesktopArguments[K]
@@ -133,7 +152,7 @@ function openMainWindow(): void {
           !result.previewReady ||
           result.session.phase !== 'running' ||
           result.apiKeys.join(',') !==
-            'discoverModels,getChatSnapshot,getOverlayUrl,getPreferences,getSessionSnapshot,onChatEvent,onSessionChange,publishSample,setPreferences,startSession,stopSession'
+            'activateModel,cancelModelDownload,chooseModelDirectory,discoverModels,getChatSnapshot,getModelsSnapshot,getOverlayUrl,getPreferences,getSessionSnapshot,installModel,onChatEvent,onModelsChange,onSessionChange,publishSample,removeModel,setPreferences,startSession,stopSession'
         ) {
           throw new Error(`Electron smoke failed: ${JSON.stringify(result)}`);
         }
@@ -176,6 +195,11 @@ async function boot(): Promise<void> {
   } catch (error) {
     console.error('Invalid local preferences; using safe defaults', error);
   }
+  await installs.open();
+  installs.subscribe((snapshot) => {
+    if (mainWindow && !mainWindow.isDestroyed())
+      mainWindow.webContents.send('models:change', snapshot);
+  });
   session = new SessionController(chat, undefined, undefined, preferences);
   session.subscribe((status) => {
     if (mainWindow && !mainWindow.isDestroyed())
@@ -209,6 +233,7 @@ app.on('before-quit', (event) => {
   event.preventDefault();
   quitting = true;
   session?.stop();
+  installs.cancel();
   void overlay.stop().finally(() => app.quit());
 });
 app.on('will-quit', () => {
@@ -221,4 +246,10 @@ app.on('will-quit', () => {
   ipcMain.removeHandler('preferences:get');
   ipcMain.removeHandler('preferences:set');
   ipcMain.removeHandler('models:discover');
+  ipcMain.removeHandler('models:snapshot');
+  ipcMain.removeHandler('models:install');
+  ipcMain.removeHandler('models:cancel');
+  ipcMain.removeHandler('models:activate');
+  ipcMain.removeHandler('models:remove');
+  ipcMain.removeHandler('models:choose-directory');
 });

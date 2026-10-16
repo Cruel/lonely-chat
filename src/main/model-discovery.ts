@@ -140,9 +140,17 @@ function modelFiles(entries: readonly unknown[], warnings: string[]): ModelFile[
     }
     const lfs = record(entry.lfs);
     const size = sizeOf(entry.size) ?? sizeOf(lfs?.size);
+    const sha256 =
+      typeof lfs?.oid === 'string' && /^[a-f0-9]{64}$/i.test(lfs.oid)
+        ? lfs.oid.toLowerCase()
+        : undefined;
     const existing = files.get(entry.path);
-    if (!existing || (existing.sizeBytes === null && size !== null)) {
-      files.set(entry.path, { path: entry.path, sizeBytes: size });
+    if (
+      !existing ||
+      (existing.sizeBytes === null && size !== null) ||
+      (!existing.sha256 && sha256)
+    ) {
+      files.set(entry.path, { path: entry.path, sizeBytes: size, ...(sha256 ? { sha256 } : {}) });
     }
   }
   return [...files.values()].sort((a, b) => a.path.localeCompare(b.path, 'en'));

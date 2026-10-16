@@ -5,6 +5,23 @@ import userEvent from '@testing-library/user-event';
 import { DesktopPage } from './app';
 import type { DesktopAPI } from '../../shared/chat-contract';
 import type { SessionSnapshot } from '../../shared/session-contract';
+import type { ModelManagerSnapshot } from '../../shared/model-install-contract';
+
+const emptyModels: ModelManagerSnapshot = {
+  storageDirectory: '/models',
+  installations: [],
+  active: { 'vision-language': null, 'speech-to-text': null },
+  progress: { phase: 'idle', file: null, receivedBytes: 0, totalBytes: null },
+};
+const modelsAPI = {
+  getModelsSnapshot: async () => emptyModels,
+  onModelsChange: () => () => {},
+  installModel: async () => emptyModels,
+  cancelModelDownload: async () => {},
+  activateModel: async () => emptyModels,
+  removeModel: async () => emptyModels,
+  chooseModelDirectory: async () => emptyModels,
+};
 
 Element.prototype.scrollIntoView = () => {};
 
@@ -32,6 +49,7 @@ it('starts and stops manual-context simulation, shows status and only saves pref
   });
   const setPreferences = vi.fn(async (preferences: { cycleIntervalMs: number }) => preferences);
   window.lonelyChat = {
+    ...modelsAPI,
     getChatSnapshot: async () => ({ type: 'snapshot', sequence: 0, messages: [] }),
     onChatEvent: () => () => {},
     publishSample: async () => {},
@@ -71,6 +89,7 @@ it('starts and stops manual-context simulation, shows status and only saves pref
 
 it('shows a rejected start error and remains ready to retry', async () => {
   window.lonelyChat = {
+    ...modelsAPI,
     getChatSnapshot: async () => ({ type: 'snapshot', sequence: 0, messages: [] }),
     onChatEvent: () => () => {},
     publishSample: async () => {},

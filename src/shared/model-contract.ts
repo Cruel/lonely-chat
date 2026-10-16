@@ -5,6 +5,8 @@ export interface ModelFile {
   readonly path: string;
   /** Unknown when the Hub does not provide a trustworthy file size. */
   readonly sizeBytes: number | null;
+  /** SHA-256 provided by Hugging Face LFS metadata, when present. */
+  readonly sha256?: string;
 }
 
 export interface ModelCandidate {

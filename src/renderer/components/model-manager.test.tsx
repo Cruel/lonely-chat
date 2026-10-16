@@ -5,6 +5,23 @@ import userEvent from '@testing-library/user-event';
 import { ModelManager } from './model-manager';
 import type { DesktopAPI } from '../../shared/chat-contract';
 import type { ModelDiscoveryResult } from '../../shared/model-contract';
+import type { ModelManagerSnapshot } from '../../shared/model-install-contract';
+
+const emptyModels: ModelManagerSnapshot = {
+  storageDirectory: '/models',
+  installations: [],
+  active: { 'vision-language': null, 'speech-to-text': null },
+  progress: { phase: 'idle', file: null, receivedBytes: 0, totalBytes: null },
+};
+const modelAPI = {
+  getModelsSnapshot: async () => emptyModels,
+  onModelsChange: () => () => {},
+  installModel: async () => emptyModels,
+  cancelModelDownload: async () => {},
+  activateModel: async () => emptyModels,
+  removeModel: async () => emptyModels,
+  chooseModelDirectory: async () => emptyModels,
+};
 
 afterEach(() => {
   cleanup();
@@ -48,7 +65,7 @@ const discovered: ModelDiscoveryResult = {
 
 it('browses a direct file URL, preselects weights and requires a choice for ambiguous projectors', async () => {
   const discoverModels = vi.fn(async () => discovered);
-  window.lonelyChat = { discoverModels } as unknown as DesktopAPI;
+  window.lonelyChat = { ...modelAPI, discoverModels } as unknown as DesktopAPI;
   render(<ModelManager />);
   const source = 'https://huggingface.co/acme/stream-model/resolve/main/model-Q4_K_M.gguf';
   fireEvent.change(screen.getByLabelText('Repository or file URL'), { target: { value: source } });
@@ -83,7 +100,7 @@ it('changes a preselected model through a Select without retaining an incompatib
     ...discovered,
     candidates: [...discovered.candidates, second],
   }));
-  window.lonelyChat = { discoverModels } as unknown as DesktopAPI;
+  window.lonelyChat = { ...modelAPI, discoverModels } as unknown as DesktopAPI;
   render(<ModelManager />);
   fireEvent.change(screen.getByLabelText('Repository or file URL'), {
     target: { value: 'acme/stream-model' },
@@ -100,6 +117,72 @@ it('changes a preselected model through a Select without retaining an incompatib
   expect(screen.queryByText(/Select a projector explicitly for model-Q4_K_M.gguf/)).toBeNull();
 });
 
+it('installs selected weights/projector, activates them, and removes managed packages', async () => {
+  const entry = {
+    id: '0123456789abcdef0123456789abcdef',
+    repo: discovered.repo,
+    revision: 'main',
+    candidateId: discovered.candidates[0].id,
+    projectorId: 'mmproj-F16.gguf',
+    role: 'vision-language' as const,
+    installedAt: 123,
+    files: [
+      {
+        path: 'model-Q4_K_M.gguf',
+        relativePath: 'files/model-Q4_K_M.gguf',
+        sha256: 'a'.repeat(64),
+        sizeBytes: 4096,
+      },
+    ],
+  };
+  let state = emptyModels;
+  const installModel = vi.fn(async () => {
+    state = { ...state, installations: [entry] };
+    return state;
+  });
+  const activateModel = vi.fn(async () => {
+    state = { ...state, active: { ...state.active, 'vision-language': entry.id } };
+    return state;
+  });
+  const removeModel = vi.fn(async () => {
+    state = { ...emptyModels };
+    return state;
+  });
+  const chooseModelDirectory = vi.fn(async () => state);
+  window.lonelyChat = {
+    ...modelAPI,
+    discoverModels: async () => discovered,
+    installModel,
+    activateModel,
+    removeModel,
+    chooseModelDirectory,
+  } as unknown as DesktopAPI;
+  render(<ModelManager />);
+  fireEvent.change(screen.getByLabelText('Repository or file URL'), {
+    target: { value: 'acme/stream-model' },
+  });
+  const user = userEvent.setup();
+  await user.click(screen.getByRole('button', { name: 'Discover files' }));
+  const install = await screen.findByRole('button', { name: 'Install selected model' });
+  expect(install.hasAttribute('disabled')).toBe(true);
+  await user.click(screen.getByRole('combobox', { name: 'Vision projector companion' }));
+  await user.click(await screen.findByRole('option', { name: /mmproj-F16.gguf/i }));
+  await user.click(install);
+  await waitFor(() =>
+    expect(installModel).toHaveBeenCalledWith({
+      source: 'acme/stream-model',
+      candidateId: 'model-Q4_K_M.gguf',
+      projectorId: 'mmproj-F16.gguf',
+    }),
+  );
+  await user.click(await screen.findByRole('button', { name: /^Activate$/ }));
+  await waitFor(() => expect(activateModel).toHaveBeenCalledWith('vision-language', entry.id));
+  await user.click(await screen.findByRole('button', { name: /^Remove$/ }));
+  await waitFor(() => expect(removeModel).toHaveBeenCalledWith(entry.id));
+  await user.click(await screen.findByRole('button', { name: 'Choose folder' }));
+  expect(chooseModelDirectory).toHaveBeenCalledOnce();
+});
+
 it('shows actionable API failures and does not keep stale results from superseded searches', async () => {
   let resolveFirst!: (result: ModelDiscoveryResult) => void;
   const discoverModels = vi
@@ -111,7 +194,7 @@ it('shows actionable API failures and does not keep stale results from supersede
         }),
     )
     .mockRejectedValueOnce(new Error('Repository not found.'));
-  window.lonelyChat = { discoverModels } as unknown as DesktopAPI;
+  window.lonelyChat = { ...modelAPI, discoverModels } as unknown as DesktopAPI;
   render(<ModelManager />);
   const input = screen.getByLabelText('Repository or file URL');
   fireEvent.change(input, { target: { value: 'acme/old-repo' } });

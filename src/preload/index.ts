@@ -36,5 +36,19 @@ const api: DesktopAPI = {
   getPreferences: () => invoke('preferences:get'),
   setPreferences: (preferences) => invoke('preferences:set', preferences),
   discoverModels: (source) => invoke('models:discover', source),
+  getModelsSnapshot: () => invoke('models:snapshot'),
+  onModelsChange: (listener) => {
+    const receive = (
+      _event: Electron.IpcRendererEvent,
+      snapshot: import('../shared/model-install-contract').ModelManagerSnapshot,
+    ) => listener(snapshot);
+    ipcRenderer.on('models:change', receive);
+    return () => ipcRenderer.removeListener('models:change', receive);
+  },
+  installModel: (selection) => invoke('models:install', selection),
+  cancelModelDownload: () => invoke('models:cancel'),
+  activateModel: (role, id) => invoke('models:activate', role, id),
+  removeModel: (id) => invoke('models:remove', id),
+  chooseModelDirectory: () => invoke('models:choose-directory'),
 };
 contextBridge.exposeInMainWorld('lonelyChat', api);

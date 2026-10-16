@@ -22,7 +22,8 @@ export interface ChatAppend {
 export type ChatEvent = ChatSnapshot | ChatAppend;
 
 import type { SessionPreferences, SessionSnapshot } from './session-contract';
-import type { ModelDiscoveryResult } from './model-contract';
+import type { ModelDiscoveryResult, ModelRole } from './model-contract';
+import type { ModelInstallRequest, ModelManagerSnapshot } from './model-install-contract';
 
 /** IPC return contract: renderer methods and main handlers share the same mapped channels. */
 export interface DesktopInvocations {
@@ -35,6 +36,12 @@ export interface DesktopInvocations {
   'preferences:get': SessionPreferences;
   'preferences:set': SessionPreferences;
   'models:discover': ModelDiscoveryResult;
+  'models:snapshot': ModelManagerSnapshot;
+  'models:install': ModelManagerSnapshot;
+  'models:cancel': void;
+  'models:activate': ModelManagerSnapshot;
+  'models:remove': ModelManagerSnapshot;
+  'models:choose-directory': ModelManagerSnapshot;
 }
 
 /** Method arguments are also a shared contract, not renderer-defined strings. */
@@ -48,6 +55,12 @@ export interface DesktopArguments {
   'preferences:get': [];
   'preferences:set': [preferences: SessionPreferences];
   'models:discover': [source: string];
+  'models:snapshot': [];
+  'models:install': [selection: ModelInstallRequest];
+  'models:cancel': [];
+  'models:activate': [role: ModelRole, id: string | null];
+  'models:remove': [id: string];
+  'models:choose-directory': [];
 }
 
 export interface DesktopAPI {
@@ -62,4 +75,11 @@ export interface DesktopAPI {
   getPreferences(): Promise<SessionPreferences>;
   setPreferences(preferences: SessionPreferences): Promise<SessionPreferences>;
   discoverModels(source: string): Promise<ModelDiscoveryResult>;
+  getModelsSnapshot(): Promise<ModelManagerSnapshot>;
+  onModelsChange(listener: (snapshot: ModelManagerSnapshot) => void): () => void;
+  installModel(selection: ModelInstallRequest): Promise<ModelManagerSnapshot>;
+  cancelModelDownload(): Promise<void>;
+  activateModel(role: ModelRole, id: string | null): Promise<ModelManagerSnapshot>;
+  removeModel(id: string): Promise<ModelManagerSnapshot>;
+  chooseModelDirectory(): Promise<ModelManagerSnapshot>;
 }

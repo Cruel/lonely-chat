@@ -1,5 +1,5 @@
-import { useRef, useState, type FormEvent } from 'react';
-import { AlertTriangle, Download, Search } from 'lucide-react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { AlertTriangle, Download, Search, FolderOpen, Trash2, Square, Check } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -13,6 +13,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import type { ModelDiscoveryResult, ModelCandidate } from '../../shared/model-contract';
+import type { ModelManagerSnapshot } from '../../shared/model-install-contract';
 
 function bytes(value: number | null): string {
   if (value === null) return 'Size unknown';
@@ -29,11 +30,57 @@ function modelLabel(candidate: ModelCandidate): string {
 export function ModelManager() {
   const [source, setSource] = useState('');
   const [discovery, setDiscovery] = useState<ModelDiscoveryResult | null>(null);
+  const [discoveredInput, setDiscoveredInput] = useState('');
   const [selectedId, setSelectedId] = useState('');
   const [selectedProjector, setSelectedProjector] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [manager, setManager] = useState<ModelManagerSnapshot | null>(null);
+  const [managementError, setManagementError] = useState('');
+  const [managementBusy, setManagementBusy] = useState(false);
   const request = useRef(0);
+
+  useEffect(() => {
+    const api = window.lonelyChat;
+    if (!api) return;
+    let live = true;
+    let receivedEvent = false;
+    const unsubscribe = api.onModelsChange((snapshot) => {
+      receivedEvent = true;
+      if (live) setManager(snapshot);
+    });
+    void api
+      .getModelsSnapshot()
+      .then((snapshot) => {
+        if (live && !receivedEvent) setManager(snapshot);
+      })
+      .catch((error: unknown) => {
+        if (live)
+          setManagementError(
+            error instanceof Error ? error.message : 'Unable to load installed models.',
+          );
+      });
+    return () => {
+      live = false;
+      unsubscribe();
+    };
+  }, []);
+
+  async function manage(action: () => Promise<ModelManagerSnapshot>) {
+    if (managementBusy) return;
+    setManagementBusy(true);
+    setManagementError('');
+    try {
+      const snapshot = await action();
+      setManager(snapshot);
+    } catch (failure) {
+      setManagementError(failure instanceof Error ? failure.message : 'Model operation failed.');
+    } finally {
+      setManagementBusy(false);
+    }
+  }
+
+  const isDownloading = manager?.progress.phase !== 'idle' && !!manager;
 
   const selected = discovery?.candidates.find((candidate) => candidate.id === selectedId);
   const projectors =
@@ -41,6 +88,7 @@ export function ModelManager() {
       const projector = discovery?.projectors.find((item) => item.id === id);
       return { value: id, label: `${id} · ${bytes(projector?.sizeBytes ?? null)}` };
     }) ?? [];
+  const needsProjector = selected?.role === 'vision-language' && projectors.length > 1;
   const modelOptions =
     discovery?.candidates.map((candidate) => ({
       value: candidate.id,
@@ -68,6 +116,7 @@ export function ModelManager() {
     setBusy(true);
     setError('');
     setDiscovery(null);
+    setDiscoveredInput('');
     setSelectedId('');
     setSelectedProjector('');
     try {
@@ -76,6 +125,7 @@ export function ModelManager() {
       const result = await window.lonelyChat.discoverModels(source);
       if (request.current !== current) return;
       setDiscovery(result);
+      setDiscoveredInput(source);
       const chosen = result.candidates.find((item) => item.id === result.preselectedCandidateId);
       if (chosen) pickCandidate(chosen, result.preselectedProjectorId);
       else if (result.preselectedProjectorId) setSelectedProjector(result.preselectedProjectorId);
@@ -96,8 +146,8 @@ export function ModelManager() {
           Hugging Face model discovery
         </CardTitle>
         <CardDescription className="text-sm leading-6">
-          Browse GGUF vision/language weights and native whisper.cpp speech models. Choose an
-          artifact and any required projector; downloads arrive in a later milestone.
+          Browse and install GGUF vision/language weights or native whisper.cpp speech models.
+          Installed models remain local and can be activated without restarting the app.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -220,12 +270,45 @@ export function ModelManager() {
             )}
 
             {selected && (
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  size="lg"
+                  disabled={
+                    !manager ||
+                    isDownloading ||
+                    managementBusy ||
+                    source !== discoveredInput ||
+                    (needsProjector && !selectedProjector)
+                  }
+                  onClick={() =>
+                    void manage(() =>
+                      window.lonelyChat!.installModel({
+                        source: discoveredInput,
+                        candidateId: selected.id,
+                        projectorId:
+                          selectedProjector === 'none' ? 'none' : selectedProjector || null,
+                      }),
+                    )
+                  }
+                >
+                  <Download size={15} /> Install selected model
+                </Button>
+                {needsProjector && !selectedProjector && (
+                  <span className="text-xs text-amber-300">
+                    Choose a projector or text-only before installing.
+                  </span>
+                )}
+              </div>
+            )}
+
+            {selected && (
               <p className="text-xs text-muted-foreground" aria-live="polite">
                 Selected {selected.files.length} model file(s) · {bytes(selected.sizeBytes)}
                 {selectedProjector && selectedProjector !== 'none'
                   ? ` · projector: ${selectedProjector}`
                   : ''}
-                . Discovery only; model runtime compatibility must be checked before installation.
+                . Installation is managed locally; runtime compatibility is checked when native
+                inference is integrated.
               </p>
             )}
 
@@ -243,6 +326,107 @@ export function ModelManager() {
               </Alert>
             )}
           </div>
+        )}
+        <div className="space-y-3 border-t border-border pt-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <Label className="font-semibold text-foreground">Model storage</Label>
+            <Button
+              variant="outline"
+              disabled={
+                !manager || isDownloading || managementBusy || !!manager.installations.length
+              }
+              onClick={() => void manage(() => window.lonelyChat!.chooseModelDirectory())}
+            >
+              <FolderOpen size={15} /> Choose folder
+            </Button>
+          </div>
+          <p className="break-all text-xs text-muted-foreground">
+            {manager?.storageDirectory ?? 'Loading model storage…'}
+          </p>
+          {manager && manager.installations.length > 0 && (
+            <p className="text-xs text-muted-foreground">
+              Remove installed models before changing the storage folder.
+            </p>
+          )}
+          {manager && isDownloading && (
+            <div className="space-y-2" role="status" aria-live="polite">
+              <p className="text-xs text-foreground">
+                {manager.progress.phase === 'verifying'
+                  ? 'Verifying model files…'
+                  : `Downloading ${manager.progress.file ?? 'model files…'}`}
+              </p>
+              <progress
+                className="h-2 w-full accent-violet-500"
+                value={manager.progress.receivedBytes}
+                max={manager.progress.totalBytes ?? undefined}
+              />
+              <p className="text-xs text-muted-foreground">
+                {bytes(manager.progress.receivedBytes)} / {bytes(manager.progress.totalBytes)}
+              </p>
+              <Button
+                variant="outline"
+                onClick={() => void window.lonelyChat?.cancelModelDownload()}
+              >
+                <Square size={14} /> Cancel download
+              </Button>
+            </div>
+          )}
+        </div>
+
+        <div className="space-y-3 border-t border-border pt-4">
+          <p className="text-sm font-semibold">Installed models</p>
+          {manager?.installations.length === 0 && (
+            <p className="text-xs text-muted-foreground">No installed models yet.</p>
+          )}
+          {manager?.installations.map((entry) => {
+            const active = manager.active[entry.role] === entry.id;
+            return (
+              <div key={entry.id} className="space-y-2 rounded-md border border-border p-3">
+                <p className="break-all text-xs font-medium text-foreground">
+                  {entry.repo} · {entry.candidateId}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {entry.role === 'speech-to-text' ? 'Speech-to-text' : 'Vision/language'} ·{' '}
+                  {bytes(entry.files.reduce((sum, file) => sum + file.sizeBytes, 0))}
+                  {entry.projectorId ? ` · projector: ${entry.projectorId}` : ' · no projector'}
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    size="sm"
+                    variant={active ? 'secondary' : 'default'}
+                    disabled={isDownloading || managementBusy}
+                    onClick={() =>
+                      void manage(() =>
+                        window.lonelyChat!.activateModel(entry.role, active ? null : entry.id),
+                      )
+                    }
+                  >
+                    {active ? (
+                      <>
+                        <Check size={14} /> Deactivate
+                      </>
+                    ) : (
+                      'Activate'
+                    )}
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    disabled={isDownloading || managementBusy}
+                    onClick={() => void manage(() => window.lonelyChat!.removeModel(entry.id))}
+                  >
+                    <Trash2 size={14} /> Remove
+                  </Button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        {managementError && (
+          <Alert variant="destructive">
+            <AlertTitle>Model management error</AlertTitle>
+            <AlertDescription>{managementError}</AlertDescription>
+          </Alert>
         )}
       </CardContent>
     </Card>
