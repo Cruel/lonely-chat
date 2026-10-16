@@ -96,19 +96,13 @@ try {
       max_tokens: 128,
       temperature: 0,
       response_format: {
-        type: 'json_schema',
+        type: 'json_object',
         schema: {
           type: 'object',
           required: ['answer'],
           additionalProperties: false,
           properties: { answer: { type: 'string' } },
         },
-      },
-      json_schema: {
-        type: 'object',
-        required: ['answer'],
-        additionalProperties: false,
-        properties: { answer: { type: 'string' } },
       },
     }),
     signal: AbortSignal.timeout(120000),
@@ -121,8 +115,8 @@ try {
     throw new Error('Real CPU GGUF failed to produce structured JSON.');
   }
   if (typeof answer.answer !== 'string') {
-    console.warn(
-      'Small smoke model did not obey the requested schema; the app independently rejects such replies.',
+    throw new Error(
+      `GGUF reply does not follow requested schema: ${JSON.stringify(answer).slice(0, 200)}`,
     );
   }
   console.log(

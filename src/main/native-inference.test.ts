@@ -27,7 +27,7 @@ const server = createServer(async (request, response) => {
   let body='';
   for await (const chunk of request) body += chunk;
   const parsed = JSON.parse(body);
-  if (parsed.response_format?.type !== 'json_schema' || parsed.messages[1].content.indexOf('campfire') < 0) {
+  if (parsed.response_format?.type !== 'json_object' || parsed.messages[1].content.indexOf('campfire') < 0) {
     response.writeHead(400);
     response.end(JSON.stringify({error:'invalid structured request'}));
     return;
@@ -44,7 +44,8 @@ process.on('SIGTERM',()=>server.close(()=>process.exit(0)));
 describe('native llama.cpp adapter', () => {
   it('creates bounded structured prompts and rejects untrusted output atomically', () => {
     const prompt = nativeChatRequest({ context: 'campfire', cycle: 1 });
-    expect(prompt.response_format.type).toBe('json_schema');
+    expect(prompt.response_format.type).toBe('json_object');
+    expect(prompt).not.toHaveProperty('json_schema');
     expect(
       prompt.response_format.schema.properties.messages.items.properties.author.enum,
     ).toContain('pixelpilot');
@@ -121,6 +122,8 @@ describe('native llama.cpp adapter', () => {
     );
     expect(parseInferenceResult(result, 1000).messages[0].text).toBe('warm fire');
     expect(launchedArgs).toContain('--no-webui');
+    // Current pinned llama-server uses --load-mode; --no-mmap was removed upstream.
+    expect(launchedArgs).not.toContain('--no-mmap');
     expect(
       launchedArgs.slice(launchedArgs.indexOf('--host'), launchedArgs.indexOf('--host') + 2),
     ).toEqual(['--host', '127.0.0.1']);
@@ -146,6 +149,26 @@ describe('native llama.cpp adapter', () => {
     );
     await provider.stop();
   });
+
+  it.runIf(Boolean(process.env.LONELY_CHAT_CPU_SMOKE_MODEL))(
+    'runs the exact application launcher against a real staged llama-server and GGUF when provided',
+    async () => {
+      const modelPath = process.env.LONELY_CHAT_CPU_SMOKE_MODEL!;
+      const provider = new NativeInference({
+        executable: bundledLlamaServer(process.cwd(), false, '', process.platform, process.arch),
+        resolveModel: async () => ({ modelPath, projectorPath: null }),
+      });
+      providers.push(provider);
+      await provider.prepare(new AbortController().signal);
+      const output = await provider.generate(
+        { context: 'Playing chess.', cycle: 1 },
+        new AbortController().signal,
+      );
+      expect(parseInferenceResult(output, Date.now()).messages.length).toBeGreaterThan(0);
+      await provider.stop();
+    },
+    120000,
+  );
 
   it('uses out-of-ASAR platform-specific runtime paths', () => {
     expect(bundledLlamaServer('/app', false, '/resources', 'linux', 'x64')).toBe(

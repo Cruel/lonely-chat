@@ -64,8 +64,9 @@ export function nativeChatRequest(input: InferenceInput) {
     stream: false,
     temperature: 0.7,
     max_tokens: 800,
-    response_format: { type: 'json_schema', schema: INFERENCE_SCHEMA },
-    json_schema: INFERENCE_SCHEMA,
+    // Pinned llama-server b11700 enforces this schema via json_object. Its json_schema
+    // response_format variant silently ignored the schema for tested GGUF models.
+    response_format: { type: 'json_object', schema: INFERENCE_SCHEMA },
     messages: [
       {
         role: 'system',
@@ -242,7 +243,6 @@ export class NativeInference implements InferenceProvider {
       '--api-key',
       key,
       '--no-webui',
-      '--no-mmap', // Explicitly release file handles on stop (especially on Windows).
       '--ctx-size',
       '4096',
       '--n-gpu-layers',
