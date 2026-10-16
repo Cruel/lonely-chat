@@ -26,6 +26,7 @@ import {
   type DesktopSection,
 } from '@/components/desktop-sidebar';
 import { ModelManager } from '@/components/model-manager';
+import { NumericSettingCombobox } from '@/components/numeric-setting-combobox';
 import { useChat } from '../use-chat';
 import { useSession } from '../use-session';
 import {
@@ -33,6 +34,7 @@ import {
   CYCLE_INTERVAL_OPTIONS,
   HISTORY_AGE_OPTIONS,
   HISTORY_COUNT_OPTIONS,
+  INFERENCE_TIMEOUT_OPTIONS,
   type InferenceMode,
   type SessionPreferences,
 } from '../../shared/session-contract';
@@ -58,52 +60,6 @@ function SectionHeading({ title, description }: { title: string; description: st
 function Panel({ children, className = '' }: { children: React.ReactNode; className?: string }) {
   return (
     <div className={`rounded-xl border border-border bg-card p-5 ${className}`}>{children}</div>
-  );
-}
-
-interface SettingSelectProps {
-  readonly id: string;
-  readonly title: string;
-  readonly value: number;
-  readonly options: readonly number[];
-  readonly format: (value: number) => string;
-  readonly disabled: boolean;
-  readonly onChange: (value: number) => void;
-}
-
-function SettingSelect({
-  id,
-  title,
-  value,
-  options,
-  format,
-  disabled,
-  onChange,
-}: SettingSelectProps) {
-  return (
-    <div>
-      <Label htmlFor={id} className="text-sm text-zinc-200">
-        {title}
-      </Label>
-      <Select
-        items={options.map((item) => ({ value: String(item), label: format(item) }))}
-        value={String(value)}
-        onValueChange={(next) => {
-          if (next !== null && next !== undefined) onChange(Number(next));
-        }}
-      >
-        <SelectTrigger id={id} disabled={disabled} className="mt-2 w-full text-sm">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {options.map((item) => (
-            <SelectItem key={item} value={String(item)}>
-              {format(item)}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-    </div>
   );
 }
 
@@ -472,41 +428,55 @@ export function DesktopPage() {
                   history are not saved.
                 </p>
                 <div className="mt-5 grid gap-5 sm:grid-cols-2">
-                  <SettingSelect
+                  <NumericSettingCombobox
                     id="simulation-pace"
                     title="Inference cycle"
+                    name="cycleIntervalMs"
                     value={session.preferences.cycleIntervalMs}
                     options={CYCLE_INTERVAL_OPTIONS}
-                    format={(value) => `${(value / 1000).toFixed(1)} seconds`}
+                    unit="seconds"
                     disabled={!session.ready || session.busy}
                     onChange={(cycleIntervalMs) => update({ cycleIntervalMs })}
                   />
-                  <SettingSelect
+                  <NumericSettingCombobox
                     id="baseline-duration"
                     title="Initial baseline"
+                    name="baselineMs"
                     value={session.preferences.baselineMs}
                     options={BASELINE_OPTIONS}
-                    format={(value) => `${(value / 1000).toFixed(1)} s`}
+                    unit="seconds"
                     disabled={!session.ready || session.busy}
                     onChange={(baselineMs) => update({ baselineMs })}
                   />
-                  <SettingSelect
+                  <NumericSettingCombobox
                     id="history-max-count"
                     title="History entry limit"
+                    name="historyMaxCount"
                     value={session.preferences.historyMaxCount}
                     options={HISTORY_COUNT_OPTIONS}
-                    format={String}
+                    unit="entries"
                     disabled={!session.ready || session.busy}
                     onChange={(historyMaxCount) => update({ historyMaxCount })}
                   />
-                  <SettingSelect
+                  <NumericSettingCombobox
                     id="history-max-age"
                     title="History time horizon"
+                    name="historyMaxAgeMs"
                     value={session.preferences.historyMaxAgeMs}
                     options={HISTORY_AGE_OPTIONS}
-                    format={(value) => `${value / 1000} s`}
+                    unit="seconds"
                     disabled={!session.ready || session.busy}
                     onChange={(historyMaxAgeMs) => update({ historyMaxAgeMs })}
+                  />
+                  <NumericSettingCombobox
+                    id="inference-timeout"
+                    title="Inference timeout"
+                    name="inferenceTimeoutMs"
+                    value={session.preferences.inferenceTimeoutMs}
+                    options={INFERENCE_TIMEOUT_OPTIONS}
+                    unit="seconds"
+                    disabled={!session.ready || session.busy}
+                    onChange={(inferenceTimeoutMs) => update({ inferenceTimeoutMs })}
                   />
                 </div>
                 <div className="mt-5 max-w-sm">

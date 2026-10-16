@@ -227,6 +227,7 @@ async function boot(): Promise<void> {
       executable: bundledLlamaServer(app.getAppPath(), app.isPackaged, process.resourcesPath),
       resolveModel: () => installs.activeVisionFiles(),
       reasoningEnabled: () => session.getPreferences().reasoningEnabled,
+      inferenceTimeoutMs: () => session.getPreferences().inferenceTimeoutMs,
     }),
   );
   session.subscribe((status) => {

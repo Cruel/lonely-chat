@@ -25,7 +25,7 @@ describe('versioned preferences', () => {
     expect(await settings.read()).toEqual(DEFAULT_PREFERENCES);
     expect(await settings.write(pace(1500))).toEqual(pace(1500));
     const data = JSON.parse(await readFile(path.join(directory, 'preferences.json'), 'utf8'));
-    expect(data).toEqual({ version: 3, simulation: pace(1500) });
+    expect(data).toEqual({ version: 4, simulation: pace(1500) });
     expect(await settings.read()).toEqual(pace(1500));
     expect(await readdir(directory)).toEqual(['preferences.json']);
     expect(JSON.stringify(data)).not.toContain('manual context');
@@ -63,12 +63,16 @@ describe('versioned preferences', () => {
     ).toMatchObject({ baselineMs: 1000, historyMaxCount: 16, historyMaxAgeMs: 30000 });
     expect(
       JSON.parse(await readFile(path.join(directory, 'preferences.json'), 'utf8')).version,
-    ).toBe(3);
+    ).toBe(4);
   });
 
   it('migrates existing version-two preferences with reasoning disabled by default', async () => {
     const { store: settings, directory } = await store();
-    const { reasoningEnabled: _ignored, ...previous } = pace(5000);
+    const {
+      reasoningEnabled: _ignoredReasoning,
+      inferenceTimeoutMs: _ignoredTimeout,
+      ...previous
+    } = pace(5000);
     await writeFile(
       path.join(directory, 'preferences.json'),
       JSON.stringify({ version: 2, simulation: previous }),
@@ -80,6 +84,52 @@ describe('versioned preferences', () => {
     expect(await settings.read()).toMatchObject({ reasoningEnabled: true });
   });
 
+  it('migrates version-three settings and retains custom values', async () => {
+    const { store: settings, directory } = await store();
+    const { inferenceTimeoutMs: _ignoredTimeout, ...previous } = pace(7500);
+    await writeFile(
+      path.join(directory, 'preferences.json'),
+      JSON.stringify({
+        version: 3,
+        simulation: { ...previous, reasoningEnabled: true, historyMaxCount: 45 },
+      }),
+    );
+    expect(await settings.read()).toEqual({
+      ...pace(7500),
+      reasoningEnabled: true,
+      historyMaxCount: 45,
+    });
+    const custom = {
+      ...pace(2700),
+      baselineMs: 2300,
+      historyMaxCount: 45,
+      historyMaxAgeMs: 90000,
+      inferenceTimeoutMs: 180000,
+    };
+    expect(await settings.write(custom)).toEqual(custom);
+    expect(await settings.read()).toEqual(custom);
+  });
+
+  it('rejects out-of-range, fractional-count and malformed preferences', async () => {
+    const { store: settings } = await store();
+    for (const bad of [
+      { cycleIntervalMs: 100 },
+      { cycleIntervalMs: -1 },
+      { baselineMs: 61000 },
+      { historyMaxCount: 1.5 },
+      { historyMaxCount: 300 },
+      { historyMaxAgeMs: 0 },
+      { inferenceTimeoutMs: 9999 },
+      { inferenceTimeoutMs: 3601000 },
+      { inferenceTimeoutMs: 12345 },
+      { inferenceTimeoutMs: Number.POSITIVE_INFINITY },
+    ]) {
+      await expect(settings.write({ ...DEFAULT_PREFERENCES, ...bad })).rejects.toThrow(
+        /Invalid simulation preferences/,
+      );
+    }
+  });
+
   it('refuses unexpected keys or future versions without overwriting existing values', async () => {
     const { store: settings, directory } = await store();
     await settings.write(pace(3000));
@@ -88,7 +138,7 @@ describe('versioned preferences', () => {
     await writeFile(
       path.join(directory, 'preferences.json'),
       JSON.stringify({
-        version: 4,
+        version: 5,
         simulation: { cycleIntervalMs: 3000 },
       }),
     );

@@ -6,7 +6,7 @@ import {
   type SessionPreferences,
 } from '../shared/session-contract';
 
-const VERSION = 3;
+const VERSION = 4;
 const FILE = 'preferences.json';
 
 /** Only approved UI preferences are persisted, never manual context or observed content. */
@@ -32,15 +32,17 @@ export class PreferencesStore {
         }
         return validatePreferences(legacy);
       }
-      if (document.version !== 2 && document.version !== VERSION) {
+      if (document.version !== 2 && document.version !== 3 && document.version !== VERSION) {
         throw new Error('Unsupported preferences version.');
       }
       const validated = validatePreferences(document.simulation);
       const keys = Object.keys(document.simulation as Record<string, unknown>);
       if (
-        keys.length !== (document.version === 2 ? 4 : 5) ||
+        keys.length !== (document.version === 2 ? 4 : document.version === 3 ? 5 : 6) ||
         (document.version === 2 && 'reasoningEnabled' in (document.simulation as object)) ||
-        (document.version === VERSION && !('reasoningEnabled' in (document.simulation as object)))
+        (document.version !== 2 && !('reasoningEnabled' in (document.simulation as object))) ||
+        (document.version !== VERSION && 'inferenceTimeoutMs' in (document.simulation as object)) ||
+        (document.version === VERSION && !('inferenceTimeoutMs' in (document.simulation as object)))
       ) {
         throw new Error('Incomplete simulation preferences.');
       }

@@ -14,8 +14,6 @@ const ROSTER = Object.fromEntries(AUDIENCE.map(({ author, color }) => [author, c
 const AUTHORS = AUDIENCE.map(({ author }) => author);
 const MAX_REPLY_BYTES = 1024 * 1024;
 const STARTUP_TIMEOUT_MS = 300_000;
-// CPU-only models can be slow. A generous timeout must not be confused with token limits.
-const INFERENCE_TIMEOUT_MS = 600_000;
 const COMPLETION_MAX_TOKENS = 2048;
 
 /** Schema is a generation hint, never a substitute for parseInferenceResult. */
@@ -209,6 +207,8 @@ interface NativeOptions {
   readonly allocatePort?: () => Promise<number>;
   /** Evaluated when a new worker launches; defaults to non-thinking inference. */
   readonly reasoningEnabled?: () => boolean;
+  /** Evaluated per request so saved changes apply without restarting the model. */
+  readonly inferenceTimeoutMs?: () => number;
 }
 
 /**
@@ -362,6 +362,7 @@ export class NativeInference implements InferenceProvider {
     if (signal.aborted || !this.lifecycle || !this.port || !this.apiKey) {
       throw new Error('Native inference cancelled.');
     }
+    const timeoutMs = this.options.inferenceTimeoutMs?.() ?? 600_000;
     try {
       const response = await (this.options.fetcher ?? fetch)(
         `http://127.0.0.1:${this.port}/v1/chat/completions`,
@@ -369,11 +370,7 @@ export class NativeInference implements InferenceProvider {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.apiKey}` },
           body: JSON.stringify(nativeChatRequest(input)),
-          signal: AbortSignal.any([
-            signal,
-            this.lifecycle.signal,
-            AbortSignal.timeout(INFERENCE_TIMEOUT_MS),
-          ]),
+          signal: AbortSignal.any([signal, this.lifecycle.signal, AbortSignal.timeout(timeoutMs)]),
         },
       );
       const body = await readBounded(response);
@@ -390,7 +387,7 @@ export class NativeInference implements InferenceProvider {
         throw new Error('Native inference cancelled.');
       if (error instanceof Error && error.name === 'TimeoutError') {
         throw new Error(
-          `llama.cpp inference timed out after ${INFERENCE_TIMEOUT_MS / 1000} seconds. The CPU model did not finish within the request deadline.`,
+          `llama.cpp inference timed out after ${timeoutMs / 1000} seconds. The model did not finish within the configured request deadline.`,
         );
       }
       throw error;

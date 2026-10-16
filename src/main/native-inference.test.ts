@@ -184,6 +184,41 @@ describe('native llama.cpp adapter', () => {
     ).toEqual(['--reasoning', 'on']);
   });
 
+  it('applies the latest configured timeout per request and identifies request timeouts', async () => {
+    let timeoutMs = 25;
+    const provider = new NativeInference({
+      executable: process.execPath,
+      inferenceTimeoutMs: () => timeoutMs,
+      resolveModel: async () => ({ modelPath: '/installed/weights.gguf', projectorPath: null }),
+      launch: (_binary, args, options) => {
+        const port = args[args.indexOf('--port') + 1];
+        const key = args[args.indexOf('--api-key') + 1];
+        return spawn(
+          process.execPath,
+          ['--input-type=module', '-e', childScript, port, key],
+          options,
+        );
+      },
+      fetcher: async (url, options) => {
+        if (String(url).endsWith('/health')) return fetch(url, options);
+        const signal = options?.signal;
+        if (!signal) throw new Error('Expected request abort signal');
+        return new Promise<never>((_resolve, reject) => {
+          if (signal.aborted) reject(signal.reason);
+          else signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        });
+      },
+    });
+    providers.push(provider);
+    await expect(
+      provider.generate({ context: 'campfire', cycle: 1 }, new AbortController().signal),
+    ).rejects.toThrow('timed out after 0.025 seconds');
+    timeoutMs = 50;
+    await expect(
+      provider.generate({ context: 'campfire', cycle: 2 }, new AbortController().signal),
+    ).rejects.toThrow('timed out after 0.05 seconds');
+  });
+
   it('fails clearly on missing binary and permits stop while loading', async () => {
     const provider = new NativeInference({
       executable: '/nonexistent/llama-server',

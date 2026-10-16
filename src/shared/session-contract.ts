@@ -45,6 +45,8 @@ export interface SessionPreferences {
   readonly historyMaxAgeMs: number;
   /** Thinking/reasoning mode for the native model, applied at the next server start. */
   readonly reasoningEnabled: boolean;
+  /** Hard deadline for each native llama.cpp completion request. */
+  readonly inferenceTimeoutMs: number;
 }
 
 export const DEFAULT_PREFERENCES: SessionPreferences = {
@@ -53,11 +55,35 @@ export const DEFAULT_PREFERENCES: SessionPreferences = {
   historyMaxCount: 32,
   historyMaxAgeMs: 60000,
   reasoningEnabled: false,
+  inferenceTimeoutMs: 600_000,
 };
 export const CYCLE_INTERVAL_OPTIONS = [1500, 3000, 5000] as const;
 export const BASELINE_OPTIONS = [0, 1000, 3000] as const;
 export const HISTORY_COUNT_OPTIONS = [16, 32, 64] as const;
 export const HISTORY_AGE_OPTIONS = [30000, 60000, 300000] as const;
+export const INFERENCE_TIMEOUT_OPTIONS = [30000, 120000, 300000, 600000, 1200000] as const;
+
+/** Editable settings use strict bounds to limit timers, memory and prompt size. */
+export const NUMERIC_PREFERENCE_LIMITS = {
+  cycleIntervalMs: { min: 500, max: 60000, step: 100 },
+  baselineMs: { min: 0, max: 60000, step: 100 },
+  historyMaxCount: { min: 1, max: 256, step: 1 },
+  historyMaxAgeMs: { min: 1000, max: 3600000, step: 1000 },
+  inferenceTimeoutMs: { min: 10000, max: 3600000, step: 1000 },
+} as const;
+
+export type NumericPreference = keyof typeof NUMERIC_PREFERENCE_LIMITS;
+
+export function validNumericPreference(key: NumericPreference, value: unknown): value is number {
+  const { min, max, step } = NUMERIC_PREFERENCE_LIMITS[key];
+  return (
+    typeof value === 'number' &&
+    Number.isSafeInteger(value) &&
+    value >= min &&
+    value <= max &&
+    value % step === 0
+  );
+}
 
 export function validateContext(context: unknown): string {
   if (typeof context !== 'string' || context.trim().length === 0) {
@@ -74,13 +100,14 @@ export function validatePreferences(value: unknown): SessionPreferences {
   const record = value as Record<string, unknown>;
   if (
     Object.keys(record).some((key) => !Object.hasOwn(DEFAULT_PREFERENCES, key)) ||
-    !CYCLE_INTERVAL_OPTIONS.some((interval) => interval === record.cycleIntervalMs) ||
-    (record.baselineMs !== undefined &&
-      !BASELINE_OPTIONS.some((value) => value === record.baselineMs)) ||
+    !validNumericPreference('cycleIntervalMs', record.cycleIntervalMs) ||
+    (record.baselineMs !== undefined && !validNumericPreference('baselineMs', record.baselineMs)) ||
     (record.historyMaxCount !== undefined &&
-      !HISTORY_COUNT_OPTIONS.some((value) => value === record.historyMaxCount)) ||
+      !validNumericPreference('historyMaxCount', record.historyMaxCount)) ||
     (record.historyMaxAgeMs !== undefined &&
-      !HISTORY_AGE_OPTIONS.some((value) => value === record.historyMaxAgeMs)) ||
+      !validNumericPreference('historyMaxAgeMs', record.historyMaxAgeMs)) ||
+    (record.inferenceTimeoutMs !== undefined &&
+      !validNumericPreference('inferenceTimeoutMs', record.inferenceTimeoutMs)) ||
     (record.reasoningEnabled !== undefined && typeof record.reasoningEnabled !== 'boolean')
   ) {
     throw new Error('Invalid simulation preferences.');
