@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { FakeInference, parseChatBatch } from './fake-inference';
+import { FakeInference, parseChatBatch, parseInferenceResult } from './fake-inference';
 
 describe('deterministic inference boundary', () => {
   it('produces stable validated replies from a manual context and cycle', async () => {
@@ -8,9 +8,10 @@ describe('deterministic inference boundary', () => {
     const first = await provider.generate({ context: 'new game', cycle: 1 }, signal);
     const same = await provider.generate({ context: 'new game', cycle: 1 }, signal);
     expect(first).toEqual(same);
-    const messages = parseChatBatch(first);
-    expect(messages.map((message) => message.offsetMs)).toEqual([0, 900, 2100]);
-    expect(messages[0].text).toContain('new game');
+    const result = parseInferenceResult(first, 1000);
+    expect(result.events).toEqual([{ kind: 'context', summary: 'new game', observedAt: 1000 }]);
+    expect(result.messages.map((message) => message.offsetMs)).toEqual([0, 900, 2100]);
+    expect(result.messages[0].text).toContain('new game');
   });
   it('rejects malformed data atomically before it becomes chat', () => {
     for (const invalid of [

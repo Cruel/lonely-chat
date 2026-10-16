@@ -22,7 +22,13 @@ import { ChatView } from '@/components/chat-view';
 import { ModelManager } from '@/components/model-manager';
 import { useChat } from '../use-chat';
 import { useSession } from '../use-session';
-import { CYCLE_INTERVAL_OPTIONS, type InferenceMode } from '../../shared/session-contract';
+import {
+  BASELINE_OPTIONS,
+  CYCLE_INTERVAL_OPTIONS,
+  HISTORY_AGE_OPTIONS,
+  HISTORY_COUNT_OPTIONS,
+  type InferenceMode,
+} from '../../shared/session-contract';
 
 export function OverlayPage() {
   const { snapshot } = useChat();
@@ -155,6 +161,11 @@ export function DesktopPage() {
                     : 'Stopped'}
               </span>
             </div>
+            {session.status.warning && (
+              <p role="status" className="mt-3 text-sm text-amber-300">
+                {session.status.warning}
+              </p>
+            )}
             {(session.actionError || session.status.error) && (
               <p role="alert" className="mt-3 text-sm text-rose-300">
                 {session.actionError || session.status.error}
@@ -182,7 +193,10 @@ export function DesktopPage() {
                 value={String(session.preferences.cycleIntervalMs)}
                 onValueChange={(interval) => {
                   if (interval)
-                    void session.updatePreferences({ cycleIntervalMs: Number(interval) });
+                    void session.updatePreferences({
+                      ...session.preferences,
+                      cycleIntervalMs: Number(interval),
+                    });
                 }}
               >
                 <SelectTrigger
@@ -204,6 +218,122 @@ export function DesktopPage() {
                 Saved on this computer; manual context is not saved.
               </span>
             </div>
+            <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <div>
+                <Label htmlFor="baseline-duration" className="text-xs">
+                  Initial baseline
+                </Label>
+                <Select
+                  items={BASELINE_OPTIONS.map((value) => ({
+                    value: String(value),
+                    label: `${(value / 1000).toFixed(1)} s`,
+                  }))}
+                  value={String(session.preferences.baselineMs)}
+                  onValueChange={(value) => {
+                    if (value)
+                      void session.updatePreferences({
+                        ...session.preferences,
+                        baselineMs: Number(value),
+                      });
+                  }}
+                >
+                  <SelectTrigger
+                    id="baseline-duration"
+                    disabled={!session.ready || session.busy}
+                    className="mt-1 w-full text-sm"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {BASELINE_OPTIONS.map((value) => (
+                      <SelectItem key={value} value={String(value)}>
+                        {(value / 1000).toFixed(1)} s
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label htmlFor="history-max-count" className="text-xs">
+                  History entry limit
+                </Label>
+                <Select
+                  items={HISTORY_COUNT_OPTIONS.map((value) => ({
+                    value: String(value),
+                    label: String(value),
+                  }))}
+                  value={String(session.preferences.historyMaxCount)}
+                  onValueChange={(value) => {
+                    if (value)
+                      void session.updatePreferences({
+                        ...session.preferences,
+                        historyMaxCount: Number(value),
+                      });
+                  }}
+                >
+                  <SelectTrigger
+                    id="history-max-count"
+                    disabled={!session.ready || session.busy}
+                    className="mt-1 w-full text-sm"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {HISTORY_COUNT_OPTIONS.map((value) => (
+                      <SelectItem key={value} value={String(value)}>
+                        {value}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label htmlFor="history-max-age" className="text-xs">
+                  History time horizon
+                </Label>
+                <Select
+                  items={HISTORY_AGE_OPTIONS.map((value) => ({
+                    value: String(value),
+                    label: `${value / 1000} s`,
+                  }))}
+                  value={String(session.preferences.historyMaxAgeMs)}
+                  onValueChange={(value) => {
+                    if (value)
+                      void session.updatePreferences({
+                        ...session.preferences,
+                        historyMaxAgeMs: Number(value),
+                      });
+                  }}
+                >
+                  <SelectTrigger
+                    id="history-max-age"
+                    disabled={!session.ready || session.busy}
+                    className="mt-1 w-full text-sm"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {HISTORY_AGE_OPTIONS.map((value) => (
+                      <SelectItem key={value} value={String(value)}>
+                        {value / 1000} s
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <p className="mt-4 text-xs text-zinc-500" aria-label="Inference diagnostics">
+              Latest inference{' '}
+              {session.status.latestInferenceMs === null
+                ? '—'
+                : `${Math.round(session.status.latestInferenceMs)} ms`}
+              {' · '}Smoothed{' '}
+              {session.status.smoothedInferenceMs === null
+                ? '—'
+                : `${session.status.smoothedInferenceMs} ms`}
+              {' · '}Playback window {session.status.playbackWindowMs} ms
+              {' · '}Dropped observations {session.status.droppedObservations}
+            </p>
           </div>
           <ModelManager />
           <div className="rounded-xl border border-zinc-800 bg-[#1b1b24] p-5">

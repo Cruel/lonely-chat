@@ -6,6 +6,7 @@ import { PreferencesStore } from './preferences-store';
 import { DEFAULT_PREFERENCES } from '../shared/session-contract';
 
 const dirs: string[] = [];
+const pace = (cycleIntervalMs: number) => ({ ...DEFAULT_PREFERENCES, cycleIntervalMs });
 async function store(): Promise<{ store: PreferencesStore; directory: string }> {
   const directory = await mkdtemp(path.join(tmpdir(), 'lonely-chat-prefs-'));
   dirs.push(directory);
@@ -22,10 +23,10 @@ describe('versioned preferences', () => {
   it('starts with defaults, saves only approved preferences, and reloads them', async () => {
     const { store: settings, directory } = await store();
     expect(await settings.read()).toEqual(DEFAULT_PREFERENCES);
-    expect(await settings.write({ cycleIntervalMs: 1500 })).toEqual({ cycleIntervalMs: 1500 });
+    expect(await settings.write(pace(1500))).toEqual(pace(1500));
     const data = JSON.parse(await readFile(path.join(directory, 'preferences.json'), 'utf8'));
-    expect(data).toEqual({ version: 1, simulation: { cycleIntervalMs: 1500 } });
-    expect(await settings.read()).toEqual({ cycleIntervalMs: 1500 });
+    expect(data).toEqual({ version: 2, simulation: pace(1500) });
+    expect(await settings.read()).toEqual(pace(1500));
     expect(await readdir(directory)).toEqual(['preferences.json']);
     expect(JSON.stringify(data)).not.toContain('manual context');
   });
@@ -33,30 +34,47 @@ describe('versioned preferences', () => {
   it('serializes concurrent preference saves without colliding or losing the final value', async () => {
     const { store: settings, directory } = await store();
     const values = await Promise.all([
-      settings.write({ cycleIntervalMs: 1500 }),
-      settings.write({ cycleIntervalMs: 3000 }),
-      settings.write({ cycleIntervalMs: 5000 }),
+      settings.write(pace(1500)),
+      settings.write(pace(3000)),
+      settings.write(pace(5000)),
     ]);
-    expect(values).toEqual([
-      { cycleIntervalMs: 1500 },
-      { cycleIntervalMs: 3000 },
-      { cycleIntervalMs: 5000 },
-    ]);
-    expect(await settings.read()).toEqual({ cycleIntervalMs: 5000 });
+    expect(values).toEqual([pace(1500), pace(3000), pace(5000)]);
+    expect(await settings.read()).toEqual(pace(5000));
     expect(await readdir(directory)).toEqual(['preferences.json']);
+  });
+
+  it('migrates version-one cycle-only preferences to the expanded settings', async () => {
+    const { store: settings, directory } = await store();
+    await writeFile(
+      path.join(directory, 'preferences.json'),
+      JSON.stringify({
+        version: 1,
+        simulation: { cycleIntervalMs: 1500 },
+      }),
+    );
+    expect(await settings.read()).toEqual(pace(1500));
+    expect(
+      await settings.write({
+        ...pace(1500),
+        baselineMs: 1000,
+        historyMaxCount: 16,
+        historyMaxAgeMs: 30000,
+      }),
+    ).toMatchObject({ baselineMs: 1000, historyMaxCount: 16, historyMaxAgeMs: 30000 });
+    expect(
+      JSON.parse(await readFile(path.join(directory, 'preferences.json'), 'utf8')).version,
+    ).toBe(2);
   });
 
   it('refuses unexpected keys or future versions without overwriting existing values', async () => {
     const { store: settings, directory } = await store();
-    await settings.write({ cycleIntervalMs: 3000 });
-    await expect(
-      settings.write({ cycleIntervalMs: 3000, manualContext: 'private' }),
-    ).rejects.toThrow();
-    expect(await settings.read()).toEqual({ cycleIntervalMs: 3000 });
+    await settings.write(pace(3000));
+    await expect(settings.write({ ...pace(3000), manualContext: 'private' })).rejects.toThrow();
+    expect(await settings.read()).toEqual(pace(3000));
     await writeFile(
       path.join(directory, 'preferences.json'),
       JSON.stringify({
-        version: 2,
+        version: 3,
         simulation: { cycleIntervalMs: 3000 },
       }),
     );

@@ -39,6 +39,7 @@ describe('native session integration', () => {
 
   it('rejects an invalid native event without partially publishing its chat', async () => {
     const chat = new ChatService();
+    const clock = new FakeClock();
     const provider: InferenceProvider = {
       generate: async () => ({
         events: [{ kind: 'context', summary: 'wrong', ageMs: -999 }],
@@ -47,8 +48,13 @@ describe('native session integration', () => {
         ],
       }),
     };
-    const session = new SessionController(chat, undefined, new FakeClock(), undefined, provider);
+    const session = new SessionController(chat, undefined, clock, undefined, provider);
     session.start('manual context', 'native');
+    await flushMicrotasks();
+    expect(session.snapshot().warning).toMatch(/Retrying/);
+    clock.advance(500);
+    await flushMicrotasks();
+    clock.advance(1000);
     await flushMicrotasks();
     expect(session.snapshot().phase).toBe('error');
     expect(session.snapshot().error).toMatch(/invalid event/);
@@ -86,9 +92,13 @@ describe('native session integration', () => {
     expect(session.snapshot().pendingMessages).toBe(1);
     clock.advance(1500);
     await flushMicrotasks();
+    expect(session.snapshot().warning).toMatch(/Retrying/);
+    clock.advance(500);
+    await flushMicrotasks();
+    clock.advance(1000);
+    await flushMicrotasks();
     expect(session.snapshot().phase).toBe('error');
-    expect(session.snapshot().pendingMessages).toBe(1);
-    clock.advance(600);
+    expect(session.snapshot().pendingMessages).toBe(0);
     expect(chat.snapshot().messages.map((message) => message.text)).toEqual(['still queued']);
     session.stop();
   });

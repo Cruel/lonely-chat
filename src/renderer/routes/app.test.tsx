@@ -4,7 +4,11 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import userEvent from '@testing-library/user-event';
 import { DesktopPage } from './app';
 import type { DesktopAPI } from '../../shared/chat-contract';
-import type { SessionSnapshot } from '../../shared/session-contract';
+import {
+  DEFAULT_PREFERENCES,
+  type SessionPreferences,
+  type SessionSnapshot,
+} from '../../shared/session-contract';
 import type { ModelManagerSnapshot } from '../../shared/model-install-contract';
 
 const emptyModels: ModelManagerSnapshot = {
@@ -23,6 +27,22 @@ const modelsAPI = {
   chooseModelDirectory: async () => emptyModels,
 };
 
+const emptyStatus: SessionSnapshot = {
+  phase: 'stopped',
+  revision: 0,
+  error: null,
+  warning: null,
+  cycle: 0,
+  retryAttempt: 0,
+  pendingMessages: 0,
+  mode: 'fake',
+  events: [],
+  latestInferenceMs: null,
+  smoothedInferenceMs: null,
+  playbackWindowMs: 3000,
+  droppedObservations: 0,
+};
+
 Element.prototype.scrollIntoView = () => {};
 
 afterEach(() => {
@@ -31,15 +51,7 @@ afterEach(() => {
 });
 
 it('starts and stops manual-context simulation, shows status and only saves preferences', async () => {
-  let status: SessionSnapshot = {
-    phase: 'stopped',
-    revision: 0,
-    error: null,
-    cycle: 0,
-    pendingMessages: 0,
-    mode: 'fake',
-    events: [],
-  };
+  let status: SessionSnapshot = { ...emptyStatus };
   const startSession = vi.fn(async (manualContext: string) => {
     expect(manualContext).toBe('I am playing a spooky game');
     status = { ...status, phase: 'running', cycle: 1, revision: 1, pendingMessages: 2 };
@@ -49,7 +61,7 @@ it('starts and stops manual-context simulation, shows status and only saves pref
     status = { ...status, phase: 'stopped', revision: 2, pendingMessages: 0 };
     return status;
   });
-  const setPreferences = vi.fn(async (preferences: { cycleIntervalMs: number }) => preferences);
+  const setPreferences = vi.fn(async (preferences: SessionPreferences) => preferences);
   window.lonelyChat = {
     ...modelsAPI,
     getChatSnapshot: async () => ({ type: 'snapshot', sequence: 0, messages: [] }),
@@ -60,7 +72,7 @@ it('starts and stops manual-context simulation, shows status and only saves pref
     onSessionChange: () => () => {},
     startSession,
     stopSession,
-    getPreferences: async () => ({ cycleIntervalMs: 3000 }),
+    getPreferences: async () => DEFAULT_PREFERENCES,
     setPreferences,
     discoverModels: async () => {
       throw new Error('Not used in this test');
@@ -85,7 +97,9 @@ it('starts and stops manual-context simulation, shows status and only saves pref
   const user = userEvent.setup();
   await user.click(pace);
   await user.click(await screen.findByRole('option', { name: '1.5 seconds' }));
-  await waitFor(() => expect(setPreferences).toHaveBeenCalledWith({ cycleIntervalMs: 1500 }));
+  await waitFor(() =>
+    expect(setPreferences).toHaveBeenCalledWith({ ...DEFAULT_PREFERENCES, cycleIntervalMs: 1500 }),
+  );
   expect(JSON.stringify(setPreferences.mock.calls)).not.toContain('spooky game');
 });
 
@@ -96,29 +110,13 @@ it('shows a rejected start error and remains ready to retry', async () => {
     onChatEvent: () => () => {},
     publishSample: async () => {},
     getOverlayUrl: async () => 'http://127.0.0.1:45939/overlay',
-    getSessionSnapshot: async () => ({
-      phase: 'stopped',
-      revision: 0,
-      error: null,
-      cycle: 0,
-      pendingMessages: 0,
-      mode: 'fake',
-      events: [],
-    }),
+    getSessionSnapshot: async () => ({ ...emptyStatus }),
     onSessionChange: () => () => {},
     startSession: async () => {
       throw new Error('Enter some context to start the test simulation.');
     },
-    stopSession: async () => ({
-      phase: 'stopped',
-      revision: 0,
-      error: null,
-      cycle: 0,
-      pendingMessages: 0,
-      mode: 'fake',
-      events: [],
-    }),
-    getPreferences: async () => ({ cycleIntervalMs: 3000 }),
+    stopSession: async () => ({ ...emptyStatus }),
+    getPreferences: async () => DEFAULT_PREFERENCES,
     setPreferences: async (value) => value,
     discoverModels: async () => {
       throw new Error('Not used in this test');

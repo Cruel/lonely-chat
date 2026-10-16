@@ -55,9 +55,11 @@ export const INFERENCE_SCHEMA = {
 
 /** Prompt snapshots contain no paths, installation metadata or IPC capabilities. */
 export function nativeChatRequest(input: InferenceInput) {
-  const history = (input.recentEvents ?? [])
-    .slice(-10)
-    .map((event) => ({ kind: event.kind, summary: event.summary }));
+  const history = (input.recentEvents ?? []).map((event) => ({
+    kind: event.kind,
+    summary: event.summary,
+    observedAt: event.observedAt,
+  }));
   return {
     stream: false,
     temperature: 0.7,
@@ -70,7 +72,9 @@ export function nativeChatRequest(input: InferenceInput) {
         content:
           'You simulate a small friendly live-stream audience. From the context, infer at most 3 short events and write 1-4 natural viewer chat messages. ' +
           'Only use the allowed author identities. ageMs is how many milliseconds before now an event happened (use 0 for ongoing context). ' +
-          'offsetMs is when to display a chat message after this reply, between 0 and 60000. Return only JSON matching the required schema.',
+          'offsetMs is when to display a chat message after this reply, within the requested playbackWindowMs. ' +
+          'Use the provided observations and labeled transcripts to react to new content; maintain continuity with recent chat and events. ' +
+          'Return only JSON matching the required schema.',
       },
       {
         role: 'user',
@@ -78,6 +82,12 @@ export function nativeChatRequest(input: InferenceInput) {
           manualContext: input.context,
           cycle: input.cycle,
           recentEvents: history,
+          recentTranscripts: input.recentTranscripts ?? [],
+          observations: input.observations ?? [],
+          recentChat: input.recentChat ?? [],
+          roster: input.roster ?? AUDIENCE,
+          observationWindow: input.boundary ?? null,
+          playbackWindowMs: input.playbackWindowMs ?? 3000,
         }),
       },
     ],

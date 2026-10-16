@@ -75,6 +75,11 @@ describe('session lifecycle with deterministic clock', () => {
     controller.subscribe((status) => snapshots.push(status.phase));
     controller.start('playing a game');
     await flush();
+    expect(controller.snapshot().warning).toMatch(/Retrying/);
+    clock.advance(500);
+    await flush();
+    clock.advance(1000);
+    await flush();
     expect(controller.snapshot()).toMatchObject({ phase: 'error', pendingMessages: 0 });
     expect(controller.snapshot().error).toMatch(/invalid chat message/);
     clock.advance(9000);

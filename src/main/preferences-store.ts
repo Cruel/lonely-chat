@@ -6,7 +6,7 @@ import {
   type SessionPreferences,
 } from '../shared/session-contract';
 
-const VERSION = 1;
+const VERSION = 2;
 const FILE = 'preferences.json';
 
 /** Only approved UI preferences are persisted, never manual context or observed content. */
@@ -24,10 +24,22 @@ export class PreferencesStore {
         throw new Error('Invalid preferences document.');
       }
       const document = raw as Record<string, unknown>;
+      if (document.version === 1) {
+        // Migrate existing cycle-only settings without losing the user's selected pace.
+        const legacy = document.simulation as Record<string, unknown>;
+        if (!legacy || Object.keys(legacy).length !== 1) {
+          throw new Error('Invalid legacy simulation preferences.');
+        }
+        return validatePreferences(legacy);
+      }
       if (document.version !== VERSION) {
         throw new Error('Unsupported preferences version.');
       }
-      return validatePreferences(document.simulation);
+      const validated = validatePreferences(document.simulation);
+      if (Object.keys(document.simulation as Record<string, unknown>).length !== 4) {
+        throw new Error('Incomplete simulation preferences.');
+      }
+      return validated;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { ...DEFAULT_PREFERENCES };
       throw error;

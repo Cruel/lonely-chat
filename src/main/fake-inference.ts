@@ -1,10 +1,25 @@
 import type { ScheduledChat } from './chat-scheduler';
-import type { InferredEvent } from '../shared/session-contract';
+import type {
+  CapturedObservation,
+  InferredEvent,
+  LabeledTranscript,
+} from '../shared/session-contract';
 
 export interface InferenceInput {
-  readonly recentEvents?: readonly InferredEvent[];
   readonly context: string;
   readonly cycle: number;
+  readonly playbackWindowMs?: number;
+  readonly recentEvents?: readonly InferredEvent[];
+  readonly recentTranscripts?: readonly LabeledTranscript[];
+  readonly observations?: readonly CapturedObservation[];
+  readonly recentChat?: readonly { author: string; text: string; presentedAt: number }[];
+  readonly roster?: readonly { author: string; color: string }[];
+  readonly boundary?: {
+    fromSequence: number;
+    throughSequence: number;
+    fromMs: number;
+    throughMs: number;
+  };
 }
 
 export interface InferenceProvider {
@@ -40,7 +55,10 @@ export class FakeInference implements InferenceProvider {
         offsetMs: 2100,
       },
     ];
-    return { messages };
+    return {
+      events: cycle === 1 ? [{ kind: 'context', summary: subject, ageMs: 0 }] : [],
+      messages,
+    };
   }
 }
 
