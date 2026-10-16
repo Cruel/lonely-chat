@@ -1,4 +1,5 @@
 import type { ScheduledChat } from './chat-scheduler';
+import type { VideoFrame } from '../shared/video-contract';
 import type {
   CapturedObservation,
   InferredEvent,
@@ -12,6 +13,7 @@ export interface InferenceInput {
   readonly recentEvents?: readonly InferredEvent[];
   readonly recentTranscripts?: readonly LabeledTranscript[];
   readonly observations?: readonly CapturedObservation[];
+  readonly frames?: readonly VideoFrame[];
   readonly recentChat?: readonly { author: string; text: string; presentedAt: number }[];
   readonly roster?: readonly { author: string; color: string }[];
   readonly boundary?: {

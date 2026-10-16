@@ -25,6 +25,9 @@ const modelsAPI = {
   activateModel: async () => emptyModels,
   removeModel: async () => emptyModels,
   chooseModelDirectory: async () => emptyModels,
+  listDisplaySources: async () => [],
+  selectVideoSource: async () => {},
+  submitVideoFrame: async () => {},
 };
 
 const emptyStatus: SessionSnapshot = {

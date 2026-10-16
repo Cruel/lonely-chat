@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { app, BrowserWindow, ipcMain, shell, dialog } from 'electron';
+import { app, BrowserWindow, ipcMain, shell, dialog, desktopCapturer } from 'electron';
 import { ChatService, publishSample } from './chat-service';
 import { SessionController } from './session-controller';
 import { PreferencesStore } from './preferences-store';
@@ -23,6 +23,16 @@ const installs = new ModelInstallManager(app.getPath('userData'), models);
 let session: SessionController;
 let mainWindow: BrowserWindow | null = null;
 let quitting = false;
+let selectedDisplaySource: Electron.DesktopCapturerSource | null = null;
+let videoSelectionGeneration = 0;
+
+async function listDesktopSources(): Promise<Electron.DesktopCapturerSource[]> {
+  return desktopCapturer.getSources({
+    types: ['screen', 'window'],
+    thumbnailSize: { width: 0, height: 0 },
+    fetchWindowIcons: false,
+  });
+}
 
 function trustedSender(event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent): boolean {
   if (
@@ -75,6 +85,41 @@ function registerHandlers(): void {
       }
       return installs.remove(id);
     },
+    'video:list-displays': async () =>
+      (await listDesktopSources()).map((source) => ({
+        id: `display:${source.id}`,
+        label: source.name,
+        kind: source.id.startsWith('screen:') ? ('screen' as const) : ('window' as const),
+      })),
+    'video:select': async (sourceId: string | null) => {
+      if (
+        sourceId !== null &&
+        (typeof sourceId !== 'string' ||
+          sourceId.length > 250 ||
+          (!sourceId.startsWith('display:') && !/^camera:[^\s]{1,180}$/.test(sourceId)))
+      ) {
+        throw new Error('Invalid video source.');
+      }
+      const generation = ++videoSelectionGeneration;
+      let source: Electron.DesktopCapturerSource | null = null;
+      if (sourceId?.startsWith('display:')) {
+        source =
+          (await listDesktopSources()).find((item) => `display:${item.id}` === sourceId) ?? null;
+      }
+      // Enumeration can finish after the user has already disabled/switched the input.
+      if (generation !== videoSelectionGeneration) return;
+      // Disabling capture clears the frame ring without discarding the chosen desktop
+      // source. Chromium needs it armed before the next user-gesture capture request.
+      if (sourceId !== null) selectedDisplaySource = source;
+      session.selectVideoSource(
+        source ? sourceId : sourceId?.startsWith('camera:') ? sourceId : null,
+      );
+      if (sourceId?.startsWith('display:') && !source) {
+        throw new Error('The selected screen or window is no longer available.');
+      }
+    },
+    'video:frame': (frame: import('../shared/video-contract').VideoFrame) =>
+      session.recordVideoFrame(frame),
     'models:choose-directory': async () => {
       if (!mainWindow) throw new Error('Desktop window is unavailable.');
       const choice = await dialog.showOpenDialog(mainWindow, {
@@ -116,6 +161,16 @@ function openMainWindow(): void {
     },
   });
   mainWindow = window;
+  window.webContents.session.setPermissionRequestHandler((contents, permission, callback) => {
+    callback(
+      contents === window.webContents &&
+        (permission === 'media' || permission === 'display-capture'),
+    );
+  });
+  window.webContents.session.setDisplayMediaRequestHandler((_request, callback) => {
+    if (selectedDisplaySource) callback({ video: selectedDisplaySource });
+  });
+  window.webContents.setBackgroundThrottling(false);
   window.on('closed', () => {
     if (mainWindow === window) mainWindow = null;
   });
@@ -170,15 +225,17 @@ function openMainWindow(): void {
           !result.previewReady ||
           result.session.phase !== 'running' ||
           result.apiKeys.join(',') !==
-            'activateModel,cancelModelDownload,chooseModelDirectory,discoverModels,getChatSnapshot,getModelsSnapshot,getOverlayUrl,getPreferences,getSessionSnapshot,installModel,onChatEvent,onModelsChange,onSessionChange,publishSample,removeModel,setPreferences,startSession,stopSession'
+            'activateModel,cancelModelDownload,chooseModelDirectory,discoverModels,getChatSnapshot,getModelsSnapshot,getOverlayUrl,getPreferences,getSessionSnapshot,installModel,listDisplaySources,onChatEvent,onModelsChange,onSessionChange,publishSample,removeModel,selectVideoSource,setPreferences,startSession,stopSession,submitVideoFrame'
         ) {
           throw new Error(`Electron smoke failed: ${JSON.stringify(result)}`);
         }
         window.minimize();
-        await new Promise((resolve) => setTimeout(resolve, 1150));
+        await new Promise((resolve) => setTimeout(resolve, 2500));
         const visibleWhileMinimized = chat.snapshot();
         if (visibleWhileMinimized.sequence < 4 || session.snapshot().phase !== 'running') {
-          throw new Error('Simulation stopped publishing while minimized');
+          throw new Error(
+            `Simulation stopped publishing while minimized: sequence=${visibleWhileMinimized.sequence}, status=${JSON.stringify(session.snapshot())}`,
+          );
         }
         await window.webContents.executeJavaScript('window.lonelyChat.stopSession()');
         const retained = chat.snapshot().sequence;
@@ -280,4 +337,7 @@ app.on('will-quit', () => {
   ipcMain.removeHandler('models:activate');
   ipcMain.removeHandler('models:remove');
   ipcMain.removeHandler('models:choose-directory');
+  ipcMain.removeHandler('video:list-displays');
+  ipcMain.removeHandler('video:select');
+  ipcMain.removeHandler('video:frame');
 });

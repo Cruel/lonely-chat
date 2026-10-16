@@ -22,6 +22,7 @@ export interface ChatAppend {
 export type ChatEvent = ChatSnapshot | ChatAppend;
 
 import type { InferenceMode, SessionPreferences, SessionSnapshot } from './session-contract';
+import type { VideoFrame, VideoSource } from './video-contract';
 import type { ModelDiscoveryResult, ModelRole } from './model-contract';
 import type { ModelInstallRequest, ModelManagerSnapshot } from './model-install-contract';
 
@@ -42,6 +43,9 @@ export interface DesktopInvocations {
   'models:activate': ModelManagerSnapshot;
   'models:remove': ModelManagerSnapshot;
   'models:choose-directory': ModelManagerSnapshot;
+  'video:list-displays': VideoSource[];
+  'video:select': void;
+  'video:frame': void;
 }
 
 /** Method arguments are also a shared contract, not renderer-defined strings. */
@@ -61,6 +65,9 @@ export interface DesktopArguments {
   'models:activate': [role: ModelRole, id: string | null];
   'models:remove': [id: string];
   'models:choose-directory': [];
+  'video:list-displays': [];
+  'video:select': [sourceId: string | null];
+  'video:frame': [frame: VideoFrame];
 }
 
 export interface DesktopAPI {
@@ -82,4 +89,7 @@ export interface DesktopAPI {
   activateModel(role: ModelRole, id: string | null): Promise<ModelManagerSnapshot>;
   removeModel(id: string): Promise<ModelManagerSnapshot>;
   chooseModelDirectory(): Promise<ModelManagerSnapshot>;
+  listDisplaySources(): Promise<VideoSource[]>;
+  selectVideoSource(sourceId: string | null): Promise<void>;
+  submitVideoFrame(frame: VideoFrame): Promise<void>;
 }

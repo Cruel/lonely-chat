@@ -50,5 +50,8 @@ const api: DesktopAPI = {
   activateModel: (role, id) => invoke('models:activate', role, id),
   removeModel: (id) => invoke('models:remove', id),
   chooseModelDirectory: () => invoke('models:choose-directory'),
+  listDisplaySources: () => invoke('video:list-displays'),
+  selectVideoSource: (sourceId) => invoke('video:select', sourceId),
+  submitVideoFrame: (frame) => invoke('video:frame', frame),
 };
 contextBridge.exposeInMainWorld('lonelyChat', api);

@@ -27,6 +27,7 @@ import {
 } from '@/components/desktop-sidebar';
 import { ModelManager } from '@/components/model-manager';
 import { NumericSettingCombobox } from '@/components/numeric-setting-combobox';
+import { VideoInput } from '@/components/video-input';
 import { useChat } from '../use-chat';
 import { useSession } from '../use-session';
 import {
@@ -327,7 +328,7 @@ export function DesktopPage() {
             </section>
           )}
 
-          {section === 'inputs' && (
+          <div hidden={section !== 'inputs'}>
             <section aria-label="Inputs">
               <SectionHeading
                 title="Inputs"
@@ -335,11 +336,7 @@ export function DesktopPage() {
               />
               <div className="grid gap-5 lg:grid-cols-2">
                 <Panel>
-                  <h3 className="font-medium">Video source</h3>
-                  <p className="mt-2 text-sm text-zinc-400">
-                    Camera, screen, and window capture will become available with live video
-                    inference (#10).
-                  </p>
+                  <VideoInput visible={section === 'inputs'} />
                 </Panel>
                 <Panel>
                   <h3 className="font-medium">Audio sources</h3>
@@ -350,7 +347,7 @@ export function DesktopPage() {
                 </Panel>
               </div>
             </section>
-          )}
+          </div>
 
           {section === 'logs' && (
             <section aria-label="Logs">

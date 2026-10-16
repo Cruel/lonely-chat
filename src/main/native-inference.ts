@@ -60,6 +60,35 @@ export function nativeChatRequest(input: InferenceInput) {
     summary: event.summary,
     observedAt: event.observedAt,
   }));
+  const context = JSON.stringify({
+    manualContext: input.context,
+    cycle: input.cycle,
+    recentEvents: history,
+    recentTranscripts: input.recentTranscripts ?? [],
+    observations: input.observations ?? [],
+    recentChat: input.recentChat ?? [],
+    roster: input.roster ?? AUDIENCE,
+    observationWindow: input.boundary ?? null,
+    playbackWindowMs: input.playbackWindowMs ?? 3000,
+    videoFrames: (input.frames ?? []).map(({ observedAt, sourceId, width, height }) => ({
+      observedAt,
+      sourceId,
+      width,
+      height,
+    })),
+  });
+  const content = input.frames?.length
+    ? [
+        { type: 'text', text: context },
+        ...input.frames.flatMap((frame, index) => [
+          {
+            type: 'text',
+            text: `Visual frame ${index + 1}, observedAt=${frame.observedAt} ms, source=${frame.sourceId}`,
+          },
+          { type: 'image_url', image_url: { url: frame.dataUrl } },
+        ]),
+      ]
+    : context;
   return {
     stream: false,
     temperature: 0.7,
@@ -72,24 +101,15 @@ export function nativeChatRequest(input: InferenceInput) {
         role: 'system',
         content:
           'You simulate a small friendly live-stream audience. From the context, infer at most 3 short events and write 1-4 natural viewer chat messages. ' +
-          'Only use the allowed author identities. ageMs is how many milliseconds before now an event happened (use 0 for ongoing context). ' +
+          'Only use the allowed author identities. Each visual frame is ordered and labeled with its original observation time. Infer visual events from the images, not their metadata alone. ' +
+          'ageMs is how many milliseconds before the observationWindow.throughMs an event happened (use 0 for ongoing context). ' +
           'offsetMs is when to display a chat message after this reply, within the requested playbackWindowMs. ' +
           'Use the provided observations and labeled transcripts to react to new content; maintain continuity with recent chat and events. ' +
           'Return only JSON matching the required schema.',
       },
       {
         role: 'user',
-        content: JSON.stringify({
-          manualContext: input.context,
-          cycle: input.cycle,
-          recentEvents: history,
-          recentTranscripts: input.recentTranscripts ?? [],
-          observations: input.observations ?? [],
-          recentChat: input.recentChat ?? [],
-          roster: input.roster ?? AUDIENCE,
-          observationWindow: input.boundary ?? null,
-          playbackWindowMs: input.playbackWindowMs ?? 3000,
-        }),
+        content,
       },
     ],
   };

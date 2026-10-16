@@ -2,6 +2,8 @@ import type { ChatService } from './chat-service';
 import { ChatScheduler, systemClock, type TimerClock } from './chat-scheduler';
 import { FakeInference, parseInferenceResult, type InferenceProvider } from './fake-inference';
 import { InferenceHistory, type CycleInput } from './inference-history';
+import { VideoFrameBuffer } from './video-frame-buffer';
+import type { VideoFrame } from '../shared/video-contract';
 import {
   DEFAULT_PREFERENCES,
   validateContext,
@@ -38,6 +40,7 @@ export class SessionController {
   private subscribers = new Set<(snapshot: SessionSnapshot) => void>();
   private readonly scheduler: ChatScheduler;
   private readonly history: InferenceHistory;
+  private readonly video = new VideoFrameBuffer();
   private readonly chat: ChatService;
   private epoch = 0;
   private abort: AbortController | null = null;
@@ -95,6 +98,15 @@ export class SessionController {
     this.refreshDropped();
   }
 
+  /** The preview may run independently of inference; frames remain memory-only. */
+  selectVideoSource(sourceId: string | null): void {
+    this.video.selectSource(sourceId);
+  }
+
+  recordVideoFrame(frame: VideoFrame): void {
+    this.video.push(frame, this.clock.wallNow());
+  }
+
   recordTranscript(transcript: LabeledTranscript): void {
     this.requireActive();
     this.history.recordTranscript(transcript, this.clock.wallNow());
@@ -111,7 +123,10 @@ export class SessionController {
     if (this.state.phase === 'running' || this.state.phase === 'starting') {
       throw new Error('The simulation is already running.');
     }
-    const context = validateContext(rawContext);
+    const context =
+      rawContext === '' && mode === 'native' && this.video.active
+        ? 'React to the live video input.'
+        : validateContext(rawContext);
     if (mode !== 'fake' && mode !== 'native') throw new Error('Unknown inference mode.');
     if (mode === 'native' && !this.nativeInference) {
       throw new Error('The native inference runtime is not configured.');
@@ -192,7 +207,11 @@ export class SessionController {
       .messages.filter(
         (message) => Number(message.id.slice('chat-'.length)) > this.chatStartSequence,
       );
-    const input = this.history.snapshot(this.context, cycle, now, this.playbackWindow(), chat);
+    const snapshot = this.history.snapshot(this.context, cycle, now, this.playbackWindow(), chat);
+    const input: CycleInput = {
+      ...snapshot,
+      frames: this.video.sample(snapshot.boundary.fromMs, now, cycle === 1),
+    };
     this.refreshDropped();
     this.setState({ cycle, retryAttempt: 0, warning: null });
     const cycleStarted = this.clock.now();
