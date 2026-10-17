@@ -22,6 +22,7 @@ export interface ChatAppend {
 export type ChatEvent = ChatSnapshot | ChatAppend;
 
 import type { InferenceMode, SessionPreferences, SessionSnapshot } from './session-contract';
+import type { FloatingChatSettings, FloatingChatSnapshot } from './floating-chat-contract';
 import type { AudienceSnapshot } from './audience-contract';
 import type { NativeServiceStatus } from './native-service-contract';
 import type { VideoFrame, VideoSource } from './video-contract';
@@ -34,6 +35,10 @@ export interface DesktopInvocations {
   'chat:snapshot': ChatSnapshot;
   'chat:sample': void;
   'overlay:url': string;
+  'floating:get': FloatingChatSnapshot;
+  'floating:open': FloatingChatSnapshot;
+  'floating:close': FloatingChatSnapshot;
+  'floating:configure': FloatingChatSnapshot;
   'session:snapshot': SessionSnapshot;
   'session:start': SessionSnapshot;
   'session:stop': SessionSnapshot;
@@ -71,6 +76,10 @@ export interface DesktopArguments {
   'chat:snapshot': [];
   'chat:sample': [];
   'overlay:url': [];
+  'floating:get': [];
+  'floating:open': [];
+  'floating:close': [];
+  'floating:configure': [settings: FloatingChatSettings];
   'session:snapshot': [];
   'session:start': [manualContext: string, mode?: InferenceMode];
   'session:stop': [];
@@ -108,6 +117,11 @@ export interface DesktopAPI {
   onChatEvent(listener: (event: ChatEvent) => void): () => void;
   publishSample(): Promise<void>;
   getOverlayUrl(): Promise<string>;
+  getFloatingChat(): Promise<FloatingChatSnapshot>;
+  openFloatingChat(): Promise<FloatingChatSnapshot>;
+  closeFloatingChat(): Promise<FloatingChatSnapshot>;
+  configureFloatingChat(settings: FloatingChatSettings): Promise<FloatingChatSnapshot>;
+  onFloatingChatChange(listener: (state: FloatingChatSnapshot) => void): () => void;
   getSessionSnapshot(): Promise<SessionSnapshot>;
   onSessionChange(listener: (status: SessionSnapshot) => void): () => void;
   startSession(manualContext: string, mode?: InferenceMode): Promise<SessionSnapshot>;

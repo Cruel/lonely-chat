@@ -22,6 +22,18 @@ const api: DesktopAPI = {
   },
   publishSample: () => invoke('chat:sample'),
   getOverlayUrl: () => invoke('overlay:url'),
+  getFloatingChat: () => invoke('floating:get'),
+  openFloatingChat: () => invoke('floating:open'),
+  closeFloatingChat: () => invoke('floating:close'),
+  configureFloatingChat: (settings) => invoke('floating:configure', settings),
+  onFloatingChatChange: (listener) => {
+    const receive = (
+      _event: Electron.IpcRendererEvent,
+      status: import('../shared/floating-chat-contract').FloatingChatSnapshot,
+    ) => listener(status);
+    ipcRenderer.on('floating:change', receive);
+    return () => ipcRenderer.removeListener('floating:change', receive);
+  },
   getSessionSnapshot: () => invoke('session:snapshot'),
   onSessionChange: (listener) => {
     const receive = (

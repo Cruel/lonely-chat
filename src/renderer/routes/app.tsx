@@ -20,6 +20,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { ChatView } from '@/components/chat-view';
+import { FloatingChatControls } from '@/components/floating-chat-controls';
 import {
   DesktopSidebar,
   DESKTOP_SECTIONS,
@@ -57,7 +58,13 @@ import {
 export function OverlayPage() {
   const { snapshot } = useChat();
   return (
-    <main className="h-dvh bg-transparent">
+    <main
+      className={
+        new URLSearchParams(window.location.search).get('background') === 'opaque'
+          ? 'h-dvh bg-background'
+          : 'h-dvh bg-transparent'
+      }
+    >
       <ChatView compact messages={snapshot.messages} />
     </main>
   );
@@ -341,6 +348,9 @@ export function DesktopPage() {
                         <ExternalLink size={16} /> Open overlay
                       </Button>
                     )}
+                  </Panel>
+                  <Panel>
+                    <FloatingChatControls />
                   </Panel>
                   <Panel>
                     <h3 className="flex items-center gap-2 font-medium">

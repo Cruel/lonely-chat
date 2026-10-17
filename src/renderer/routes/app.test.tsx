@@ -18,6 +18,25 @@ const emptyModels: ModelManagerSnapshot = {
   progress: { phase: 'idle', file: null, receivedBytes: 0, totalBytes: null },
 };
 const modelsAPI = {
+  getFloatingChat: async () => ({
+    open: false,
+    settings: { width: 420, height: 600, decorated: true, transparent: false, alwaysOnTop: false },
+    warning: null,
+  }),
+  openFloatingChat: async () => ({
+    open: true,
+    settings: { width: 420, height: 600, decorated: true, transparent: false, alwaysOnTop: false },
+    warning: null,
+  }),
+  closeFloatingChat: async () => ({
+    open: false,
+    settings: { width: 420, height: 600, decorated: true, transparent: false, alwaysOnTop: false },
+    warning: null,
+  }),
+  configureFloatingChat: async (
+    settings: import('../../shared/floating-chat-contract').FloatingChatSettings,
+  ) => ({ open: false, settings, warning: null }),
+  onFloatingChatChange: () => () => {},
   retrySession: async () => ({ ...emptyStatus }),
   getNativeStatus: async () => ({ revision: 0, phase: 'stopped' as const, error: null }),
   onNativeChange: () => () => {},

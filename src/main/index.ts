@@ -8,6 +8,7 @@ import { DEFAULT_PREFERENCES, validatePreferences } from '../shared/session-cont
 import { AudienceService } from './audience-service';
 import { FakeInference } from './fake-inference';
 import { OverlayServer } from './overlay-server';
+import { FloatingChatWindowController } from './floating-chat-window';
 import { ModelDiscovery } from './model-discovery';
 import { ModelInstallManager } from './model-install-manager';
 import { NativeInference } from './native-inference';
@@ -22,6 +23,34 @@ const preloadPath = path.join(__dirname, '../preload/preload.cjs');
 const devOrigin = process.env.LONELY_CHAT_RENDERER_URL;
 const chat = new ChatService();
 const overlay = new OverlayServer(chat, rendererDirectory, devOrigin);
+const floating = new FloatingChatWindowController(
+  (options) => {
+    const window = new BrowserWindow({
+      ...options,
+      minWidth: 240,
+      minHeight: 240,
+      title: 'Lonely Chat — Floating Chat',
+      backgroundColor: options.transparent ? '#00000000' : '#101015',
+      autoHideMenuBar: true,
+      webPreferences: {
+        sandbox: true,
+        contextIsolation: true,
+        nodeIntegration: false,
+        webSecurity: true,
+      },
+    });
+    // Unlike the desktop window, this window has no preload or privileged IPC.
+    window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    window.webContents.on('will-navigate', (event, url) => {
+      const target = new URL(url);
+      if (target.origin !== new URL(overlay.url).origin || target.pathname !== '/overlay') {
+        event.preventDefault();
+      }
+    });
+    return window;
+  },
+  () => overlay.url,
+);
 const preferenceStore = new PreferencesStore(app.getPath('userData'));
 const audioConfig = new AudioConfigStore(app.getPath('userData'));
 const models = new ModelDiscovery();
@@ -69,6 +98,12 @@ function registerHandlers(): void {
       publishSample(chat);
     },
     'overlay:url': () => overlay.url,
+    'floating:get': () => floating.snapshot(),
+    'floating:open': () => floating.open(),
+    'floating:close': () => floating.close(),
+    'floating:configure': (
+      settings: import('../shared/floating-chat-contract').FloatingChatSettings,
+    ) => floating.configure(settings),
     'session:snapshot': () => session.snapshot(),
     'session:start': (
       context: string,
@@ -372,9 +407,49 @@ function openMainWindow(): void {
           !result.previewReady ||
           result.session.phase !== 'running' ||
           result.apiKeys.join(',') !==
-            'activateModel,audioDisconnected,cancelModelDownload,chooseModelDirectory,discoverModels,getAudience,getAudioCapabilities,getAudioConfiguration,getAudioStatus,getChatSnapshot,getModelsSnapshot,getNativeStatus,getOverlayUrl,getPreferences,getSessionSnapshot,installModel,listDisplaySources,onAudienceChange,onAudioChange,onChatEvent,onModelsChange,onNativeChange,onSessionChange,publishSample,regenerateAudience,removeAudioInput,removeModel,retryAudio,retrySession,selectVideoSource,setAudioConfiguration,setAudioLabel,setPreferences,startAudio,startSession,stopAudio,stopSession,submitAudioSegment,submitVideoFrame'
+            'activateModel,audioDisconnected,cancelModelDownload,chooseModelDirectory,closeFloatingChat,configureFloatingChat,discoverModels,getAudience,getAudioCapabilities,getAudioConfiguration,getAudioStatus,getChatSnapshot,getFloatingChat,getModelsSnapshot,getNativeStatus,getOverlayUrl,getPreferences,getSessionSnapshot,installModel,listDisplaySources,onAudienceChange,onAudioChange,onChatEvent,onFloatingChatChange,onModelsChange,onNativeChange,onSessionChange,openFloatingChat,publishSample,regenerateAudience,removeAudioInput,removeModel,retryAudio,retrySession,selectVideoSource,setAudioConfiguration,setAudioLabel,setPreferences,startAudio,startSession,stopAudio,stopSession,submitAudioSegment,submitVideoFrame'
         ) {
           throw new Error(`Electron smoke failed: ${JSON.stringify(result)}`);
+        }
+        const floatingState = await window.webContents.executeJavaScript(
+          'window.lonelyChat.openFloatingChat()',
+        );
+        const captureWindow = BrowserWindow.getAllWindows().find((item) => item !== window);
+        if (!floatingState.open || !captureWindow) {
+          throw new Error('Floating capture window failed to open');
+        }
+        const captureInitial = await captureWindow.webContents.executeJavaScript(`(async () => {
+          for (let attempt = 0; attempt < 100; attempt++) {
+            if (document.querySelector('[role="log"]')?.textContent?.includes('pixelpilot')) break;
+            await new Promise(resolve => setTimeout(resolve, 50));
+          }
+          return {
+            visible: document.querySelector('[role="log"]')?.textContent?.includes('pixelpilot'),
+            privileged: !!window.lonelyChat
+          };
+        })()`);
+        if (!captureInitial.visible || captureInitial.privileged) {
+          throw new Error('Floating capture did not receive safe public chat');
+        }
+        const beforeFloatingMessage = chat.snapshot().sequence;
+        await window.webContents.executeJavaScript('window.lonelyChat.publishSample()');
+        const latestText = chat.snapshot().messages.at(-1)?.text;
+        const captureUpdated = await captureWindow.webContents.executeJavaScript(`(async () => {
+          for (let attempt = 0; attempt < 100; attempt++) {
+            if (document.querySelector('[role="log"]')?.textContent?.includes(${JSON.stringify(latestText)})) return true;
+            await new Promise(resolve => setTimeout(resolve, 50));
+          }
+          return false;
+        })()`);
+        const floatingClosed = await window.webContents.executeJavaScript(
+          'window.lonelyChat.closeFloatingChat()',
+        );
+        if (
+          !captureUpdated ||
+          floatingClosed.open ||
+          chat.snapshot().sequence !== beforeFloatingMessage + 1
+        ) {
+          throw new Error('Floating capture changed chat delivery or failed to close');
         }
         window.minimize();
         await new Promise((resolve) => setTimeout(resolve, 2500));
@@ -396,7 +471,7 @@ function openMainWindow(): void {
         if (restarted.phase !== 'running') throw new Error('Simulation did not restart');
         session.stop();
         console.info(
-          'PASS: Electron preload IPC, Start/Stop/Restart, minimized playback, retained chat',
+          'PASS: Electron preload IPC, floating window presentation/isolation, Start/Stop/Restart, minimized playback, retained chat',
         );
         app.quit();
       })().catch((error: unknown) => {
@@ -472,6 +547,10 @@ async function boot(): Promise<void> {
       mainWindow.webContents.send('session:change', status);
   });
   registerHandlers();
+  floating.subscribe((state) => {
+    if (mainWindow && !mainWindow.isDestroyed())
+      mainWindow.webContents.send('floating:change', state);
+  });
   chat.subscribe((event: ChatEvent) => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('chat:event', event);
   });
@@ -489,7 +568,7 @@ app
     app.quit();
   });
 app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0 && !quitting) openMainWindow();
+  if (!mainWindow && !quitting) openMainWindow();
 });
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
@@ -516,6 +595,10 @@ app.on('will-quit', () => {
   ipcMain.removeHandler('chat:snapshot');
   ipcMain.removeHandler('chat:sample');
   ipcMain.removeHandler('overlay:url');
+  ipcMain.removeHandler('floating:get');
+  ipcMain.removeHandler('floating:open');
+  ipcMain.removeHandler('floating:close');
+  ipcMain.removeHandler('floating:configure');
   ipcMain.removeHandler('session:snapshot');
   ipcMain.removeHandler('session:start');
   ipcMain.removeHandler('session:stop');
