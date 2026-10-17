@@ -6,10 +6,10 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const resources = process.argv[2];
 const target = `${process.platform}-${process.arch}`;
 const binary = path.join(
-  root,
-  'native',
+  ...(resources ? [path.resolve(resources)] : [root, 'native']),
   'llama',
   target,
   'bin',

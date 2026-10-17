@@ -26,6 +26,7 @@
     "package:windows": "node scripts/stage-llama.mjs win32-x64 && node scripts/stage-whisper.mjs win32-x64 && pnpm build && electron-builder --win",
     "package:mac": "node scripts/stage-llama.mjs darwin-arm64 && node scripts/stage-whisper.mjs darwin-arm64 && pnpm build && electron-builder --mac --arm64",
     "smoke:electron": "pnpm build && node scripts/smoke-electron.mjs",
+    "certify:package": "node scripts/certify-package.mjs",
     "format": "vp fmt src scripts vite.config.ts --write",
     "format:check": "vp fmt src scripts vite.config.ts --check",
     "lint": "vp lint src scripts vite.config.ts"

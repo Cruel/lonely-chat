@@ -5,16 +5,19 @@ import { fileURLToPath } from 'node:url';
 
 const target = `${process.platform}-${process.arch}`;
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const executable = path.join(
-  root,
-  'native',
+const resources = process.argv[2];
+const whisperDirectory = path.join(
+  ...(resources ? [path.resolve(resources)] : [root, 'native']),
   'whisper',
+);
+const executable = path.join(
+  whisperDirectory,
   target,
   'bin',
   process.platform === 'win32' ? 'lonely-whisper-worker.exe' : 'lonely-whisper-worker',
 );
 await access(executable);
-const marker = await readFile(path.join(root, 'native', 'whisper', target, '.release'), 'utf8');
+const marker = await readFile(path.join(whisperDirectory, target, '.release'), 'utf8');
 if (!marker.startsWith('d1be6fde11ac6e0407606b4e42fe72d34add8037:')) {
   throw new Error('Native whisper.cpp worker is not pinned.');
 }
