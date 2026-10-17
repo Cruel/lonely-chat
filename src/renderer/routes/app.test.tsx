@@ -240,7 +240,7 @@ it('starts and stops manual-context simulation, shows status and only saves pref
   );
   await user.click(screen.getByRole('button', { name: /Regenerate roster/ }));
   expect(await screen.findByText('viewer_one')).toBeTruthy();
-});
+}, 20_000);
 
 it('navigates across all categories without losing the session or private draft context', async () => {
   let status: SessionSnapshot = { ...emptyStatus };

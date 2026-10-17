@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { spawn } from 'node:child_process';
+import path from 'node:path';
 import { NativeInference, extractNativeChat, nativeChatRequest } from './native-inference';
 import { AUTHOR_PLACEHOLDER } from '../shared/audience-contract';
 import { DEFAULT_PREFERENCES } from '../shared/session-contract';
@@ -519,16 +520,16 @@ describe('native llama.cpp adapter', () => {
 
   it('uses out-of-ASAR platform-specific runtime paths', () => {
     expect(bundledLlamaServer('/app', false, '/resources', 'linux', 'x64')).toBe(
-      '/app/native/llama/linux-x64/bin/llama-server',
+      path.join('/app', 'native', 'llama', 'linux-x64', 'bin', 'llama-server'),
     );
     expect(bundledLlamaServer('/app', true, '/resources', 'win32', 'x64')).toBe(
-      '/resources/llama/win32-x64/bin/llama-server.exe',
+      path.join('/resources', 'llama', 'win32-x64', 'bin', 'llama-server.exe'),
     );
     expect(
       bundledAcceleratedLlamaServer('/app', true, '/resources', 'vulkan', 'linux', 'x64'),
-    ).toBe('/resources/llama/linux-x64/vulkan/bin/llama-server');
+    ).toBe(path.join('/resources', 'llama', 'linux-x64', 'vulkan', 'bin', 'llama-server'));
     expect(bundledAcceleratedLlamaServer('/app', true, '/resources', 'cuda', 'win32', 'x64')).toBe(
-      '/resources/llama/win32-x64/cuda/bin/llama-server.exe',
+      path.join('/resources', 'llama', 'win32-x64', 'cuda', 'bin', 'llama-server.exe'),
     );
   });
 });

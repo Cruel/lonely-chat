@@ -11,6 +11,7 @@ permissions:
 
 jobs:
   linux:
+    name: Linux x64
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -52,15 +53,18 @@ jobs:
           if-no-files-found: error
           retention-days: 14
   cross-platform:
+    name: ${{ matrix.name }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: windows-2022
+          - name: Windows x64
+            os: windows-2022
             platform: win32-x64
             target: --win
             artifact: windows-x64
-          - os: macos-15-arm64
+          - name: macOS ARM64
+            os: macos-15-arm64
             platform: darwin-arm64
             target: --mac --arm64
             artifact: macos-arm64

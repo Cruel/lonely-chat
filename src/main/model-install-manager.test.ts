@@ -1,6 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { ModelDiscovery } from './model-discovery';
@@ -311,7 +320,8 @@ describe('managed model packages via public model-manager service', () => {
     const outside = path.join(alternate, 'personal-notes.txt');
     await writeFile(outside, 'not managed');
     await app.manager.changeDirectory(alternate);
-    expect(app.manager.snapshot().storageDirectory).toBe(alternate);
+    // The manager stores canonical paths; Windows may expand short 8.3 temp paths.
+    expect(app.manager.snapshot().storageDirectory).toBe(await realpath(alternate));
     const entry = (await app.manager.install(selection)).installations[0];
     await app.manager.setActive('vision-language', entry.id);
     await expect(app.manager.changeDirectory(app.userData)).rejects.toThrow(/Remove installed/);
@@ -320,7 +330,7 @@ describe('managed model packages via public model-manager service', () => {
     expect(after.active['vision-language']).toBeNull();
     expect(await readFile(outside, 'utf8')).toBe('not managed');
     await expect(app.manager.remove(entry.id)).rejects.toThrow(/not registered/);
-    expect((await app.make().open()).storageDirectory).toBe(alternate);
+    expect((await app.make().open()).storageDirectory).toBe(await realpath(alternate));
   });
 
   it('refuses to follow symlinks during removal or touch files outside the managed package', async () => {
