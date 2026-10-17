@@ -1,6 +1,24 @@
 import path from 'node:path';
 
 /** Executables live outside asar and bring their own adjacent shared libraries. */
+export function bundledAcceleratedLlamaServer(
+  appPath: string,
+  packaged: boolean,
+  resourcesPath: string,
+  backend: 'vulkan' | 'cuda',
+  platform = process.platform,
+  arch = process.arch,
+): string {
+  return path.join(
+    path.dirname(
+      path.dirname(bundledLlamaServer(appPath, packaged, resourcesPath, platform, arch)),
+    ),
+    backend,
+    'bin',
+    platform === 'win32' ? 'llama-server.exe' : 'llama-server',
+  );
+}
+
 export function bundledWhisperWorker(
   appPath: string,
   packaged: boolean,

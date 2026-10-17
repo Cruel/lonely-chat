@@ -1,0 +1,61 @@
+name: Publish unsigned release
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+      - run: node scripts/verify-release-version.mjs "${GITHUB_REF_NAME}"
+
+  certify:
+    needs: version
+    uses: ./.github/workflows/check.yml
+    permissions:
+      contents: read
+
+  publish:
+    needs: certify
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: lonely-chat-*
+          path: release-assets
+          merge-multiple: true
+      - name: Verify complete asset set and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(cat VERSION)"
+          cd release-assets
+          expected=(
+            "lonely-chat-${version}-linux-x86_64.AppImage"
+            "lonely-chat-${version}-windows-x64.exe"
+            "lonely-chat-${version}-macos-arm64.dmg"
+          )
+          for asset in "${expected[@]}"; do
+            test -s "$asset" || { echo "Missing or empty release asset: $asset"; exit 1; }
+          done
+          test "$(find . -maxdepth 1 -type f | wc -l)" -eq "${#expected[@]}"
+          sha256sum "${expected[@]}" > SHA256SUMS.txt
+      - name: Publish only after all three certifications pass
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "${GITHUB_REF_NAME}" release-assets/* \
+            --title "Lonely Chat ${GITHUB_REF_NAME}" --generate-notes

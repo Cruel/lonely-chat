@@ -286,6 +286,8 @@ async function readBounded(response: Response): Promise<unknown> {
 
 interface NativeOptions {
   readonly executable: string;
+  /** Optional separately bundled CUDA/Vulkan workers, each with adjacent shared libraries. */
+  readonly gpuExecutables?: Partial<Record<'cuda' | 'vulkan', string>>;
   readonly resolveModel: () => Promise<NativeModelFiles>;
   readonly fetcher?: typeof fetch;
   readonly launch?: (
@@ -320,6 +322,8 @@ export class NativeInference implements InferenceProvider {
   private status: NativeServiceStatus = { revision: 0, phase: 'stopped', error: null };
   private listeners = new Set<(status: NativeServiceStatus) => void>();
   private resources: NativeRuntimeResources | null = null;
+  /** A failed GPU child must not be selected again by the controller's bounded retry. */
+  private fallbackToCpu = false;
 
   snapshot(): NativeServiceStatus {
     return { ...this.status, resources: this.resources };
@@ -339,28 +343,39 @@ export class NativeInference implements InferenceProvider {
 
   private async devices(): Promise<readonly BackendDevice[]> {
     if (this.options.probeDevices) return this.options.probeDevices();
-    try {
-      const { stdout, stderr } = await promisify(execFile)(
-        this.options.executable,
-        ['--list-devices'],
-        {
+    const binaries = [
+      { executable: this.options.executable, backend: null },
+      ...Object.entries(this.options.gpuExecutables ?? {}).map(([backend, executable]) => ({
+        executable,
+        backend,
+      })),
+    ];
+    const detected: BackendDevice[] = [];
+    for (const { executable, backend } of binaries) {
+      if (!executable) continue;
+      try {
+        const { stdout, stderr } = await promisify(execFile)(executable, ['--list-devices'], {
           timeout: 3000,
           maxBuffer: 32 * 1024,
-          env: this.processEnvironment(),
-        },
-      );
-      return parseBackendDevices(stdout + '\n' + stderr);
-    } catch {
-      // Missing executable, incompatible binary, or unsupported probe: assume CPU only.
-      return [];
+          env: this.processEnvironment(executable),
+        });
+        detected.push(
+          ...parseBackendDevices(stdout + '\n' + stderr).filter(
+            (device) => backend === null || device.backend === backend,
+          ),
+        );
+      } catch {
+        // Optional accelerator or driver may be unavailable. CPU remains usable.
+      }
     }
+    return detected;
   }
 
-  private processEnvironment(): NodeJS.ProcessEnv {
+  private processEnvironment(executable = this.options.executable): NodeJS.ProcessEnv {
     const env = Object.fromEntries(
       Object.entries(process.env).filter(([name]) => !name.startsWith('LLAMA_')),
     );
-    const directory = path.dirname(this.options.executable);
+    const directory = path.dirname(executable);
     if (process.platform === 'linux')
       env.LD_LIBRARY_PATH = [directory, process.env.LD_LIBRARY_PATH].filter(Boolean).join(':');
     if (process.platform === 'darwin')
@@ -442,8 +457,10 @@ export class NativeInference implements InferenceProvider {
       settings.computeBackend === 'auto' && settings.gpuOffloadLayers === 0
         ? 'cpu'
         : settings.computeBackend;
-    const selection = chooseBackend(requested, detected);
+    const selection = chooseBackend(this.fallbackToCpu ? 'cpu' : requested, detected);
     let diagnostic = selection.warning;
+    if (this.fallbackToCpu)
+      diagnostic = 'The selected GPU worker failed; retrying with CPU fallback.';
     const appendDiagnostic = (value: string) => {
       diagnostic = diagnostic ? diagnostic + ' ' + value : value;
     };
@@ -514,11 +531,15 @@ export class NativeInference implements InferenceProvider {
     this.apiKey = key;
     this.failure = null;
     this.logTail = '';
-    const child = (this.options.launch ?? spawn)(this.options.executable, args, {
-      cwd: path.dirname(this.options.executable),
+    const executable =
+      gpuOffloadLayers > 0 && (selection.selected === 'cuda' || selection.selected === 'vulkan')
+        ? (this.options.gpuExecutables?.[selection.selected] ?? this.options.executable)
+        : this.options.executable;
+    const child = (this.options.launch ?? spawn)(executable, args, {
+      cwd: path.dirname(executable),
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
-      env: this.processEnvironment(),
+      env: this.processEnvironment(executable),
     });
     this.child = child;
     const log = (chunk: Buffer) => {
@@ -528,12 +549,14 @@ export class NativeInference implements InferenceProvider {
     child.stdout?.on('data', log);
     child.stderr?.on('data', log);
     child.once('error', (error) => {
+      if (this.resources?.backend !== 'cpu') this.fallbackToCpu = true;
       this.failure = new Error(`Unable to launch bundled llama.cpp: ${error.message}`);
       this.publish('failed', this.failure.message);
       this.lifecycle?.abort();
     });
     child.once('exit', (code, termination) => {
       if (this.child !== child) return;
+      if (this.resources?.backend !== 'cpu') this.fallbackToCpu = true;
       this.failure = new Error(
         `llama.cpp exited (${termination ?? code ?? 'unknown'}). ${this.logTail.slice(-750)}`,
       );
@@ -562,7 +585,12 @@ export class NativeInference implements InferenceProvider {
         if (error instanceof Error && error.message.startsWith('llama.cpp health check failed'))
           throw error;
       }
-      await delay(200, undefined, { signal });
+      try {
+        await delay(200, undefined, { signal });
+      } catch (error) {
+        if (this.failure) throw this.failure;
+        throw error;
+      }
     }
     throw new Error(`Timed out loading llama.cpp model. ${this.logTail.slice(-750)}`);
   }
@@ -658,6 +686,9 @@ export class NativeInference implements InferenceProvider {
 
   async stop(): Promise<void> {
     if (this.shutdown) return this.shutdown;
+    // On normal Stop, probe GPU again next time. Failed workers retain CPU fallback
+    // through the current session controller's retry/cleanup cycle.
+    if (this.status.phase === 'ready') this.fallbackToCpu = false;
     ++this.generation;
     this.resources = null;
     this.publish('stopped');

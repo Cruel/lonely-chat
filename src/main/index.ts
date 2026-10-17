@@ -29,7 +29,11 @@ import {
 import { ModelDiscovery } from './model-discovery';
 import { ModelInstallManager } from './model-install-manager';
 import { NativeInference } from './native-inference';
-import { bundledLlamaServer, bundledWhisperWorker } from './native-runtime-path';
+import {
+  bundledAcceleratedLlamaServer,
+  bundledLlamaServer,
+  bundledWhisperWorker,
+} from './native-runtime-path';
 import { NativeSpeech } from './native-speech';
 import { AudioService } from './audio-service';
 import { AudioConfigStore } from './audio-config-store';
@@ -624,6 +628,20 @@ async function boot(): Promise<void> {
   });
   nativeInference = new NativeInference({
     executable: bundledLlamaServer(app.getAppPath(), app.isPackaged, process.resourcesPath),
+    gpuExecutables: {
+      cuda: bundledAcceleratedLlamaServer(
+        app.getAppPath(),
+        app.isPackaged,
+        process.resourcesPath,
+        'cuda',
+      ),
+      vulkan: bundledAcceleratedLlamaServer(
+        app.getAppPath(),
+        app.isPackaged,
+        process.resourcesPath,
+        'vulkan',
+      ),
+    },
     resolveModel: () => installs.activeVisionFiles(),
     reasoningEnabled: () => session.getPreferences().reasoningEnabled,
     inferenceTimeoutMs: () => session.getPreferences().inferenceTimeoutMs,

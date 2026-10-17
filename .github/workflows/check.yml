@@ -1,12 +1,17 @@
 name: Build and verify
 on:
   push:
+    branches: ['**']
   pull_request:
   workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
   linux:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -14,34 +19,51 @@ jobs:
           version: 11.15.0
       - uses: actions/setup-node@v4
         with:
-          node-version: '24.18.0'
+          node-version-file: .node-version
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: node scripts/verify-release-version.mjs
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm check
-      - run: pnpm stage:llama
-      - run: pnpm smoke:llama
+      - run: pnpm stage:llama --accelerators
       - run: pnpm stage:whisper
+      - run: node scripts/verify-native-stage.mjs native linux-x64 --accelerators
+      - run: pnpm smoke:llama
       - run: pnpm smoke:whisper
       - run: xvfb-run -a pnpm smoke:electron
       - run: pnpm exec electron-builder --linux --publish never
       - run: pnpm exec electron-builder --linux --dir --publish never
       - run: xvfb-run -a pnpm certify:package
+        env:
+          LONELY_CHAT_REQUIRE_ACCELERATORS: '1'
+      - name: Smoke the distributed AppImage
+        shell: bash
+        run: |
+          set -euo pipefail
+          xvfb-run -a env APPIMAGE_EXTRACT_AND_RUN=1 LONELY_CHAT_SMOKE=1 out/*.AppImage > /tmp/lonely-appimage-smoke.log 2>&1 || {
+            tail -60 /tmp/lonely-appimage-smoke.log
+            exit 1
+          }
+          grep -q 'PASS: Electron preload IPC' /tmp/lonely-appimage-smoke.log
       - uses: actions/upload-artifact@v4
-        if: always()
         with:
           name: lonely-chat-linux-x64
           path: out/*.AppImage
-          if-no-files-found: warn
+          if-no-files-found: error
+          retention-days: 14
   cross-platform:
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: windows-latest
+          - os: windows-2022
+            platform: win32-x64
             target: --win
+            artifact: windows-x64
           - os: macos-15-arm64
+            platform: darwin-arm64
             target: --mac --arm64
+            artifact: macos-arm64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -50,22 +72,32 @@ jobs:
           version: 11.15.0
       - uses: actions/setup-node@v4
         with:
-          node-version: '24.18.0'
+          node-version-file: .node-version
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: node scripts/verify-release-version.mjs
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
-      - run: node scripts/stage-llama.mjs ${{ matrix.target == '--win' && 'win32-x64' || 'darwin-arm64' }}
-      - run: node scripts/stage-whisper.mjs ${{ matrix.target == '--win' && 'win32-x64' || 'darwin-arm64' }}
+      - run: node scripts/stage-llama.mjs ${{ matrix.platform }} --accelerators
+      - run: node scripts/stage-whisper.mjs ${{ matrix.platform }}
+      - run: node scripts/verify-native-stage.mjs native ${{ matrix.platform }} --accelerators
+      - run: pnpm smoke:llama
+      - run: pnpm smoke:whisper
       - run: pnpm exec electron-builder ${{ matrix.target }} --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
       - run: pnpm exec electron-builder ${{ matrix.target }} --dir --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
       - run: pnpm certify:package
+        env:
+          LONELY_CHAT_REQUIRE_ACCELERATORS: '1'
       - uses: actions/upload-artifact@v4
-        if: always()
         with:
-          name: lonely-chat-${{ runner.os }}-${{ runner.arch }}
+          name: lonely-chat-${{ matrix.artifact }}
           path: |
             out/*.exe
             out/*.dmg
-          if-no-files-found: warn
+          if-no-files-found: error
+          retention-days: 14

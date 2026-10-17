@@ -4,7 +4,7 @@ import { NativeInference, extractNativeChat, nativeChatRequest } from './native-
 import { AUTHOR_PLACEHOLDER } from '../shared/audience-contract';
 import { DEFAULT_PREFERENCES } from '../shared/session-contract';
 import { parseInferenceResult } from './fake-inference';
-import { bundledLlamaServer } from './native-runtime-path';
+import { bundledAcceleratedLlamaServer, bundledLlamaServer } from './native-runtime-path';
 
 const providers: NativeInference[] = [];
 afterEach(async () => {
@@ -329,6 +329,94 @@ describe('native llama.cpp adapter', () => {
     await provider.stop();
   });
 
+  it('launches the separately shipped Vulkan worker and retains a CPU fallback', async () => {
+    const commands: string[] = [];
+    let backend: 'vulkan' | 'cpu' = 'vulkan';
+    const provider = new NativeInference({
+      executable: '/fixture/cpu/bin/llama-server',
+      gpuExecutables: { vulkan: '/fixture/vulkan/bin/llama-server' },
+      resolveModel: async () => ({ modelPath: '/fixture.gguf', projectorPath: null }),
+      resourcePreferences: () => ({
+        ...DEFAULT_PREFERENCES,
+        computeBackend: 'vulkan',
+        vramBudgetMiB: 4096,
+        gpuOffloadLayers: 12,
+      }),
+      probeDevices: async () =>
+        backend === 'vulkan' ? [{ name: 'Vulkan0', backend: 'vulkan' }] : [],
+      launch: (command, args, options) => {
+        commands.push(command);
+        return spawn(
+          process.execPath,
+          [
+            '--input-type=module',
+            '-e',
+            childScript,
+            args[args.indexOf('--port') + 1],
+            args[args.indexOf('--api-key') + 1],
+          ],
+          { ...options, cwd: process.cwd() },
+        );
+      },
+    });
+    providers.push(provider);
+    await provider.prepare(new AbortController().signal);
+    expect(commands).toEqual(['/fixture/vulkan/bin/llama-server']);
+    expect(provider.snapshot().resources?.backend).toBe('vulkan');
+    await provider.stop();
+    backend = 'cpu';
+    await provider.prepare(new AbortController().signal);
+    expect(commands).toEqual(['/fixture/vulkan/bin/llama-server', '/fixture/cpu/bin/llama-server']);
+    expect(provider.snapshot().resources?.backend).toBe('cpu');
+  });
+
+  it('falls back to CPU after a detected GPU worker crashes during launch', async () => {
+    const commands: string[] = [];
+    const gpu = '/test/runtime/cuda/llama-server';
+    const cpu = '/test/runtime/cpu/llama-server';
+    const provider = new NativeInference({
+      executable: cpu,
+      gpuExecutables: { cuda: gpu },
+      resolveModel: async () => ({ modelPath: '/fixture.gguf', projectorPath: null }),
+      resourcePreferences: () => ({
+        ...DEFAULT_PREFERENCES,
+        computeBackend: 'cuda',
+        vramBudgetMiB: 4096,
+        gpuOffloadLayers: 12,
+      }),
+      probeDevices: async () => [{ name: 'CUDA0', backend: 'cuda' }],
+      launch: (command, args, options) => {
+        commands.push(command);
+        return spawn(
+          process.execPath,
+          command === gpu
+            ? ['-e', 'process.exit(3)']
+            : [
+                '--input-type=module',
+                '-e',
+                childScript,
+                args[args.indexOf('--port') + 1],
+                args[args.indexOf('--api-key') + 1],
+              ],
+          { ...options, cwd: process.cwd() },
+        );
+      },
+    });
+    providers.push(provider);
+    await expect(provider.prepare(new AbortController().signal)).rejects.toThrow(
+      /llama.cpp exited/,
+    );
+    expect(provider.snapshot().phase).toBe('failed');
+    await provider.stop(); // Same cleanup path used by the session retry loop.
+    await provider.prepare(new AbortController().signal);
+    expect(commands).toEqual([gpu, cpu]);
+    expect(provider.snapshot().resources).toMatchObject({
+      backend: 'cpu',
+      gpuOffloadLayers: 0,
+    });
+    expect(provider.snapshot().resources?.diagnostic).toMatch(/CPU fallback/);
+  });
+
   it('enables reasoning only when explicitly configured', async () => {
     let launchedArgs: string[] = [];
     const provider = new NativeInference({
@@ -435,6 +523,12 @@ describe('native llama.cpp adapter', () => {
     );
     expect(bundledLlamaServer('/app', true, '/resources', 'win32', 'x64')).toBe(
       '/resources/llama/win32-x64/bin/llama-server.exe',
+    );
+    expect(
+      bundledAcceleratedLlamaServer('/app', true, '/resources', 'vulkan', 'linux', 'x64'),
+    ).toBe('/resources/llama/linux-x64/vulkan/bin/llama-server');
+    expect(bundledAcceleratedLlamaServer('/app', true, '/resources', 'cuda', 'win32', 'x64')).toBe(
+      '/resources/llama/win32-x64/cuda/bin/llama-server.exe',
     );
   });
 });

@@ -4,6 +4,7 @@ import { lstat, readFile, readlink, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { unpackedPackage } from './package-layout.mjs';
+import { verifyNativeStage } from './verify-native-stage.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const { executable, resources } = unpackedPackage();
@@ -45,6 +46,7 @@ for (const { directory, name, marker } of binaries) {
     }
   }
 }
+await verifyNativeStage(resources, target, process.env.LONELY_CHAT_REQUIRE_ACCELERATORS === '1');
 console.log(`PASS: ${target} packaged Electron, native workers and staged library links`);
 function run(args) {
   const result = spawnSync(process.execPath, args, {

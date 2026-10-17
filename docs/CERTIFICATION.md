@@ -17,12 +17,12 @@ Other focused integration suites (also required by `pnpm test`) certify history 
 
 ## Package certification
 
-The matrix in `.github/workflows/check.yml` builds unsigned Linux x64, Windows x64, and macOS ARM64 artifacts, then produces an **unpacked** electron-builder application (`--dir`) from the same staged inputs. `pnpm certify:package` inspects that unpacked application, not development executables:
+The matrix in `.github/workflows/check.yml` builds unsigned Linux x64, Windows x64, and macOS ARM64 artifacts with pinned CPU and available GPU runtimes, then produces an **unpacked** electron-builder application (`--dir`) from the same staged inputs. `pnpm certify:package` inspects that unpacked application, not development executables:
 
 1. Requires a nonempty packaged Electron executable and `resources/app.asar`.
-2. Requires both exact pinned native worker release markers, target-specific executables and valid contained library symlinks **outside ASAR**.
+2. Requires pinned native source/build manifests, correct CPU and configured CUDA/Vulkan/Metal variants, target-specific executables, worker checksum and valid contained library symlinks **outside ASAR**.
 3. Launches the bundled llama.cpp executable (including adjacent shared libraries) and sends a framed startup/error request to the bundled whisper.cpp worker.
-4. Launches the actual packaged Electron executable, exercises the desktop/overlay/floating surfaces and lifecycle via `LONELY_CHAT_SMOKE=1`, and checks the overlay listener is gone after Quit.
+4. Launches the actual packaged Electron executable, exercises the desktop/overlay/floating surfaces and lifecycle via `LONELY_CHAT_SMOKE=1`, and checks the overlay listener is gone after Quit. The Linux workflow also executes the compressed AppImage itself under Xvfb with `APPIMAGE_EXTRACT_AND_RUN=1`.
 
 For a local Linux headless run after staging native binaries:
 
@@ -39,8 +39,8 @@ Optional **real** CPU inference fixtures use `LONELY_CHAT_CPU_SMOKE_MODEL=/absol
 ## Qualification limits / release gates
 
 - Linux x64 packaged smoke has a local headless execution path; Windows x64 and macOS ARM64 must be verified on their own runners. A package created locally for Linux cannot certify other platforms.
-- Current pinned Linux/Windows llama.cpp assets are CPU-only. CUDA/Vulkan acceleration is **not certified** by package tests. macOS Metal availability and performance likewise require on-device GPU qualification. The advisory compute/RAM/VRAM controls are not hard partition limits.
+- Pinned Linux/Windows distributions now include CUDA 13.4, Vulkan, and CPU llama.cpp runtimes; macOS includes Metal and CPU. Package tests verify presence and integrity, **not functioning GPUs**. Driver compatibility, Metal availability, and real acceleration performance require hardware qualification. Advisory compute/RAM/VRAM controls are not hard partition limits.
 - No physical camera, loopback/audio driver or GPU is required in normal CI. Those device-specific behaviors need separate hardware qualification; synthetic captures test the service behavior, not OS permissions.
 - Worker startup without supplied real models is not a proof of model compatibility or inference accuracy. CPU fixture runs should be recorded when weights are supplied.
-- **#17 remains a dependency:** a complete pinned native build/release pipeline, tag-driven publishing, shared-library closure checks on every target, and verified release assets must be signed off independently. This harness neither implements a release workflow nor substitutes for its cross-platform results.
+- **#17's implementation adds the release gate** in `.github/workflows/release.yml`: exact version tag, three successful platform certifications, complete unsigned asset set, and published SHA256SUMS. Cross-platform runs must actually pass on GitHub before declaring the release certified. See [PACKAGING.md](PACKAGING.md).
 - Code signing, notarization, auto-update, account integrations and broadcast-delay guarantees are outside parent spec #1's initial release scope.
