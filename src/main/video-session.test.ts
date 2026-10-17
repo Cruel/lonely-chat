@@ -50,6 +50,11 @@ describe('live video across the session and native inference boundary', () => {
     await flushMicrotasks();
     expect(inputs).toHaveLength(1);
     expect(inputs[0].context).toContain('live video');
+    expect(inputs[0].videoWindow).toEqual({
+      fromMs: clock.wallNow() - 3000,
+      throughMs: clock.wallNow(),
+      truncated: false,
+    });
     expect(inputs[0].frames?.map((item) => item.observedAt)).toEqual([
       clock.wallNow() - 1500,
       clock.wallNow() - 100,
@@ -69,6 +74,11 @@ describe('live video across the session and native inference boundary', () => {
     clock.advance(1500);
     await flushMicrotasks();
     expect(inputs).toHaveLength(2);
+    expect(inputs[1].videoWindow).toEqual({
+      fromMs: clock.wallNow() - 3000,
+      throughMs: clock.wallNow(),
+      truncated: false,
+    });
     expect(inputs[1].frames?.map((item) => item.observedAt)).toEqual([
       clock.wallNow() - 2500,
       clock.wallNow() - 1500,
@@ -107,6 +117,16 @@ describe('live video across the session and native inference boundary', () => {
     expect(content[2]).toMatchObject({ image_url: { url: jpeg } });
     expect(content[3].text ?? '').toContain('observedAt=3000');
     expect(content[4]).toMatchObject({ image_url: { url: jpeg } });
+    const timed = nativeChatRequest({
+      ...input,
+      videoWindow: { fromMs: 1000, throughMs: 3500, truncated: false },
+    });
+    const timedContent = timed.messages[1].content;
+    if (!Array.isArray(timedContent)) throw new Error('Expected image payload');
+    expect(JSON.parse(timedContent[0].text ?? '').videoFrames).toMatchObject([
+      { observedAt: 1000, offsetMs: 0, ageMs: 2500 },
+      { observedAt: 3000, offsetMs: 2000, ageMs: 500 },
+    ]);
   });
 
   it('rejects stale and mismatched capture while keeping a zero-video session functional', async () => {
@@ -116,7 +136,7 @@ describe('live video across the session and native inference boundary', () => {
     session.selectVideoSource('camera:test-camera');
     expect(() => session.recordVideoFrame({ ...frame(clock), sourceId: 'camera:wrong' })).toThrow();
     expect(() =>
-      session.recordVideoFrame({ ...frame(clock), observedAt: clock.wallNow() - 46000 }),
+      session.recordVideoFrame({ ...frame(clock), observedAt: clock.wallNow() - 65000 }),
     ).toThrow();
     session.selectVideoSource(null);
     expect(() => session.recordVideoFrame(frame(clock))).toThrow();

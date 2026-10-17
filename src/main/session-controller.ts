@@ -40,7 +40,7 @@ export class SessionController {
   private subscribers = new Set<(snapshot: SessionSnapshot) => void>();
   private readonly scheduler: ChatScheduler;
   private readonly history: InferenceHistory;
-  private readonly video = new VideoFrameBuffer();
+  private readonly video: VideoFrameBuffer;
   private readonly chat: ChatService;
   private epoch = 0;
   private abort: AbortController | null = null;
@@ -65,6 +65,7 @@ export class SessionController {
     this.activeInference = inference;
     this.preferences = validatePreferences(initialPreferences);
     this.history = new InferenceHistory(this.preferences);
+    this.video = new VideoFrameBuffer(this.preferences);
     this.scheduler = new ChatScheduler(chat, clock, () => this.updatePending());
   }
 
@@ -79,6 +80,7 @@ export class SessionController {
   setPreferences(value: unknown): SessionPreferences {
     this.preferences = validatePreferences(value);
     this.history.configure(this.preferences, this.clock.wallNow());
+    this.video.configure(this.preferences, this.clock.wallNow());
     this.setState({
       events: this.history.recentEvents(this.clock.wallNow()),
       droppedObservations: this.history.droppedObservations,
@@ -208,9 +210,11 @@ export class SessionController {
         (message) => Number(message.id.slice('chat-'.length)) > this.chatStartSequence,
       );
     const snapshot = this.history.snapshot(this.context, cycle, now, this.playbackWindow(), chat);
+    const media = this.video.sample(snapshot.boundary.fromMs, now, cycle === 1);
     const input: CycleInput = {
       ...snapshot,
-      frames: this.video.sample(snapshot.boundary.fromMs, now, cycle === 1),
+      frames: media.frames,
+      videoWindow: { fromMs: media.fromMs, throughMs: media.throughMs, truncated: media.truncated },
     };
     this.refreshDropped();
     this.setState({ cycle, retryAttempt: 0, warning: null });

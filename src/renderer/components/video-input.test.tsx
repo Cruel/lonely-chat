@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DesktopAPI } from '../../shared/chat-contract';
+import type { VideoFrame } from '../../shared/video-contract';
 import { VideoInput } from './video-input';
 
 Element.prototype.scrollIntoView = () => {};
@@ -17,7 +18,7 @@ function connect(media: {
   enumerateDevices?: ReturnType<typeof vi.fn>;
 }) {
   const selectVideoSource = vi.fn(async (_id: string | null) => {});
-  const submitVideoFrame = vi.fn(async () => {});
+  const submitVideoFrame = vi.fn(async (_frame: VideoFrame) => {});
   window.lonelyChat = {
     listDisplaySources: async () => [
       { id: 'display:screen:0:0', kind: 'screen', label: 'Main monitor' },
@@ -56,6 +57,51 @@ async function selectCamera() {
 }
 
 describe('live video input', () => {
+  it('honors configurable capture cadence without restarting an active media stream', async () => {
+    const track = { stop: vi.fn(), addEventListener: vi.fn() };
+    const getUserMedia = vi.fn(
+      async () =>
+        ({
+          getTracks: () => [track],
+          getVideoTracks: () => [track],
+        }) as unknown as MediaStream,
+    );
+    const { submitVideoFrame } = connect({ getUserMedia });
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+      drawImage: vi.fn(),
+    } as unknown as CanvasRenderingContext2D);
+    vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue(
+      'data:image/jpeg;base64,/9j/',
+    );
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined);
+    const { rerender } = render(<VideoInput captureIntervalMs={1000} />);
+    await selectCamera();
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole('button', { name: 'Start video' }));
+    await act(async () => {
+      for (let i = 0; i < 15; i++) await Promise.resolve();
+    });
+    expect(screen.getByRole('status').textContent).toContain('live');
+    const preview = screen.getByLabelText('Video input preview');
+    Object.defineProperties(preview, {
+      readyState: { configurable: true, value: 3 },
+      videoWidth: { configurable: true, value: 640 },
+      videoHeight: { configurable: true, value: 360 },
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
+    });
+    expect(submitVideoFrame).toHaveBeenCalledTimes(2);
+    expect(submitVideoFrame.mock.calls[0][0]).toMatchObject({ width: 320, height: 180 });
+    rerender(<VideoInput captureIntervalMs={250} />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(submitVideoFrame).toHaveBeenCalledTimes(6);
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
+    expect(track.stop).not.toHaveBeenCalled();
+  });
+
   it('handles denied camera permission without endless retries and still allows turning video off', async () => {
     const getUserMedia = vi.fn(async () => {
       throw new DOMException('Permission denied', 'NotAllowedError');

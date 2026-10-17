@@ -70,11 +70,14 @@ export function nativeChatRequest(input: InferenceInput) {
     roster: input.roster ?? AUDIENCE,
     observationWindow: input.boundary ?? null,
     playbackWindowMs: input.playbackWindowMs ?? 3000,
+    videoWindow: input.videoWindow ?? null,
     videoFrames: (input.frames ?? []).map(({ observedAt, sourceId, width, height }) => ({
       observedAt,
       sourceId,
       width,
       height,
+      offsetMs: input.videoWindow ? observedAt - input.videoWindow.fromMs : 0,
+      ageMs: input.videoWindow ? input.videoWindow.throughMs - observedAt : 0,
     })),
   });
   const content = input.frames?.length
@@ -83,7 +86,7 @@ export function nativeChatRequest(input: InferenceInput) {
         ...input.frames.flatMap((frame, index) => [
           {
             type: 'text',
-            text: `Visual frame ${index + 1}, observedAt=${frame.observedAt} ms, source=${frame.sourceId}`,
+            text: `Visual frame ${index + 1}, observedAt=${frame.observedAt} ms, relativeMs=${input.videoWindow ? frame.observedAt - input.videoWindow.fromMs : 0}, ageMs=${input.videoWindow ? input.videoWindow.throughMs - frame.observedAt : 0}, source=${frame.sourceId}`,
           },
           { type: 'image_url', image_url: { url: frame.dataUrl } },
         ]),
@@ -101,7 +104,7 @@ export function nativeChatRequest(input: InferenceInput) {
         role: 'system',
         content:
           'You simulate a small friendly live-stream audience. From the context, infer at most 3 short events and write 1-4 natural viewer chat messages. ' +
-          'Only use the allowed author identities. Each visual frame is ordered and labeled with its original observation time. Infer visual events from the images, not their metadata alone. ' +
+          'Only use the allowed author identities. Each visual frame is ordered and labeled with absolute and relative observation timestamps. Infer visual events from the images, not their metadata alone. A truncated videoWindow indicates missing earlier footage; do not invent it. ' +
           'ageMs is how many milliseconds before the observationWindow.throughMs an event happened (use 0 for ongoing context). ' +
           'offsetMs is when to display a chat message after this reply, within the requested playbackWindowMs. ' +
           'Use the provided observations and labeled transcripts to react to new content; maintain continuity with recent chat and events. ' +

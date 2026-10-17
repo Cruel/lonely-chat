@@ -36,6 +36,9 @@ import {
   HISTORY_AGE_OPTIONS,
   HISTORY_COUNT_OPTIONS,
   INFERENCE_TIMEOUT_OPTIONS,
+  VIDEO_CAPTURE_INTERVAL_OPTIONS,
+  VIDEO_COVERAGE_OPTIONS,
+  VIDEO_FRAME_COUNT_OPTIONS,
   type InferenceMode,
   type SessionPreferences,
 } from '../../shared/session-contract';
@@ -336,7 +339,10 @@ export function DesktopPage() {
               />
               <div className="grid gap-5 lg:grid-cols-2">
                 <Panel>
-                  <VideoInput visible={section === 'inputs'} />
+                  <VideoInput
+                    visible={section === 'inputs'}
+                    captureIntervalMs={session.preferences.videoCaptureIntervalMs}
+                  />
                 </Panel>
                 <Panel>
                   <h3 className="font-medium">Audio sources</h3>
@@ -513,6 +519,90 @@ export function DesktopPage() {
                     {session.actionError}
                   </p>
                 )}
+              </Panel>
+              <Panel className="mt-5">
+                <h3 className="font-medium">Temporal video sampling</h3>
+                <p className="mt-2 text-sm text-zinc-400">
+                  Frame count adapts to the elapsed inference interval. The coverage limit is a
+                  maximum look-back, not a fixed video clip duration. Missing footage cannot be
+                  synthesized to meet the minimum frame count.
+                </p>
+                <div className="mt-5 grid gap-5 sm:grid-cols-2">
+                  <NumericSettingCombobox
+                    id="video-capture-interval"
+                    title="Capture interval"
+                    name="videoCaptureIntervalMs"
+                    value={session.preferences.videoCaptureIntervalMs}
+                    options={VIDEO_CAPTURE_INTERVAL_OPTIONS}
+                    unit="seconds"
+                    disabled={!session.ready || session.busy}
+                    onChange={(videoCaptureIntervalMs) => update({ videoCaptureIntervalMs })}
+                  />
+                  <NumericSettingCombobox
+                    id="video-coverage"
+                    title="Maximum temporal coverage"
+                    name="videoCoverageMs"
+                    value={session.preferences.videoCoverageMs}
+                    options={VIDEO_COVERAGE_OPTIONS}
+                    unit="seconds"
+                    disabled={!session.ready || session.busy}
+                    onChange={(videoCoverageMs) => update({ videoCoverageMs })}
+                  />
+                  <NumericSettingCombobox
+                    id="video-min-frames"
+                    title="Minimum target frames"
+                    name="videoMinFrames"
+                    value={session.preferences.videoMinFrames}
+                    options={VIDEO_FRAME_COUNT_OPTIONS}
+                    unit="entries"
+                    disabled={!session.ready || session.busy}
+                    onChange={(videoMinFrames) => update({ videoMinFrames })}
+                  />
+                  <NumericSettingCombobox
+                    id="video-max-frames"
+                    title="Maximum target frames"
+                    name="videoMaxFrames"
+                    value={session.preferences.videoMaxFrames}
+                    options={VIDEO_FRAME_COUNT_OPTIONS}
+                    unit="entries"
+                    disabled={!session.ready || session.busy}
+                    onChange={(videoMaxFrames) => update({ videoMaxFrames })}
+                  />
+                </div>
+                <p className="mt-2 text-xs text-zinc-500">
+                  Minimum target must be no greater than maximum target.
+                </p>
+                <div className="mt-5 max-w-sm">
+                  <Label htmlFor="video-sampling-strategy" className="text-sm text-zinc-200">
+                    Temporal selection strategy
+                  </Label>
+                  <Select
+                    items={[
+                      { value: 'uniform', label: 'Uniform (full interval)' },
+                      { value: 'recent-weighted', label: 'Recent-weighted (keeps endpoints)' },
+                    ]}
+                    value={session.preferences.videoSamplingStrategy}
+                    onValueChange={(value) => {
+                      if (value === 'uniform' || value === 'recent-weighted') {
+                        update({ videoSamplingStrategy: value });
+                      }
+                    }}
+                  >
+                    <SelectTrigger
+                      id="video-sampling-strategy"
+                      className="mt-2 w-full text-sm"
+                      disabled={!session.ready || session.busy}
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="uniform">Uniform (full interval)</SelectItem>
+                      <SelectItem value="recent-weighted">
+                        Recent-weighted (keeps endpoints)
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
               </Panel>
             </section>
           )}

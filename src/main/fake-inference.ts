@@ -14,6 +14,7 @@ export interface InferenceInput {
   readonly recentTranscripts?: readonly LabeledTranscript[];
   readonly observations?: readonly CapturedObservation[];
   readonly frames?: readonly VideoFrame[];
+  readonly videoWindow?: { fromMs: number; throughMs: number; truncated: boolean };
   readonly recentChat?: readonly { author: string; text: string; presentedAt: number }[];
   readonly roster?: readonly { author: string; color: string }[];
   readonly boundary?: {

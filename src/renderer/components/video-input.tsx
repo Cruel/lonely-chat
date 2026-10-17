@@ -38,7 +38,13 @@ function reconnectable(error: unknown): boolean {
 }
 
 /** A single Chromium media stream. Stays mounted when navigating away from Inputs. */
-export function VideoInput({ visible = true }: { visible?: boolean }) {
+export function VideoInput({
+  visible = true,
+  captureIntervalMs = 500,
+}: {
+  visible?: boolean;
+  captureIntervalMs?: number;
+}) {
   const [sources, setSources] = useState<VideoSource[]>([]);
   const [selected, setSelected] = useState('none');
   const [lastSelected, setLastSelected] = useState<VideoSource | null>(null);
@@ -51,6 +57,9 @@ export function VideoInput({ visible = true }: { visible?: boolean }) {
   const pendingDisplay = useRef<Promise<MediaStream> | null>(null);
   const selectionEpoch = useRef(0);
   const video = useRef<HTMLVideoElement>(null);
+  // A cadence change must not restart a screen share (which requires a fresh user gesture).
+  const captureInterval = useRef(captureIntervalMs);
+  captureInterval.current = captureIntervalMs;
 
   const refresh = useCallback(async () => {
     const api = window.lonelyChat;
@@ -93,6 +102,7 @@ export function VideoInput({ visible = true }: { visible?: boolean }) {
     let stream: MediaStream | null = null;
     let sampleTimer: ReturnType<typeof setInterval> | null = null;
     let inFlight = false;
+    let lastSampleAt = -Infinity;
     const stopStream = () => {
       if (sampleTimer !== null) clearInterval(sampleTimer);
       sampleTimer = null;
@@ -150,6 +160,8 @@ export function VideoInput({ visible = true }: { visible?: boolean }) {
           if (!context) throw new Error('JPEG frame capture is unavailable.');
           const sample = () => {
             if (!valid || inFlight || !video.current || video.current.readyState < 2) return;
+            const sampledAt = Date.now();
+            if (sampledAt - lastSampleAt < captureInterval.current) return;
             const width = video.current.videoWidth;
             const height = video.current.videoHeight;
             if (!width || !height) return;
@@ -158,11 +170,12 @@ export function VideoInput({ visible = true }: { visible?: boolean }) {
             canvas.height = Math.max(1, Math.round(height * scale));
             context.drawImage(video.current, 0, 0, canvas.width, canvas.height);
             const dataUrl = canvas.toDataURL('image/jpeg', 0.65);
+            lastSampleAt = sampledAt;
             inFlight = true;
             void window
               .lonelyChat!.submitVideoFrame({
                 sourceId: selected,
-                observedAt: Date.now(),
+                observedAt: sampledAt,
                 width: canvas.width,
                 height: canvas.height,
                 dataUrl,
@@ -174,7 +187,7 @@ export function VideoInput({ visible = true }: { visible?: boolean }) {
                 inFlight = false;
               });
           };
-          sampleTimer = setInterval(sample, 500);
+          sampleTimer = setInterval(sample, 250);
           setStatus('live');
           void refresh();
         } catch (reason) {
@@ -353,8 +366,8 @@ export function VideoInput({ visible = true }: { visible?: boolean }) {
         className="mt-4 aspect-video w-full rounded-lg border border-border bg-black object-contain"
       />
       <p className="mt-2 text-xs text-zinc-500">
-        Live sampling: up to 2 JPEG frames/sec at 320 × 180; inference selects up to 8 timestamped
-        frames per observation interval. Stopping video does not stop the chat.
+        Live capture every {captureIntervalMs / 1000} seconds at up to 320 × 180 pixels. Temporal
+        frame selection is configured in Settings. Stopping video does not stop the chat.
       </p>
     </div>
   );

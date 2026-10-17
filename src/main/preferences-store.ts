@@ -6,7 +6,7 @@ import {
   type SessionPreferences,
 } from '../shared/session-contract';
 
-const VERSION = 4;
+const VERSION = 5;
 const FILE = 'preferences.json';
 
 /** Only approved UI preferences are persisted, never manual context or observed content. */
@@ -32,18 +32,31 @@ export class PreferencesStore {
         }
         return validatePreferences(legacy);
       }
-      if (document.version !== 2 && document.version !== 3 && document.version !== VERSION) {
+      if (![2, 3, 4, VERSION].includes(document.version as number)) {
         throw new Error('Unsupported preferences version.');
       }
       const validated = validatePreferences(document.simulation);
+      // Historical versions require their entire original schema, with no newer fields.
+      // Migrations append only new defaults and preserve all existing customized values.
+      const fields = [
+        'cycleIntervalMs',
+        'baselineMs',
+        'historyMaxCount',
+        'historyMaxAgeMs',
+        ...(Number(document.version) >= 3 ? ['reasoningEnabled'] : []),
+        ...(Number(document.version) >= 4 ? ['inferenceTimeoutMs'] : []),
+        ...(Number(document.version) >= 5
+          ? [
+              'videoCaptureIntervalMs',
+              'videoCoverageMs',
+              'videoMinFrames',
+              'videoMaxFrames',
+              'videoSamplingStrategy',
+            ]
+          : []),
+      ];
       const keys = Object.keys(document.simulation as Record<string, unknown>);
-      if (
-        keys.length !== (document.version === 2 ? 4 : document.version === 3 ? 5 : 6) ||
-        (document.version === 2 && 'reasoningEnabled' in (document.simulation as object)) ||
-        (document.version !== 2 && !('reasoningEnabled' in (document.simulation as object))) ||
-        (document.version !== VERSION && 'inferenceTimeoutMs' in (document.simulation as object)) ||
-        (document.version === VERSION && !('inferenceTimeoutMs' in (document.simulation as object)))
-      ) {
+      if (keys.length !== fields.length || fields.some((field) => !keys.includes(field))) {
         throw new Error('Incomplete simulation preferences.');
       }
       return validated;

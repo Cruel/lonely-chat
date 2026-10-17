@@ -119,6 +119,31 @@ it('starts and stops manual-context simulation, shows status and only saves pref
       reasoningEnabled: true,
     }),
   );
+  const captureInterval = screen.getByRole('combobox', { name: 'Capture interval' });
+  await user.click(captureInterval);
+  await user.click(await screen.findByRole('option', { name: '0.25 seconds' }));
+  await waitFor(() =>
+    expect(setPreferences).toHaveBeenCalledWith({
+      ...DEFAULT_PREFERENCES,
+      cycleIntervalMs: 1500,
+      reasoningEnabled: true,
+      videoCaptureIntervalMs: 250,
+    }),
+  );
+  const strategy = screen.getByRole('combobox', { name: 'Temporal selection strategy' });
+  await user.click(strategy);
+  await user.click(
+    await screen.findByRole('option', { name: 'Recent-weighted (keeps endpoints)' }),
+  );
+  await waitFor(() =>
+    expect(setPreferences).toHaveBeenCalledWith({
+      ...DEFAULT_PREFERENCES,
+      cycleIntervalMs: 1500,
+      reasoningEnabled: true,
+      videoCaptureIntervalMs: 250,
+      videoSamplingStrategy: 'recent-weighted',
+    }),
+  );
   fireEvent.click(screen.getByRole('button', { name: 'Simulation' }));
   expect(screen.getByLabelText('Stream context')).toHaveProperty(
     'value',

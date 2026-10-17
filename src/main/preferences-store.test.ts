@@ -25,7 +25,7 @@ describe('versioned preferences', () => {
     expect(await settings.read()).toEqual(DEFAULT_PREFERENCES);
     expect(await settings.write(pace(1500))).toEqual(pace(1500));
     const data = JSON.parse(await readFile(path.join(directory, 'preferences.json'), 'utf8'));
-    expect(data).toEqual({ version: 4, simulation: pace(1500) });
+    expect(data).toEqual({ version: 5, simulation: pace(1500) });
     expect(await settings.read()).toEqual(pace(1500));
     expect(await readdir(directory)).toEqual(['preferences.json']);
     expect(JSON.stringify(data)).not.toContain('manual context');
@@ -63,7 +63,7 @@ describe('versioned preferences', () => {
     ).toMatchObject({ baselineMs: 1000, historyMaxCount: 16, historyMaxAgeMs: 30000 });
     expect(
       JSON.parse(await readFile(path.join(directory, 'preferences.json'), 'utf8')).version,
-    ).toBe(4);
+    ).toBe(5);
   });
 
   it('migrates existing version-two preferences with reasoning disabled by default', async () => {
@@ -71,6 +71,11 @@ describe('versioned preferences', () => {
     const {
       reasoningEnabled: _ignoredReasoning,
       inferenceTimeoutMs: _ignoredTimeout,
+      videoCaptureIntervalMs: _capture,
+      videoCoverageMs: _coverage,
+      videoMinFrames: _min,
+      videoMaxFrames: _max,
+      videoSamplingStrategy: _strategy,
       ...previous
     } = pace(5000);
     await writeFile(
@@ -86,7 +91,15 @@ describe('versioned preferences', () => {
 
   it('migrates version-three settings and retains custom values', async () => {
     const { store: settings, directory } = await store();
-    const { inferenceTimeoutMs: _ignoredTimeout, ...previous } = pace(7500);
+    const {
+      inferenceTimeoutMs: _ignoredTimeout,
+      videoCaptureIntervalMs: _capture,
+      videoCoverageMs: _coverage,
+      videoMinFrames: _min,
+      videoMaxFrames: _max,
+      videoSamplingStrategy: _strategy,
+      ...previous
+    } = pace(7500);
     await writeFile(
       path.join(directory, 'preferences.json'),
       JSON.stringify({
@@ -110,6 +123,36 @@ describe('versioned preferences', () => {
     expect(await settings.read()).toEqual(custom);
   });
 
+  it('upgrades v4 video defaults without changing existing inference settings', async () => {
+    const { store: settings, directory } = await store();
+    const {
+      videoCaptureIntervalMs: _capture,
+      videoCoverageMs: _coverage,
+      videoMinFrames: _min,
+      videoMaxFrames: _max,
+      videoSamplingStrategy: _strategy,
+      ...previous
+    } = { ...pace(4800), inferenceTimeoutMs: 180000, reasoningEnabled: true };
+    await writeFile(
+      path.join(directory, 'preferences.json'),
+      JSON.stringify({ version: 4, simulation: previous }),
+    );
+    expect(await settings.read()).toEqual({
+      ...DEFAULT_PREFERENCES,
+      ...previous,
+    });
+    const updated = {
+      ...(await settings.read()),
+      videoCaptureIntervalMs: 250,
+      videoCoverageMs: 30000,
+      videoMinFrames: 4,
+      videoMaxFrames: 16,
+      videoSamplingStrategy: 'recent-weighted' as const,
+    };
+    await settings.write(updated);
+    expect(await settings.read()).toEqual(updated);
+  });
+
   it('rejects out-of-range, fractional-count and malformed preferences', async () => {
     const { store: settings } = await store();
     for (const bad of [
@@ -123,6 +166,14 @@ describe('versioned preferences', () => {
       { inferenceTimeoutMs: 3601000 },
       { inferenceTimeoutMs: 12345 },
       { inferenceTimeoutMs: Number.POSITIVE_INFINITY },
+      { videoCaptureIntervalMs: 249 },
+      { videoCaptureIntervalMs: 525 },
+      { videoCaptureIntervalMs: 5050 },
+      { videoCoverageMs: 61000 },
+      { videoMinFrames: 0 },
+      { videoMaxFrames: 33 },
+      { videoMinFrames: 25, videoMaxFrames: 24 },
+      { videoSamplingStrategy: 'random' },
     ]) {
       await expect(settings.write({ ...DEFAULT_PREFERENCES, ...bad })).rejects.toThrow(
         /Invalid simulation preferences/,
@@ -138,7 +189,7 @@ describe('versioned preferences', () => {
     await writeFile(
       path.join(directory, 'preferences.json'),
       JSON.stringify({
-        version: 5,
+        version: 6,
         simulation: { cycleIntervalMs: 3000 },
       }),
     );
