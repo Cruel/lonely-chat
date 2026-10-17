@@ -333,6 +333,17 @@ describe('managed model packages via public model-manager service', () => {
     expect((await app.make().open()).storageDirectory).toBe(await realpath(alternate));
   });
 
+  it('refuses removal when an installation contains unowned regular files', async () => {
+    const app = await fixture();
+    const entry = (await app.manager.install(selection)).installations[0];
+    const directory = path.join(app.manager.snapshot().storageDirectory, 'installed', entry.id);
+    const notes = path.join(directory, 'files', 'personal-notes.txt');
+    await writeFile(notes, 'preserve');
+    await expect(app.manager.remove(entry.id)).rejects.toThrow(/unowned/i);
+    expect(await readFile(notes, 'utf8')).toBe('preserve');
+    expect(app.manager.snapshot().installations).toHaveLength(1);
+  });
+
   it('refuses to follow symlinks during removal or touch files outside the managed package', async () => {
     const app = await fixture();
     const entry = (await app.manager.install(selection)).installations[0];

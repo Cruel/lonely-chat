@@ -15,6 +15,12 @@ This is a **certification harness**, not a claim of release readiness. Run it ag
 
 Other focused integration suites (also required by `pnpm test`) certify history count/age pruning, shorter 3-second video windows, malformed output and retry exhaustion, model discovery/install/removal and worker/model switching, and independent audio-device disconnection/recovery. `pnpm test:overlay` exercises the React overlay with real headless Chromium. The packaged Electron smoke exercises the desktop preload, embedded chat, floating window, tray behavior where available, minimized playback, Start/Stop/Restart, and clean Quit.
 
+## Review regression coverage
+
+The source now includes regression cases for refusing model removal with unowned regular files, calendar-clock changes during video sampling, event-window validation and chronological count pruning, bounded opt-in diagnostic capture, and runtime rejection of a projector without reported vision capability. `src/main/session-media.test.ts` exercises the same integration seam used by desktop/tray Stop and transcript forwarding during a model switch; renderer cases check that the Stop notification releases video/audio streams. The packaged smoke driver lives in `src/main/electron-smoke.ts`.
+
+These additions are **not new certification evidence**: the review-fix pass deliberately does not run test suites. Existing qualification limits below still apply. The optional rolling older-context summary remains unimplemented; bounded event/transcript/chat history is the current continuity mechanism. Successful real CPU inference/STT fixtures and a packaged full media-to-chat scenario remain acceptance work for #18, not claims established by static checks or the fixture source alone.
+
 ## Package certification
 
 The matrix in `.github/workflows/check.yml` builds unsigned Linux x64, Windows x64, and macOS ARM64 artifacts with pinned CPU and available GPU runtimes, then produces an **unpacked** electron-builder application (`--dir`) from the same staged inputs. `pnpm certify:package` inspects that unpacked application, not development executables:

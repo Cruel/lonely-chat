@@ -18,6 +18,15 @@ const emptyModels: ModelManagerSnapshot = {
   progress: { phase: 'idle', file: null, receivedBytes: 0, totalBytes: null },
 };
 const modelsAPI = {
+  onMediaStop: () => () => {},
+  getDiagnosticCapture: async () => ({ enabled: false, samples: 0, bytes: 0, dropped: 0 }),
+  configureDiagnosticCapture: async (enabled: boolean) => ({
+    enabled,
+    samples: 0,
+    bytes: 0,
+    dropped: 0,
+  }),
+  exportDiagnosticCapture: async () => true,
   getOverlayStatus: async () => ({
     port: 18080,
     url: 'http://127.0.0.1:18080/overlay',
@@ -77,7 +86,7 @@ const modelsAPI = {
   removeModel: async () => emptyModels,
   chooseModelDirectory: async () => emptyModels,
   listDisplaySources: async () => [],
-  selectVideoSource: async () => {},
+  selectVideoSource: async () => performance.timeOrigin + performance.now(),
   submitVideoFrame: async () => {},
   getAudioConfiguration: async () => [],
   setAudioConfiguration: async (

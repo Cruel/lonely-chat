@@ -211,7 +211,6 @@ function parseCompletion(body: unknown): unknown {
 export function extractNativeChat(
   body: unknown,
   roster: readonly ChatterIdentity[] = AUDIENCE,
-  recentChat: readonly { author: string }[] = [],
 ): unknown {
   const parsed = parseCompletion(body);
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -220,27 +219,18 @@ export function extractNativeChat(
   const record = parsed as Record<string, unknown>;
   if (!Array.isArray(record.messages)) throw new Error('llama.cpp omitted its chat batch.');
   const allowed = new Map(roster.map((item) => [item.author, item.color]));
-  const uses = new Map<string, number>();
-  for (const item of recentChat) uses.set(item.author, (uses.get(item.author) ?? 0) + 1);
   const messages = record.messages.map((entry: unknown) => {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
       throw new Error('llama.cpp generated an invalid chat message.');
     }
     const item = entry as Record<string, unknown>;
-    let author = item.author;
-    if (author === AUTHOR_PLACEHOLDER) {
-      const candidate = roster.reduce<ChatterIdentity | null>(
-        (best, member) =>
-          !best || (uses.get(member.author) ?? 0) < (uses.get(best.author) ?? 0) ? member : best,
-        null,
-      );
-      author = candidate?.author;
-    }
-    if (typeof author !== 'string' || !allowed.has(author)) {
+    const author = item.author;
+    if (typeof author !== 'string' || (author !== AUTHOR_PLACEHOLDER && !allowed.has(author))) {
       throw new Error('llama.cpp generated a chatter outside the configured roster.');
     }
-    uses.set(author, (uses.get(author) ?? 0) + 1);
-    return { ...item, author, color: allowed.get(author) };
+    // Transport normalization only. AudienceService owns placeholder selection and
+    // authoritative colors after the whole batch has passed schema validation.
+    return { ...item, author, color: allowed.get(author) ?? '#000000' };
   });
   return { ...record, messages };
 }
@@ -324,6 +314,7 @@ export class NativeInference implements InferenceProvider {
   private resources: NativeRuntimeResources | null = null;
   /** A failed GPU child must not be selected again by the controller's bounded retry. */
   private fallbackToCpu = false;
+  private visionReady = false;
 
   snapshot(): NativeServiceStatus {
     return { ...this.status, resources: this.resources };
@@ -531,6 +522,7 @@ export class NativeInference implements InferenceProvider {
     this.apiKey = key;
     this.failure = null;
     this.logTail = '';
+    this.visionReady = false;
     const executable =
       gpuOffloadLayers > 0 && (selection.selected === 'cuda' || selection.selected === 'vulkan')
         ? (this.options.gpuExecutables?.[selection.selected] ?? this.options.executable)
@@ -564,8 +556,8 @@ export class NativeInference implements InferenceProvider {
       this.lifecycle?.abort();
     });
     const fetcher = this.options.fetcher ?? fetch;
-    const until = Date.now() + STARTUP_TIMEOUT_MS;
-    while (Date.now() < until) {
+    const until = performance.now() + STARTUP_TIMEOUT_MS;
+    while (performance.now() < until) {
       if (this.failure) throw this.failure;
       if (signal.aborted || generation !== this.generation)
         throw new Error('Native inference cancelled.');
@@ -575,14 +567,39 @@ export class NativeInference implements InferenceProvider {
         });
         if (response.ok) {
           const health: unknown = await response.json();
-          if ((health as { status?: string })?.status === 'ok') return;
+          if ((health as { status?: string })?.status === 'ok') {
+            if (files.projectorPath) {
+              // b11700 /props reports modalities for the actually loaded model +
+              // projector, unlike filename-based Hub companion suggestions.
+              const response = await fetcher(`http://127.0.0.1:${port}/props`, {
+                headers: { Authorization: `Bearer ${key}` },
+                signal: AbortSignal.any([signal, AbortSignal.timeout(5000)]),
+              });
+              if (!response.ok)
+                throw new Error(
+                  'Model compatibility check failed: unable to query loaded modalities.',
+                );
+              const props = (await readBounded(response)) as { modalities?: { vision?: unknown } };
+              if (props?.modalities?.vision !== true) {
+                throw new Error(
+                  'Model compatibility check failed: the pinned llama.cpp runtime did not load a vision-capable model/projector pair. Select a matching projector or text-only.',
+                );
+              }
+              this.visionReady = true;
+            }
+            return;
+          }
         } else if (response.status !== 503) {
           throw new Error(`llama.cpp health check failed (HTTP ${response.status}).`);
         }
       } catch (error) {
         if (this.failure) throw this.failure;
         if (signal.aborted) throw new Error('Native inference cancelled.');
-        if (error instanceof Error && error.message.startsWith('llama.cpp health check failed'))
+        if (
+          error instanceof Error &&
+          (error.message.startsWith('llama.cpp health check failed') ||
+            error.message.startsWith('Model compatibility check failed'))
+        )
           throw error;
       }
       try {
@@ -643,8 +660,14 @@ export class NativeInference implements InferenceProvider {
   }
 
   async generate(input: InferenceInput, signal: AbortSignal): Promise<unknown> {
+    await this.prepare(signal);
+    if (input.frames?.length && !this.visionReady) {
+      throw new Error(
+        'Live video requires a model/projector pair verified as vision-capable by the pinned llama.cpp runtime. Install a matching projector or stop video for text-only inference.',
+      );
+    }
     const response = await this.complete(nativeChatRequest(input), signal);
-    return extractNativeChat(response, input.roster ?? AUDIENCE, input.recentChat ?? []);
+    return extractNativeChat(response, input.roster ?? AUDIENCE);
   }
 
   private async complete(request: unknown, signal: AbortSignal): Promise<unknown> {

@@ -240,7 +240,9 @@ export function ModelManager({
 
             {selected?.role === 'vision-language' && projectors.length > 0 && (
               <div className="space-y-2">
-                <Label htmlFor="model-projector">Vision projector companion</Label>
+                <Label htmlFor="model-projector">
+                  Vision projector candidate (unverified until native Start)
+                </Label>
                 <Select
                   items={projectorOptions}
                   value={selectedProjector || null}

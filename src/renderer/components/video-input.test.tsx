@@ -17,7 +17,10 @@ function connect(media: {
   getUserMedia: ReturnType<typeof vi.fn>;
   enumerateDevices?: ReturnType<typeof vi.fn>;
 }) {
-  const selectVideoSource = vi.fn(async (_id: string | null) => {});
+  let stopMedia = () => {};
+  const selectVideoSource = vi.fn(
+    async (_id: string | null) => performance.timeOrigin + performance.now(),
+  );
   const submitVideoFrame = vi.fn(async (_frame: VideoFrame) => {});
   window.lonelyChat = {
     listDisplaySources: async () => [
@@ -25,6 +28,12 @@ function connect(media: {
     ],
     selectVideoSource,
     submitVideoFrame,
+    onMediaStop: (listener: () => void) => {
+      stopMedia = listener;
+      return () => {
+        stopMedia = () => {};
+      };
+    },
   } as unknown as DesktopAPI;
   Object.defineProperty(navigator, 'mediaDevices', {
     configurable: true,
@@ -38,7 +47,7 @@ function connect(media: {
       removeEventListener: vi.fn(),
     },
   });
-  return { selectVideoSource, submitVideoFrame };
+  return { selectVideoSource, submitVideoFrame, stopMedia: () => stopMedia() };
 }
 
 afterEach(() => {
@@ -66,7 +75,7 @@ describe('live video input', () => {
           getVideoTracks: () => [track],
         }) as unknown as MediaStream,
     );
-    const { submitVideoFrame } = connect({ getUserMedia });
+    const { submitVideoFrame, stopMedia } = connect({ getUserMedia });
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
       drawImage: vi.fn(),
     } as unknown as CanvasRenderingContext2D);
@@ -100,6 +109,15 @@ describe('live video input', () => {
     expect(submitVideoFrame).toHaveBeenCalledTimes(6);
     expect(getUserMedia).toHaveBeenCalledTimes(1);
     expect(track.stop).not.toHaveBeenCalled();
+    await act(async () => {
+      stopMedia();
+    });
+    expect(track.stop).toHaveBeenCalled();
+    expect(screen.getByRole('status').textContent).toContain('off');
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(submitVideoFrame).toHaveBeenCalledTimes(6);
   });
 
   it('handles denied camera permission without endless retries and still allows turning video off', async () => {
@@ -168,6 +186,7 @@ describe('live video input', () => {
       if (id === 'display:screen:0:0' && ++selectionAttempts === 1) {
         throw new Error('The selected screen or window is no longer available.');
       }
+      return performance.timeOrigin + performance.now();
     });
     let ended: (() => void) | null = null;
     const track = {

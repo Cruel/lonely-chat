@@ -367,7 +367,7 @@ export class ModelInstallManager {
     const destination = path.join(this.config.storageDirectory, 'installed', chosen.id);
     // Refuse deletion of a directory without our matching manifest or with symlink contents.
     await this.checkManifest(chosen);
-    await this.verifySafeTree(destination);
+    await this.verifySafeTree(destination, chosen);
     const old = this.config;
     this.config = {
       ...old,
@@ -741,12 +741,26 @@ export class ModelInstallManager {
     }
   }
 
-  private async verifySafeTree(directory: string): Promise<void> {
+  private async verifySafeTree(root: string, installation: InstalledModel): Promise<void> {
     const { readdir } = await import('node:fs/promises');
-    for (const entry of await readdir(directory, { withFileTypes: true })) {
-      if (entry.isSymbolicLink()) throw new Error('Refusing to delete symlinked model files.');
-      if (entry.isDirectory()) await this.verifySafeTree(path.join(directory, entry.name));
-      else if (!entry.isFile()) throw new Error('Refusing to delete unexpected model file types.');
+    const files = new Set([MANIFEST, ...installation.files.map((file) => file.relativePath)]);
+    const directories = new Set<string>();
+    for (const file of files) {
+      const parts = file.split('/');
+      for (let length = 1; length < parts.length; length++) {
+        directories.add(parts.slice(0, length).join('/'));
+      }
     }
+    const visit = async (relative: string): Promise<void> => {
+      for (const entry of await readdir(path.join(root, relative), { withFileTypes: true })) {
+        const name = relative ? `${relative}/${entry.name}` : entry.name;
+        if (entry.isSymbolicLink()) throw new Error('Refusing to delete symlinked model files.');
+        if (entry.isDirectory() && directories.has(name)) await visit(name);
+        else if (!entry.isFile() || !files.has(name)) {
+          throw new Error(`Refusing to delete unowned model installation content: ${name}`);
+        }
+      }
+    };
+    await visit('');
   }
 }

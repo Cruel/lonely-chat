@@ -14,6 +14,9 @@ function invoke<K extends keyof DesktopInvocations>(
 }
 
 const api: DesktopAPI = {
+  getDiagnosticCapture: () => invoke('diagnostics:get'),
+  configureDiagnosticCapture: (enabled) => invoke('diagnostics:configure', enabled),
+  exportDiagnosticCapture: () => invoke('diagnostics:export'),
   getChatSnapshot: () => invoke('chat:snapshot'),
   onChatEvent: (listener) => {
     const receive = (_event: Electron.IpcRendererEvent, data: ChatEvent) => listener(data);
@@ -57,6 +60,11 @@ const api: DesktopAPI = {
   },
   startSession: (manualContext, mode) => invoke('session:start', manualContext, mode),
   stopSession: () => invoke('session:stop'),
+  onMediaStop: (listener) => {
+    const receive = () => listener();
+    ipcRenderer.on('media:stop', receive);
+    return () => ipcRenderer.removeListener('media:stop', receive);
+  },
   retrySession: () => invoke('session:retry'),
   getNativeStatus: () => invoke('native:status'),
   onNativeChange: (listener) => {

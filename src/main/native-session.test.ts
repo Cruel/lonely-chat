@@ -15,7 +15,7 @@ describe('native session integration', () => {
           ready = resolve;
         }),
       generate: async () => ({
-        events: [{ kind: 'context', summary: 'playing chess', ageMs: 100 }],
+        events: [{ kind: 'context', summary: 'playing chess', ageMs: 0 }],
         messages: [{ author: 'pixelpilot', text: 'nice', color: '#bba5ff', offsetMs: 0 }],
       }),
     };
@@ -30,7 +30,7 @@ describe('native session integration', () => {
     await flushMicrotasks();
     expect(session.snapshot().phase).toBe('running');
     expect(session.snapshot().events).toEqual([
-      { kind: 'context', summary: 'playing chess', observedAt: clock.wallNow() - 100 },
+      { kind: 'context', summary: 'playing chess', observedAt: clock.wallNow() },
     ]);
     expect(chat.snapshot().messages.map((message) => message.text)).toEqual(['nice']);
     session.stop();

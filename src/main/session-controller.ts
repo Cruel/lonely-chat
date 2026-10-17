@@ -1,3 +1,4 @@
+import type { DiagnosticCapture } from './diagnostic-capture';
 import type { ChatService } from './chat-service';
 import { ChatScheduler, systemClock, type TimerClock } from './chat-scheduler';
 import { FakeInference, parseInferenceResult, type InferenceProvider } from './fake-inference';
@@ -68,6 +69,7 @@ export class SessionController {
       | Pick<SessionPreferences, 'cycleIntervalMs'> = DEFAULT_PREFERENCES,
     private readonly nativeInference?: InferenceProvider,
     private readonly audience?: AudienceService,
+    private readonly diagnostics?: DiagnosticCapture,
   ) {
     this.chat = chat;
     this.activeInference = inference;
@@ -365,7 +367,7 @@ export class SessionController {
       adaptationReason: this.state.mode === 'native' ? plan.reason : null,
     });
     const cycleStarted = this.clock.now();
-    this.runAttempt(epoch, input, cycleStarted, 1);
+    this.runAttempt(epoch, input, cycleStarted, 1, this.diagnostics?.token() ?? null);
   }
 
   private runAttempt(
@@ -373,6 +375,7 @@ export class SessionController {
     input: CycleInput,
     cycleStarted: number,
     attempt: number,
+    diagnosticToken: number | null,
   ): void {
     if (!this.active(epoch)) return;
     const abort = new AbortController();
@@ -398,7 +401,15 @@ export class SessionController {
       })
       .then((raw) => {
         if (!this.active(epoch) || abort.signal.aborted) return;
-        const result = parseInferenceResult(raw, input.boundary.throughMs);
+        // Older supplied history and baseline preview frames are valid evidence too.
+        const evidenceStart = Math.min(
+          input.boundary.fromMs,
+          ...(input.frames ?? []).map((entry) => entry.observedAt),
+          ...(input.recentEvents ?? []).map((entry) => entry.observedAt),
+          ...(input.recentTranscripts ?? []).map((entry) => entry.observedAt),
+          ...(input.observations ?? []).map((entry) => entry.observedAt),
+        );
+        const result = parseInferenceResult(raw, input.boundary.throughMs, evidenceStart);
         if (
           this.audience &&
           result.messages.length > CHAT_ACTIVITY_LIMITS[effectiveInput.chatActivity ?? 'normal']
@@ -416,6 +427,7 @@ export class SessionController {
           this.smoothedMs === null
             ? duration
             : this.smoothedMs * (1 - SMOOTHING_WEIGHT) + duration * SMOOTHING_WEIGHT;
+        this.diagnostics?.record(effectiveInput, duration, result, diagnosticToken);
         const windowMs = this.playbackWindow();
         const nextPlan = chooseWorkload(
           this.preferences,
@@ -476,6 +488,12 @@ export class SessionController {
         if (!this.active(epoch) || abort.signal.aborted) return;
         this.abort = null;
         const message = error instanceof Error ? error.message : 'Unknown inference error.';
+        this.diagnostics?.record(
+          effectiveInput,
+          Math.max(0, this.clock.now() - inferenceStarted),
+          { error: message },
+          diagnosticToken,
+        );
         this.setState({ recentErrors: [...(this.state.recentErrors ?? []), message].slice(-5) });
         // Native crashes/model load failures require a new worker. Retry the exact same
         // snapshot boundary; observations arriving in the meantime remain for the next cycle.
@@ -496,7 +514,7 @@ export class SessionController {
         this.inferenceTimer = this.clock.setTimeout(
           () => {
             this.inferenceTimer = null;
-            this.runAttempt(epoch, input, cycleStarted, attempt + 1);
+            this.runAttempt(epoch, input, cycleStarted, attempt + 1, diagnosticToken);
           },
           RETRY_BASE_MS * 2 ** (attempt - 1),
         );

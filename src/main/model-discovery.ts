@@ -292,7 +292,9 @@ export class ModelDiscovery {
       next = nextPage(page.headers.get('link'), next, treePath);
     }
 
-    const warnings: string[] = [];
+    const warnings: string[] = [
+      'Artifact discovery is not runtime compatibility verification. GGUF filenames and same-folder projector companions are unverified candidates; the pinned llama.cpp runtime checks the selected model/projector when you explicitly start native inference.',
+    ];
     const files = modelFiles(entries, warnings);
     const weights = groupGguf(
       files.filter((item) => /\.gguf$/i.test(item.path)),

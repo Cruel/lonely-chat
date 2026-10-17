@@ -28,12 +28,16 @@ import type { AudienceSnapshot } from './audience-contract';
 import type { NativeServiceStatus } from './native-service-contract';
 import type { VideoFrame, VideoSource } from './video-contract';
 import type { AudioInputConfiguration, AudioSegment, AudioStatus } from './audio-contract';
+import type { DiagnosticStatus } from './diagnostic-contract';
 import type { OverlayStatus } from './overlay-contract';
 import type { ModelDiscoveryResult, ModelRole } from './model-contract';
 import type { ModelInstallRequest, ModelManagerSnapshot } from './model-install-contract';
 
 /** IPC return contract: renderer methods and main handlers share the same mapped channels. */
 export interface DesktopInvocations {
+  'diagnostics:get': DiagnosticStatus;
+  'diagnostics:configure': DiagnosticStatus;
+  'diagnostics:export': boolean;
   'chat:snapshot': ChatSnapshot;
   'chat:sample': void;
   'overlay:url': string | null;
@@ -62,7 +66,7 @@ export interface DesktopInvocations {
   'models:remove': ModelManagerSnapshot;
   'models:choose-directory': ModelManagerSnapshot;
   'video:list-displays': VideoSource[];
-  'video:select': void;
+  'video:select': number;
   'video:frame': void;
   'audio:configuration:get': AudioInputConfiguration[];
   'audio:configuration:set': AudioInputConfiguration[];
@@ -79,6 +83,9 @@ export interface DesktopInvocations {
 
 /** Method arguments are also a shared contract, not renderer-defined strings. */
 export interface DesktopArguments {
+  'diagnostics:get': [];
+  'diagnostics:configure': [enabled: boolean];
+  'diagnostics:export': [];
   'chat:snapshot': [];
   'chat:sample': [];
   'overlay:url': [];
@@ -123,6 +130,9 @@ export interface DesktopArguments {
 }
 
 export interface DesktopAPI {
+  getDiagnosticCapture(): Promise<DiagnosticStatus>;
+  configureDiagnosticCapture(enabled: boolean): Promise<DiagnosticStatus>;
+  exportDiagnosticCapture(): Promise<boolean>;
   getChatSnapshot(): Promise<ChatSnapshot>;
   onChatEvent(listener: (event: ChatEvent) => void): () => void;
   publishSample(): Promise<void>;
@@ -141,6 +151,7 @@ export interface DesktopAPI {
   onSessionChange(listener: (status: SessionSnapshot) => void): () => void;
   startSession(manualContext: string, mode?: InferenceMode): Promise<SessionSnapshot>;
   stopSession(): Promise<SessionSnapshot>;
+  onMediaStop(listener: () => void): () => void;
   retrySession(): Promise<SessionSnapshot>;
   getNativeStatus(): Promise<NativeServiceStatus>;
   onNativeChange(listener: (status: NativeServiceStatus) => void): () => void;
@@ -158,7 +169,8 @@ export interface DesktopAPI {
   removeModel(id: string): Promise<ModelManagerSnapshot>;
   chooseModelDirectory(): Promise<ModelManagerSnapshot>;
   listDisplaySources(): Promise<VideoSource[]>;
-  selectVideoSource(sourceId: string | null): Promise<void>;
+  /** Returns main-process observation time for aligning renderer capture timestamps. */
+  selectVideoSource(sourceId: string | null): Promise<number>;
   submitVideoFrame(frame: VideoFrame): Promise<void>;
   getAudioConfiguration(): Promise<AudioInputConfiguration[]>;
   setAudioConfiguration(inputs: AudioInputConfiguration[]): Promise<AudioInputConfiguration[]>;

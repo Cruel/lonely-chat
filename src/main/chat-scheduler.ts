@@ -1,9 +1,11 @@
+import { observationNow } from '../shared/observation-clock';
 import type { ChatMessage } from '../shared/chat-contract';
 import type { ChatService } from './chat-service';
 
 export interface TimerClock {
   /** Monotonic scheduling clock, independent of the calendar clock. */
   now(): number;
+  /** Epoch-shaped monotonic observation time (legacy name; not the mutable wall clock). */
   wallNow(): number;
   setTimeout(callback: () => void, delayMs: number): unknown;
   clearTimeout(handle: unknown): void;
@@ -11,7 +13,7 @@ export interface TimerClock {
 
 export const systemClock: TimerClock = {
   now: () => performance.now(),
-  wallNow: () => Date.now(),
+  wallNow: observationNow,
   setTimeout: (callback, delay) => setTimeout(callback, delay),
   clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
 };

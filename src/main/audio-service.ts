@@ -30,7 +30,7 @@ export class AudioService {
   constructor(
     private readonly newWorker: () => NativeSpeech,
     private readonly onTranscript: (entry: LabeledTranscript) => void,
-    private readonly now = Date.now,
+    private readonly now = systemClock.wallNow,
     private readonly clock: Pick<TimerClock, 'setTimeout' | 'clearTimeout'> = systemClock,
   ) {}
 

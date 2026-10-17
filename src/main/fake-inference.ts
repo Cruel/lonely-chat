@@ -108,6 +108,7 @@ const MAX_EVENT_AGE_MS = 60000;
 export function parseInferenceResult(
   output: unknown,
   now: number,
+  fromMs = now - MAX_EVENT_AGE_MS,
 ): { messages: ScheduledChat[]; events: InferredEvent[] } {
   if (!output || typeof output !== 'object' || Array.isArray(output)) {
     throw new Error('Inference result must be an object.');
@@ -135,7 +136,8 @@ export function parseInferenceResult(
       typeof item.ageMs !== 'number' ||
       !Number.isFinite(item.ageMs) ||
       item.ageMs < 0 ||
-      item.ageMs > MAX_EVENT_AGE_MS
+      item.ageMs > MAX_EVENT_AGE_MS ||
+      now - item.ageMs < fromMs
     ) {
       throw new Error('Inference returned an invalid event.');
     }

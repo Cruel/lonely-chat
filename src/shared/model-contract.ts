@@ -17,8 +17,9 @@ export interface ModelCandidate {
   readonly quantization: string | null;
   readonly sizeBytes: number | null;
   readonly files: readonly ModelFile[];
+  /** Legacy field name: same-folder candidates, NOT verified runtime compatibility. */
   readonly compatibleProjectorIds: readonly string[];
-  /** Only automatically selected for one unambiguous matching projector. */
+  /** Suggested only for one companion; compatibility is checked on explicit native Start. */
   readonly suggestedProjectorId: string | null;
 }
 

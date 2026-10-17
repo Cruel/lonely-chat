@@ -227,6 +227,15 @@ export function AudioInput({ visible = true }: { visible?: boolean }) {
   const [loopback, setLoopback] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  useEffect(
+    () =>
+      window.lonelyChat?.onMediaStop?.(() => {
+        loopbackRequests.current.clear();
+        setSources((items) => items.map((item) => ({ ...item, enabled: false })));
+      }),
+    [],
+  );
+
   const listDevices = useCallback(async () => {
     try {
       if (!navigator.mediaDevices)

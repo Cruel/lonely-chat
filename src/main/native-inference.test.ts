@@ -22,6 +22,10 @@ const server = createServer(async (request, response) => {
     response.end(JSON.stringify({status:'ok'}));
     return;
   }
+  if (request.url === '/props' && request.headers.authorization === 'Bearer ' + key) {
+    response.end(JSON.stringify({modalities:{vision:true}}));
+    return;
+  }
   if (request.url !== '/v1/chat/completions' || request.headers.authorization !== 'Bearer ' + key) {
     response.writeHead(401);
     response.end(JSON.stringify({error:'unauthorized'}));
@@ -116,7 +120,7 @@ describe('native llama.cpp adapter', () => {
     ).toThrow(/invalid event/);
   });
 
-  it('uses dynamic roster grammar and resolves placeholders while preferring names outside recent history', () => {
+  it('uses dynamic roster grammar and preserves placeholders for the audience service', () => {
     const roster = [
       { author: 'ChatFox', color: '#123456' },
       { author: 'ChatCat', color: '#abcdef' },
@@ -147,8 +151,8 @@ describe('native llama.cpp adapter', () => {
         },
       ],
     };
-    expect(extractNativeChat(payload, roster, [{ author: 'ChatFox' }])).toMatchObject({
-      messages: [{ author: 'ChatCat', color: '#abcdef' }],
+    expect(extractNativeChat(payload, roster)).toMatchObject({
+      messages: [{ author: AUTHOR_PLACEHOLDER, color: '#000000' }],
     });
     expect(() =>
       extractNativeChat(
@@ -416,6 +420,31 @@ describe('native llama.cpp adapter', () => {
       gpuOffloadLayers: 0,
     });
     expect(provider.snapshot().resources?.diagnostic).toMatch(/CPU fallback/);
+  });
+
+  it('rejects a projector that the loaded runtime does not report as vision capable', async () => {
+    const provider = new NativeInference({
+      executable: process.execPath,
+      resolveModel: async () => ({ modelPath: '/model.gguf', projectorPath: '/wrong-mmproj.gguf' }),
+      probeDevices: async () => [],
+      launch: (_binary, args, options) =>
+        spawn(
+          process.execPath,
+          [
+            '--input-type=module',
+            '-e',
+            childScript.replace('vision:true', 'vision:false'),
+            args[args.indexOf('--port') + 1],
+            args[args.indexOf('--api-key') + 1],
+          ],
+          options,
+        ),
+    });
+    providers.push(provider);
+    await expect(provider.prepare(new AbortController().signal)).rejects.toThrow(
+      /compatibility.*vision-capable/,
+    );
+    expect(provider.snapshot().phase).not.toBe('ready');
   });
 
   it('enables reasoning only when explicitly configured', async () => {

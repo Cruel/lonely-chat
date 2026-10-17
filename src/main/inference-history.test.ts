@@ -77,6 +77,20 @@ describe('bounded inference context and observation boundaries', () => {
     expect(history.droppedObservations).toBe(20);
   });
 
+  it('orders events before count pruning, regardless of model response order', () => {
+    const history = new InferenceHistory({ historyMaxCount: 2, historyMaxAgeMs: 60000 });
+    history.reset(now);
+    history.commitEvents(
+      [
+        { kind: 'reaction', summary: 'newest', observedAt: now },
+        { kind: 'reaction', summary: 'oldest', observedAt: now - 2000 },
+        { kind: 'reaction', summary: 'middle', observedAt: now - 1000 },
+      ],
+      now,
+    );
+    expect(history.recentEvents(now).map((event) => event.summary)).toEqual(['middle', 'newest']);
+  });
+
   it('rejects impossible timestamps, invalid kinds and invalid acknowledgement boundaries', () => {
     const history = new InferenceHistory(DEFAULT_PREFERENCES);
     history.reset(now);

@@ -61,6 +61,16 @@ export function VideoInput({
   const captureInterval = useRef(captureIntervalMs);
   captureInterval.current = captureIntervalMs;
 
+  useEffect(
+    () =>
+      window.lonelyChat?.onMediaStop?.(() => {
+        ++selectionEpoch.current;
+        pendingDisplay.current = null;
+        setEnabled(false);
+      }),
+    [],
+  );
+
   const refresh = useCallback(async () => {
     const api = window.lonelyChat;
     if (!api) return;
@@ -119,7 +129,8 @@ export function VideoInput({
         setStatus('starting');
         setError(null);
         try {
-          await window.lonelyChat!.selectVideoSource(selected);
+          const mainTime = await window.lonelyChat!.selectVideoSource(selected);
+          const captureOrigin = performance.now();
           if (!valid) return;
           const media = navigator.mediaDevices;
           if (!media) throw new Error('Chromium media capture is unavailable.');
@@ -160,7 +171,9 @@ export function VideoInput({
           if (!context) throw new Error('JPEG frame capture is unavailable.');
           const sample = () => {
             if (!valid || inFlight || !video.current || video.current.readyState < 2) return;
-            const sampledAt = Date.now();
+            // Align to the main process once; later calendar changes or a
+            // renderer restart cannot move observations onto a different timeline.
+            const sampledAt = mainTime + performance.now() - captureOrigin;
             if (sampledAt - lastSampleAt < captureInterval.current) return;
             const width = video.current.videoWidth;
             const height = video.current.videoHeight;

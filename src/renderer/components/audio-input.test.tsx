@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DesktopAPI } from '../../shared/chat-contract';
@@ -15,6 +15,7 @@ const empty: AudioStatus = { revision: 0, sources: [], transcripts: [] };
 
 function connect(getUserMedia: ReturnType<typeof vi.fn>, windowsLoopback = false) {
   let listener: ((status: AudioStatus) => void) | undefined;
+  let stopMedia = () => {};
   const active = new Map<string, AudioStatus['sources'][number]>();
   let listedDevices: MediaDeviceInfo[] = devices;
   const deviceListeners = new Set<() => void>();
@@ -31,6 +32,12 @@ function connect(getUserMedia: ReturnType<typeof vi.fn>, windowsLoopback = false
   const setAudioLabel = vi.fn(async () => empty);
   const removeAudioInput = vi.fn(async () => empty);
   window.lonelyChat = {
+    onMediaStop: (listener: () => void) => {
+      stopMedia = listener;
+      return () => {
+        stopMedia = () => {};
+      };
+    },
     getAudioConfiguration: async () => [],
     setAudioConfiguration: async (
       inputs: import('../../shared/audio-contract').AudioInputConfiguration[],
@@ -65,6 +72,7 @@ function connect(getUserMedia: ReturnType<typeof vi.fn>, windowsLoopback = false
     },
   });
   return {
+    stopMedia: () => stopMedia(),
     startAudio,
     stopAudio,
     setAudioLabel,
@@ -119,7 +127,7 @@ describe('multiple microphone inputs', () => {
         getTracks: () => [track],
       } as unknown as MediaStream;
     });
-    const { startAudio, stopAudio, removeAudioInput } = connect(getUserMedia);
+    const { startAudio, stopAudio, removeAudioInput, stopMedia } = connect(getUserMedia);
     vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:audio-worklet');
     vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
     const close = vi.fn(async () => {});
@@ -165,6 +173,12 @@ describe('multiple microphone inputs', () => {
     expect(screen.getByRole('button', { name: 'Stop audio' })).toBeTruthy();
     expect(tracks[0]!.stop).toHaveBeenCalled();
     expect(tracks[1]!.stop).not.toHaveBeenCalled();
+    await act(async () => {
+      stopMedia();
+    });
+    expect(tracks[1]!.stop).toHaveBeenCalled();
+    expect(stopAudio).toHaveBeenCalledWith(startAudio.mock.calls[1]![3]);
+    expect(screen.queryByRole('button', { name: 'Stop audio' })).toBeNull();
   });
 
   it('offers Windows playback loopback as another independent source', async () => {

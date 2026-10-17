@@ -1,4 +1,8 @@
 import path from 'node:path';
+import { writeFile } from 'node:fs/promises';
+import { DiagnosticCapture } from './diagnostic-capture';
+import { installElectronSmoke } from './electron-smoke';
+import { observationNow } from '../shared/observation-clock';
 import { pathToFileURL } from 'node:url';
 import {
   app,
@@ -13,6 +17,7 @@ import {
 } from 'electron';
 import { ChatService, publishSample } from './chat-service';
 import { SessionController } from './session-controller';
+import { SessionMedia } from './session-media';
 import { PreferencesStore } from './preferences-store';
 import { DEFAULT_PREFERENCES, validatePreferences } from '../shared/session-contract';
 import { AudienceService } from './audience-service';
@@ -45,6 +50,7 @@ const rendererDirectory = path.join(__dirname, '../renderer');
 const preloadPath = path.join(__dirname, '../preload/preload.cjs');
 const devOrigin = process.env.LONELY_CHAT_RENDERER_URL;
 const chat = new ChatService();
+const diagnostics = new DiagnosticCapture();
 const overlay = new OverlayController(
   () => new OverlayServer(chat, rendererDirectory, devOrigin),
   new OverlayPortStore(app.getPath('userData')),
@@ -130,7 +136,7 @@ const lifecycle = new DesktopLifecycle(
   },
   () => !!session && ['starting', 'running', 'switching'].includes(session.snapshot().phase),
   () => {
-    session.stop();
+    stopSession();
   },
   () => {
     app.quit();
@@ -150,6 +156,7 @@ let session: SessionController;
 let audience: AudienceService;
 let nativeInference: NativeInference;
 let audio: AudioService;
+let sessionMedia: SessionMedia | undefined;
 let mainWindow: BrowserWindow | null = null;
 let quitting = false;
 let teardownComplete = false;
@@ -158,6 +165,11 @@ let videoSelectionGeneration = 0;
 let rosterRegenerating = false;
 let rosterGenerationAbort: AbortController | null = null;
 let speechSwitchBusy = false;
+
+/** Both desktop and tray Stop retire every producer, not only the VLM. */
+function stopSession() {
+  return sessionMedia ? sessionMedia.stop() : session?.stop();
+}
 
 async function listDesktopSources(): Promise<Electron.DesktopCapturerSource[]> {
   return desktopCapturer.getSources({
@@ -185,6 +197,20 @@ function requireDesktop(event: Electron.IpcMainInvokeEvent): void {
 
 function registerHandlers(): void {
   const actions = {
+    'diagnostics:get': () => diagnostics.status(),
+    'diagnostics:configure': (enabled: boolean) => diagnostics.configure(enabled),
+    'diagnostics:export': async () => {
+      if (!mainWindow) throw new Error('Desktop window is unavailable.');
+      if (!diagnostics.status().enabled) throw new Error('Enable diagnostic capture first.');
+      const choice = await dialog.showSaveDialog(mainWindow, {
+        title: 'Export private diagnostic samples (includes images and transcripts)',
+        defaultPath: 'lonely-chat-diagnostics.json',
+        filters: [{ name: 'JSON diagnostic capture', extensions: ['json'] }],
+      });
+      if (choice.canceled || !choice.filePath) return false;
+      await writeFile(choice.filePath, diagnostics.export(), { mode: 0o600 });
+      return true;
+    },
     'chat:snapshot': () => chat.snapshot(),
     'chat:sample': () => {
       publishSample(chat);
@@ -234,7 +260,7 @@ function registerHandlers(): void {
         mode === 'native' ? installs.snapshot().active['vision-language'] : null,
       );
     },
-    'session:stop': () => session.stop(),
+    'session:stop': () => stopSession(),
     'session:retry': () => session.retry(),
     'native:status': () => nativeInference.snapshot(),
     'preferences:get': () => session.getPreferences(),
@@ -373,7 +399,7 @@ function registerHandlers(): void {
           (await listDesktopSources()).find((item) => `display:${item.id}` === sourceId) ?? null;
       }
       // Enumeration can finish after the user has already disabled/switched the input.
-      if (generation !== videoSelectionGeneration) return;
+      if (generation !== videoSelectionGeneration) return observationNow();
       // Disabling capture clears the frame ring without discarding the chosen desktop
       // source. Chromium needs it armed before the next user-gesture capture request.
       if (sourceId !== null) selectedDisplaySource = source;
@@ -383,6 +409,7 @@ function registerHandlers(): void {
       if (sourceId?.startsWith('display:') && !source) {
         throw new Error('The selected screen or window is no longer available.');
       }
+      return observationNow();
     },
     'video:frame': (frame: import('../shared/video-contract').VideoFrame) =>
       session.recordVideoFrame(frame),
@@ -481,144 +508,7 @@ function openMainWindow(): void {
     if (url !== expected && url !== `${expected}/`) event.preventDefault();
   });
   if (process.env.LONELY_CHAT_SMOKE === '1') {
-    window.webContents.once('did-finish-load', () => {
-      void (async () => {
-        const result: {
-          initial: number;
-          later: number;
-          overlayUrl: string;
-          previewReady: boolean;
-          apiKeys: string[];
-          session: import('../shared/session-contract').SessionSnapshot;
-        } = await window.webContents.executeJavaScript(`(async () => {
-          // The chat preview now belongs to its own desktop category.
-          for (let attempt = 0; attempt < 100; attempt++) {
-            const chatNavigation = document.querySelector('nav[aria-label="Main navigation"] button[aria-label="Chat & Overlay"]');
-            if (chatNavigation) { chatNavigation.click(); break; }
-            await new Promise(resolve => setTimeout(resolve, 50));
-          }
-          let previewReady = false;
-          for (let attempt = 0; attempt < 100; attempt++) {
-            previewReady = document.querySelector('[role="log"]')?.textContent?.includes('pixelpilot') === true;
-            if (previewReady) break;
-            await new Promise(resolve => setTimeout(resolve, 50));
-          }
-          const initial = await window.lonelyChat.getChatSnapshot();
-          await window.lonelyChat.publishSample();
-          const later = await window.lonelyChat.getChatSnapshot();
-          const session = await window.lonelyChat.startSession('smoke test from Electron');
-          return {
-            initial: initial.sequence,
-            later: later.sequence,
-            previewReady,
-            session,
-            apiKeys: Object.keys(window.lonelyChat).sort(),
-            overlayUrl: await window.lonelyChat.getOverlayUrl()
-          };
-        })()`);
-        if (
-          result.initial !== 1 ||
-          result.later !== 2 ||
-          result.overlayUrl !== overlay.snapshot().url ||
-          !result.previewReady ||
-          result.session.phase !== 'running' ||
-          result.apiKeys.join(',') !==
-            'activateModel,audioDisconnected,cancelModelDownload,chooseModelDirectory,closeFloatingChat,configureFloatingChat,configureOverlayPort,discoverModels,getAudience,getAudioCapabilities,getAudioConfiguration,getAudioStatus,getChatSnapshot,getFloatingChat,getModelsSnapshot,getNativeStatus,getOverlayStatus,getOverlayUrl,getPreferences,getSessionSnapshot,getWindowStatus,installModel,listDisplaySources,onAudienceChange,onAudioChange,onChatEvent,onFloatingChatChange,onModelsChange,onNativeChange,onOverlayChange,onSessionChange,openFloatingChat,publishSample,regenerateAudience,removeAudioInput,removeModel,retryAudio,retrySession,selectVideoSource,setAudioConfiguration,setAudioLabel,setCloseToTray,setPreferences,startAudio,startSession,stopAudio,stopSession,submitAudioSegment,submitVideoFrame'
-        ) {
-          throw new Error(`Electron smoke failed: ${JSON.stringify(result)}`);
-        }
-        const floatingState = await window.webContents.executeJavaScript(
-          'window.lonelyChat.openFloatingChat()',
-        );
-        const captureWindow = BrowserWindow.getAllWindows().find((item) => item !== window);
-        if (!floatingState.open || !captureWindow) {
-          throw new Error('Floating capture window failed to open');
-        }
-        const captureInitial = await captureWindow.webContents.executeJavaScript(`(async () => {
-          for (let attempt = 0; attempt < 100; attempt++) {
-            if (document.querySelector('[role="log"]')?.textContent?.includes('pixelpilot')) break;
-            await new Promise(resolve => setTimeout(resolve, 50));
-          }
-          return {
-            visible: document.querySelector('[role="log"]')?.textContent?.includes('pixelpilot'),
-            privileged: !!window.lonelyChat
-          };
-        })()`);
-        if (!captureInitial.visible || captureInitial.privileged) {
-          throw new Error('Floating capture did not receive safe public chat');
-        }
-        const beforeFloatingMessage = chat.snapshot().sequence;
-        await window.webContents.executeJavaScript('window.lonelyChat.publishSample()');
-        const latestText = chat.snapshot().messages.at(-1)?.text;
-        const captureUpdated = await captureWindow.webContents.executeJavaScript(`(async () => {
-          for (let attempt = 0; attempt < 100; attempt++) {
-            if (document.querySelector('[role="log"]')?.textContent?.includes(${JSON.stringify(latestText)})) return true;
-            await new Promise(resolve => setTimeout(resolve, 50));
-          }
-          return false;
-        })()`);
-        const floatingClosed = await window.webContents.executeJavaScript(
-          'window.lonelyChat.closeFloatingChat()',
-        );
-        if (
-          !captureUpdated ||
-          floatingClosed.open ||
-          chat.snapshot().sequence !== beforeFloatingMessage + 1
-        ) {
-          throw new Error('Floating capture changed chat delivery or failed to close');
-        }
-        const requestedTray = await window.webContents.executeJavaScript(
-          'window.lonelyChat.setCloseToTray(true)',
-        );
-        if (!requestedTray.closeToTray) throw new Error('Close-to-tray preference did not apply');
-        if (requestedTray.trayAvailable) {
-          const floatingAgain = floating.open();
-          if (!floatingAgain.open) throw new Error('Unable to reopen floating presentation');
-          window.close();
-          if (window.isDestroyed() || window.isVisible()) {
-            throw new Error('Main window was not hidden on active simulation close');
-          }
-          if (!floating.snapshot().open || (await fetch(overlay.snapshot().url!)).status !== 200) {
-            throw new Error('Background presentation failed after hiding main window');
-          }
-          await new Promise((resolve) => setTimeout(resolve, 1700));
-          if (chat.snapshot().sequence <= beforeFloatingMessage + 1) {
-            throw new Error('Simulation stopped advancing with hidden configuration window');
-          }
-          lifecycle.show();
-          if (!window.isVisible()) throw new Error('Tray Show failed to restore main window');
-          floating.close();
-        }
-        window.minimize();
-        await new Promise((resolve) => setTimeout(resolve, 2500));
-        const visibleWhileMinimized = chat.snapshot();
-        if (visibleWhileMinimized.sequence < 4 || session.snapshot().phase !== 'running') {
-          throw new Error(
-            `Simulation stopped publishing while minimized: sequence=${visibleWhileMinimized.sequence}, status=${JSON.stringify(session.snapshot())}`,
-          );
-        }
-        await window.webContents.executeJavaScript('window.lonelyChat.stopSession()');
-        const retained = chat.snapshot().sequence;
-        await new Promise((resolve) => setTimeout(resolve, 2200));
-        if (chat.snapshot().sequence !== retained || session.snapshot().pendingMessages !== 0) {
-          throw new Error('Stop failed to cancel pending playback');
-        }
-        const restarted = await window.webContents.executeJavaScript(
-          "window.lonelyChat.startSession('restarted smoke')",
-        );
-        if (restarted.phase !== 'running') throw new Error('Simulation did not restart');
-        // Quit while the scheduler is active; teardown must cancel pending work.
-        if (session.snapshot().phase !== 'running') throw new Error('No active playback at quit');
-        console.info(
-          'PASS: Electron preload IPC, floating window, tray background lifecycle, Start/Stop/Restart, minimized playback, retained chat',
-        );
-        app.quit();
-      })().catch((error: unknown) => {
-        console.error('FAIL: Electron smoke', error);
-        process.exitCode = 1;
-        app.quit();
-      });
-    });
+    installElectronSmoke(window, { chat, session, overlay, floating, lifecycle });
   }
   if (devOrigin) void window.loadURL(devOrigin);
   else void window.loadFile(path.join(rendererDirectory, 'index.html'));
@@ -682,6 +572,7 @@ async function boot(): Promise<void> {
     preferences,
     nativeInference,
     audience,
+    diagnostics,
   );
   audio = new AudioService(
     () =>
@@ -689,16 +580,13 @@ async function boot(): Promise<void> {
         executable: bundledWhisperWorker(app.getAppPath(), app.isPackaged, process.resourcesPath),
         resolveModel: () => installs.activeSpeechFile(),
       }),
-    (entry) => {
-      if (session.snapshot().phase === 'running' || session.snapshot().phase === 'starting') {
-        try {
-          session.recordTranscript(entry);
-        } catch (error) {
-          console.error('Unable to record transcript', error);
-        }
-      }
-    },
+    (entry) => sessionMedia?.recordTranscript(entry),
   );
+  sessionMedia = new SessionMedia(session, audio, () => {
+    ++videoSelectionGeneration;
+    // Keep the display selection armed for the next explicit Start video click.
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('media:stop');
+  });
   audio.subscribe((status) => {
     if (mainWindow && !mainWindow.isDestroyed())
       mainWindow.webContents.send('audio:change', status);
@@ -754,7 +642,7 @@ app.on('window-all-closed', () => {
 });
 const shutdown = new ManagedShutdown(
   () => {
-    session?.stop();
+    stopSession();
   },
   () => {
     installs.cancel();
@@ -785,6 +673,9 @@ app.on('before-quit', (event) => {
   });
 });
 app.on('will-quit', () => {
+  ipcMain.removeHandler('diagnostics:get');
+  ipcMain.removeHandler('diagnostics:configure');
+  ipcMain.removeHandler('diagnostics:export');
   ipcMain.removeHandler('chat:snapshot');
   ipcMain.removeHandler('chat:sample');
   ipcMain.removeHandler('overlay:url');

@@ -161,6 +161,7 @@ export class InferenceHistory {
         (item) =>
           timestamp(item) >= now - this.limits.historyMaxAgeMs && timestamp(item) <= now + 1000,
       )
+      .sort((left, right) => timestamp(left) - timestamp(right))
       .slice(-this.limits.historyMaxCount);
   }
 
