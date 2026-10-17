@@ -48,9 +48,9 @@ export function DiagnosticCaptureControls() {
       <h3 className="font-medium">Opt-in diagnostic capture</h3>
       <p className="mt-2 text-sm text-zinc-400">
         Off by default. Captures inference samples including private images, transcripts, manual
-        context, roster, events and timings in memory (up to 10 samples / 5 MiB). Export writes a
-        JSON file only where you choose. Review it before sharing. Disabling discards all samples;
-        exports are not deleted.
+        context, roster, events and timings in memory (up to 10 samples / 5 MiB). Failed validation
+        samples also include the rejected model response. Export writes a JSON file only where you
+        choose. Review it before sharing. Disabling discards all samples; exports are not deleted.
       </p>
       <p role="status" className="mt-2 text-xs text-zinc-400">
         {status.enabled ? 'Capturing' : 'Disabled'} · {status.samples} samples · {status.bytes}{' '}

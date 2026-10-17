@@ -13,6 +13,29 @@ describe('deterministic inference boundary', () => {
     expect(result.messages.map((message) => message.offsetMs)).toEqual([0, 900, 2100]);
     expect(result.messages[0].text).toContain('new game');
   });
+  it('identifies the invalid event field and observation-window boundary', () => {
+    const messages = [{ author: 'pixelpilot', text: 'hello', color: '#bba5ff', offsetMs: 0 }];
+    expect(() =>
+      parseInferenceResult(
+        { events: [{ kind: 'reaction', summary: 'jump', ageMs: 5000 }], messages },
+        10000,
+        9000,
+      ),
+    ).toThrow(/events\[0\].*ageMs.*5000.*available evidence window.*1000/);
+    expect(() =>
+      parseInferenceResult(
+        { events: [{ kind: 'context', summary: 'ok', ageMs: -1 }], messages },
+        10000,
+      ),
+    ).toThrow(/events\[0\].*ageMs.*-1.*0.*60000/);
+    expect(() =>
+      parseInferenceResult(
+        { events: [{ kind: 'context', summary: 'ok', timestamp: 0 }], messages },
+        10000,
+      ),
+    ).toThrow(/events\[0\].*missing.*ageMs.*unexpected.*timestamp/);
+  });
+
   it('rejects malformed data atomically before it becomes chat', () => {
     for (const invalid of [
       null,

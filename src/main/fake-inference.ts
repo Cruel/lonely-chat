@@ -114,32 +114,61 @@ export function parseInferenceResult(
     throw new Error('Inference result must be an object.');
   }
   const record = output as Record<string, unknown>;
-  if (Object.keys(record).some((key) => key !== 'messages' && key !== 'events')) {
-    throw new Error('Inference returned unexpected fields.');
+  const extraFields = Object.keys(record).filter((key) => key !== 'messages' && key !== 'events');
+  if (extraFields.length) {
+    throw new Error(
+      `Inference returned unexpected fields: ${JSON.stringify(extraFields).slice(0, 200)}.`,
+    );
   }
   const messages = parseChatBatch({ messages: record.messages });
   if (record.events === undefined) return { messages, events: [] }; // Existing fake fixture.
   if (!Array.isArray(record.events) || record.events.length > MAX_EVENTS) {
-    throw new Error('Inference returned an invalid event batch.');
+    throw new Error(
+      `Inference returned an invalid event batch (expected an array of at most ${MAX_EVENTS} events).`,
+    );
   }
-  const events: InferredEvent[] = record.events.map((value: unknown) => {
+  const events: InferredEvent[] = record.events.map((value: unknown, index: number) => {
+    const invalid = (reason: string): never => {
+      throw new Error(`Inference returned an invalid event at events[${index}]: ${reason}.`);
+    };
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      throw new Error('Inference returned an invalid event.');
+      return invalid('expected an object with kind, summary and ageMs');
     }
     const item = value as Record<string, unknown>;
+    const fields = ['kind', 'summary', 'ageMs'];
+    const missing = fields.filter((key) => !Object.hasOwn(item, key));
+    const unexpected = Object.keys(item).filter((key) => !fields.includes(key));
+    if (missing.length || unexpected.length) {
+      return invalid(
+        `missing fields ${JSON.stringify(missing)}, unexpected fields ${JSON.stringify(unexpected).slice(0, 160)}`,
+      );
+    }
+    if (item.kind !== 'context' && item.kind !== 'reaction') {
+      return invalid('kind must be "context" or "reaction"');
+    }
     if (
-      Object.keys(item).length !== 3 ||
-      (item.kind !== 'context' && item.kind !== 'reaction') ||
       typeof item.summary !== 'string' ||
       item.summary.trim().length < 1 ||
-      item.summary.length > 300 ||
+      item.summary.length > 300
+    ) {
+      return invalid(
+        `summary must contain 1-300 characters of nonempty text (received ${typeof item.summary}${typeof item.summary === 'string' ? `, length ${item.summary.length}` : ''})`,
+      );
+    }
+    if (
       typeof item.ageMs !== 'number' ||
       !Number.isFinite(item.ageMs) ||
       item.ageMs < 0 ||
-      item.ageMs > MAX_EVENT_AGE_MS ||
-      now - item.ageMs < fromMs
+      item.ageMs > MAX_EVENT_AGE_MS
     ) {
-      throw new Error('Inference returned an invalid event.');
+      return invalid(
+        `ageMs ${typeof item.ageMs === 'number' ? item.ageMs : typeof item.ageMs} is invalid; expected a finite number from 0 to ${MAX_EVENT_AGE_MS}`,
+      );
+    }
+    if (now - item.ageMs < fromMs) {
+      return invalid(
+        `ageMs ${item.ageMs} exceeds the available evidence window of ${Math.max(0, now - fromMs)} ms`,
+      );
     }
     return { kind: item.kind, summary: item.summary, observedAt: now - item.ageMs };
   });

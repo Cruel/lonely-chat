@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ChatService } from './chat-service';
+import { DiagnosticCapture } from './diagnostic-capture';
 import { SessionController } from './session-controller';
 import type { InferenceProvider } from './fake-inference';
 import { FakeClock, flushMicrotasks } from './test-support/fake-clock';
@@ -59,6 +60,35 @@ describe('native session integration', () => {
     expect(session.snapshot().phase).toBe('error');
     expect(session.snapshot().error).toMatch(/invalid event/);
     expect(session.snapshot().events).toEqual([]);
+    expect(chat.snapshot().messages).toEqual([]);
+    session.stop();
+  });
+
+  it('retains rejected native model output in explicitly enabled diagnostic capture', async () => {
+    const diagnostics = new DiagnosticCapture();
+    diagnostics.configure(true);
+    const clock = new FakeClock();
+    const chat = new ChatService();
+    const rejected = {
+      events: [{ kind: 'reaction', summary: 'out of window', ageMs: 12000 }],
+      messages: [{ author: 'pixelpilot', text: 'not published', color: '#bba5ff', offsetMs: 0 }],
+    };
+    const session = new SessionController(
+      chat,
+      undefined,
+      clock,
+      undefined,
+      { generate: async () => rejected },
+      undefined,
+      diagnostics,
+    );
+    session.start('context', 'native');
+    await flushMicrotasks();
+    expect(session.snapshot().warning).toMatch(/events\[0\].*ageMs.*available evidence window/);
+    expect(JSON.parse(diagnostics.export()).samples[0].result).toEqual({
+      error: expect.stringMatching(/events\[0\].*ageMs/),
+      rawOutput: rejected,
+    });
     expect(chat.snapshot().messages).toEqual([]);
     session.stop();
   });

@@ -383,6 +383,8 @@ export class SessionController {
     const provider = this.activeInference;
     let inferenceStarted = this.clock.now();
     let effectiveInput = input;
+    let rawOutput: unknown;
+    let receivedOutput = false;
     void Promise.resolve()
       .then(async () => {
         // A prior asynchronous stop must finish before this worker is reused.
@@ -397,7 +399,10 @@ export class SessionController {
         if (!this.active(epoch) || abort.signal.aborted) return undefined;
         if (this.state.phase === 'starting') this.setState({ phase: 'running' });
         inferenceStarted = this.clock.now();
-        return provider.generate(effectiveInput, abort.signal);
+        const output = await provider.generate(effectiveInput, abort.signal);
+        rawOutput = output;
+        receivedOutput = true;
+        return output;
       })
       .then((raw) => {
         if (!this.active(epoch) || abort.signal.aborted) return;
@@ -491,10 +496,11 @@ export class SessionController {
         this.diagnostics?.record(
           effectiveInput,
           Math.max(0, this.clock.now() - inferenceStarted),
-          { error: message },
+          receivedOutput ? { error: message, rawOutput } : { error: message },
           diagnosticToken,
         );
-        this.setState({ recentErrors: [...(this.state.recentErrors ?? []), message].slice(-5) });
+        const logEntry = `${new Date().toISOString()} · cycle ${input.cycle}, attempt ${attempt}: ${message}`;
+        this.setState({ recentErrors: [...(this.state.recentErrors ?? []), logEntry].slice(-5) });
         // Native crashes/model load failures require a new worker. Retry the exact same
         // snapshot boundary; observations arriving in the meantime remain for the next cycle.
         this.shutdownPromise = this.stopProvider(provider);

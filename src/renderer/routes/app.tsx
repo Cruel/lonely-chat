@@ -569,8 +569,10 @@ export function DesktopPage() {
                   {nativeStatus?.error ? ` · ${nativeStatus.error}` : ''}
                 </p>
                 <p className="mt-2 text-sm text-zinc-400">
-                  A timestamped log viewer and native worker output will be added separately. Only
-                  the currently available session status is shown here for now.
+                  Recent inference errors below include timestamps, cycle and attempt numbers, and
+                  field-level validation failures. Enable private diagnostic capture before retrying
+                  to export the rejected model output. Native worker stdout/stderr is not yet
+                  available in this view.
                 </p>
                 <dl className="mt-5 grid gap-3 text-sm sm:grid-cols-2">
                   <div>
