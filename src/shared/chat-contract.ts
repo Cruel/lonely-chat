@@ -23,6 +23,7 @@ export type ChatEvent = ChatSnapshot | ChatAppend;
 
 import type { InferenceMode, SessionPreferences, SessionSnapshot } from './session-contract';
 import type { VideoFrame, VideoSource } from './video-contract';
+import type { AudioSegment, AudioStatus } from './audio-contract';
 import type { ModelDiscoveryResult, ModelRole } from './model-contract';
 import type { ModelInstallRequest, ModelManagerSnapshot } from './model-install-contract';
 
@@ -46,6 +47,10 @@ export interface DesktopInvocations {
   'video:list-displays': VideoSource[];
   'video:select': void;
   'video:frame': void;
+  'audio:status': AudioStatus;
+  'audio:start': AudioStatus;
+  'audio:stop': AudioStatus;
+  'audio:segment': void;
 }
 
 /** Method arguments are also a shared contract, not renderer-defined strings. */
@@ -68,6 +73,10 @@ export interface DesktopArguments {
   'video:list-displays': [];
   'video:select': [sourceId: string | null];
   'video:frame': [frame: VideoFrame];
+  'audio:status': [];
+  'audio:start': [sourceId: string, label: string, captureId: string];
+  'audio:stop': [captureId: string];
+  'audio:segment': [segment: AudioSegment, captureId: string];
 }
 
 export interface DesktopAPI {
@@ -92,4 +101,9 @@ export interface DesktopAPI {
   listDisplaySources(): Promise<VideoSource[]>;
   selectVideoSource(sourceId: string | null): Promise<void>;
   submitVideoFrame(frame: VideoFrame): Promise<void>;
+  getAudioStatus(): Promise<AudioStatus>;
+  onAudioChange(listener: (snapshot: AudioStatus) => void): () => void;
+  startAudio(sourceId: string, label: string, captureId: string): Promise<AudioStatus>;
+  stopAudio(captureId: string): Promise<AudioStatus>;
+  submitAudioSegment(segment: AudioSegment, captureId: string): Promise<void>;
 }

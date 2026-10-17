@@ -28,6 +28,35 @@ const modelsAPI = {
   listDisplaySources: async () => [],
   selectVideoSource: async () => {},
   submitVideoFrame: async () => {},
+  getAudioStatus: async () => ({
+    revision: 0,
+    phase: 'off' as const,
+    sourceId: null,
+    label: 'Microphone',
+    error: null,
+    pendingSegments: 0,
+    transcripts: [],
+  }),
+  onAudioChange: () => () => {},
+  startAudio: async () => ({
+    revision: 1,
+    phase: 'ready' as const,
+    sourceId: 'mic',
+    label: 'Microphone',
+    error: null,
+    pendingSegments: 0,
+    transcripts: [],
+  }),
+  stopAudio: async () => ({
+    revision: 2,
+    phase: 'off' as const,
+    sourceId: null,
+    label: 'Microphone',
+    error: null,
+    pendingSegments: 0,
+    transcripts: [],
+  }),
+  submitAudioSegment: async () => {},
 };
 
 const emptyStatus: SessionSnapshot = {

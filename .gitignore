@@ -2,6 +2,7 @@ node_modules/
 dist-electron/
 out/
 native/llama/
+native/whisper/
 coverage/
 .vite/
 *.tsbuildinfo

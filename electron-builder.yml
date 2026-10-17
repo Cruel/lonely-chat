@@ -13,6 +13,10 @@ extraResources:
     to: llama
     filter:
       - '**/*'
+  - from: native/whisper
+    to: whisper
+    filter:
+      - '**/*'
 npmRebuild: false
 linux:
   target: [AppImage]

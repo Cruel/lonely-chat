@@ -9,7 +9,9 @@ import { OverlayServer } from './overlay-server';
 import { ModelDiscovery } from './model-discovery';
 import { ModelInstallManager } from './model-install-manager';
 import { NativeInference } from './native-inference';
-import { bundledLlamaServer } from './native-runtime-path';
+import { bundledLlamaServer, bundledWhisperWorker } from './native-runtime-path';
+import { NativeSpeech } from './native-speech';
+import { AudioService } from './audio-service';
 import type { ChatEvent, DesktopInvocations, DesktopArguments } from '../shared/chat-contract';
 
 const rendererDirectory = path.join(__dirname, '../renderer');
@@ -21,6 +23,7 @@ const preferenceStore = new PreferencesStore(app.getPath('userData'));
 const models = new ModelDiscovery();
 const installs = new ModelInstallManager(app.getPath('userData'), models);
 let session: SessionController;
+let audio: AudioService;
 let mainWindow: BrowserWindow | null = null;
 let quitting = false;
 let selectedDisplaySource: Electron.DesktopCapturerSource | null = null;
@@ -77,11 +80,22 @@ function registerHandlers(): void {
       if (session.snapshot().phase === 'running' || session.snapshot().phase === 'starting') {
         throw new Error('Stop the simulation before changing the active model.');
       }
+      if (role === 'speech-to-text' && audio.snapshot().phase !== 'off') {
+        throw new Error('Stop audio capture before changing the speech model.');
+      }
       return installs.setActive(role, id);
     },
     'models:remove': (id: string) => {
       if (session.snapshot().phase === 'running' || session.snapshot().phase === 'starting') {
         throw new Error('Stop the simulation before removing a model.');
+      }
+      if (
+        audio.snapshot().phase !== 'off' &&
+        installs
+          .snapshot()
+          .installations.some((item) => item.id === id && item.role === 'speech-to-text')
+      ) {
+        throw new Error('Stop audio capture before removing a speech model.');
       }
       return installs.remove(id);
     },
@@ -120,6 +134,14 @@ function registerHandlers(): void {
     },
     'video:frame': (frame: import('../shared/video-contract').VideoFrame) =>
       session.recordVideoFrame(frame),
+    'audio:status': () => audio.snapshot(),
+    'audio:start': (sourceId: string, label: string, captureId: string) =>
+      audio.start(sourceId, label, captureId),
+    'audio:stop': (captureId: string) => audio.stop(captureId),
+    'audio:segment': (
+      segment: import('../shared/audio-contract').AudioSegment,
+      captureId: string,
+    ) => audio.submit(segment, captureId),
     'models:choose-directory': async () => {
       if (!mainWindow) throw new Error('Desktop window is unavailable.');
       const choice = await dialog.showOpenDialog(mainWindow, {
@@ -172,7 +194,10 @@ function openMainWindow(): void {
   });
   window.webContents.setBackgroundThrottling(false);
   window.on('closed', () => {
-    if (mainWindow === window) mainWindow = null;
+    if (mainWindow === window) {
+      mainWindow = null;
+      audio?.stop();
+    }
   });
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (url === overlay.url) void shell.openExternal(url);
@@ -225,7 +250,7 @@ function openMainWindow(): void {
           !result.previewReady ||
           result.session.phase !== 'running' ||
           result.apiKeys.join(',') !==
-            'activateModel,cancelModelDownload,chooseModelDirectory,discoverModels,getChatSnapshot,getModelsSnapshot,getOverlayUrl,getPreferences,getSessionSnapshot,installModel,listDisplaySources,onChatEvent,onModelsChange,onSessionChange,publishSample,removeModel,selectVideoSource,setPreferences,startSession,stopSession,submitVideoFrame'
+            'activateModel,cancelModelDownload,chooseModelDirectory,discoverModels,getAudioStatus,getChatSnapshot,getModelsSnapshot,getOverlayUrl,getPreferences,getSessionSnapshot,installModel,listDisplaySources,onAudioChange,onChatEvent,onModelsChange,onSessionChange,publishSample,removeModel,selectVideoSource,setPreferences,startAudio,startSession,stopAudio,stopSession,submitAudioSegment,submitVideoFrame'
         ) {
           throw new Error(`Electron smoke failed: ${JSON.stringify(result)}`);
         }
@@ -287,6 +312,25 @@ async function boot(): Promise<void> {
       inferenceTimeoutMs: () => session.getPreferences().inferenceTimeoutMs,
     }),
   );
+  audio = new AudioService(
+    new NativeSpeech({
+      executable: bundledWhisperWorker(app.getAppPath(), app.isPackaged, process.resourcesPath),
+      resolveModel: () => installs.activeSpeechFile(),
+    }),
+    (entry) => {
+      if (session.snapshot().phase === 'running' || session.snapshot().phase === 'starting') {
+        try {
+          session.recordTranscript(entry);
+        } catch (error) {
+          console.error('Unable to record transcript', error);
+        }
+      }
+    },
+  );
+  audio.subscribe((status) => {
+    if (mainWindow && !mainWindow.isDestroyed())
+      mainWindow.webContents.send('audio:change', status);
+  });
   session.subscribe((status) => {
     if (mainWindow && !mainWindow.isDestroyed())
       mainWindow.webContents.send('session:change', status);
@@ -319,6 +363,7 @@ app.on('before-quit', (event) => {
   event.preventDefault();
   quitting = true;
   installs.cancel();
+  audio?.stop();
   void Promise.all([session?.terminate(), overlay.stop()]).finally(() => app.quit());
 });
 app.on('will-quit', () => {
@@ -340,4 +385,8 @@ app.on('will-quit', () => {
   ipcMain.removeHandler('video:list-displays');
   ipcMain.removeHandler('video:select');
   ipcMain.removeHandler('video:frame');
+  ipcMain.removeHandler('audio:status');
+  ipcMain.removeHandler('audio:start');
+  ipcMain.removeHandler('audio:stop');
+  ipcMain.removeHandler('audio:segment');
 });

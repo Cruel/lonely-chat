@@ -342,6 +342,23 @@ export class ModelInstallManager {
     };
   }
 
+  /** Resolve manager-verified native whisper.cpp GGML model bytes. */
+  async activeSpeechFile(): Promise<string> {
+    this.requireReady();
+    const id = this.config.active['speech-to-text'];
+    const entry = this.config.installations.find(
+      (item) => item.id === id && item.role === 'speech-to-text',
+    );
+    if (!entry || entry.files.length !== 1 || entry.files[0].path !== entry.candidateId) {
+      throw new Error('Activate an installed whisper.cpp speech model first.');
+    }
+    await this.verifyInstallation(entry);
+    return checkedPath(
+      path.join(this.config.storageDirectory, 'installed', entry.id),
+      entry.files[0].relativePath,
+    );
+  }
+
   async remove(id: string): Promise<ModelManagerSnapshot> {
     this.requireReady();
     if (this.busy) throw new Error('Wait for the current download to finish.');

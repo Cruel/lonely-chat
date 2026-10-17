@@ -28,6 +28,8 @@ import {
 import { ModelManager } from '@/components/model-manager';
 import { NumericSettingCombobox } from '@/components/numeric-setting-combobox';
 import { VideoInput } from '@/components/video-input';
+import { AudioInput } from '@/components/audio-input';
+import type { AudioStatus } from '../../shared/audio-contract';
 import { useChat } from '../use-chat';
 import { useSession } from '../use-session';
 import {
@@ -76,6 +78,20 @@ export function DesktopPage() {
   const [manualContext, setManualContext] = useState('');
   const [inferenceMode, setInferenceMode] = useState<InferenceMode>('fake');
   const [sampleBusy, setSampleBusy] = useState(false);
+  const [audioStatus, setAudioStatus] = useState<AudioStatus | null>(null);
+  useEffect(() => {
+    let live = true;
+    const unsubscribe = window.lonelyChat?.onAudioChange((next) => {
+      if (live) setAudioStatus(next);
+    });
+    void window.lonelyChat?.getAudioStatus().then((next) => {
+      if (live) setAudioStatus(next);
+    });
+    return () => {
+      live = false;
+      unsubscribe?.();
+    };
+  }, []);
 
   useEffect(() => {
     void window.lonelyChat?.getOverlayUrl().then(setOverlayUrl);
@@ -345,11 +361,7 @@ export function DesktopPage() {
                   />
                 </Panel>
                 <Panel>
-                  <h3 className="font-medium">Audio sources</h3>
-                  <p className="mt-2 text-sm text-zinc-400">
-                    Microphone selection and speech transcription will be added in later
-                    implementation tickets (#12–#13).
-                  </p>
+                  <AudioInput visible={section === 'inputs'} />
                 </Panel>
               </div>
             </section>
@@ -406,6 +418,26 @@ export function DesktopPage() {
                     <dd className="mt-1">{session.status.droppedObservations}</dd>
                   </div>
                 </dl>
+                {audioStatus && (
+                  <div className="mt-5 border-t border-border pt-4" aria-label="Audio diagnostics">
+                    <h4 className="text-sm font-medium">Speech transcription</h4>
+                    <p className="mt-2 text-xs text-zinc-400">
+                      {audioStatus.phase} · {audioStatus.label} · {audioStatus.pendingSegments}{' '}
+                      pending
+                    </p>
+                    {audioStatus.error && (
+                      <p role="alert" className="mt-2 text-sm text-amber-300">
+                        {audioStatus.error}
+                      </p>
+                    )}
+                    {audioStatus.transcripts.slice(-8).map((item, index) => (
+                      <p key={`${item.observedAt}-${index}`} className="mt-2 text-xs text-zinc-300">
+                        {new Date(item.observedAt).toLocaleTimeString()} · {item.source}:{' '}
+                        {item.text}
+                      </p>
+                    ))}
+                  </div>
+                )}
                 {session.status.warning && (
                   <p className="mt-4 text-sm text-amber-300">{session.status.warning}</p>
                 )}

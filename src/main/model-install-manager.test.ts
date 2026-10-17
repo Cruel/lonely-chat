@@ -298,6 +298,10 @@ describe('managed model packages via public model-manager service', () => {
     expect(two?.files.map((file) => file.path)).toEqual([speech]);
     const active = await app.manager.setActive('speech-to-text', two!.id);
     expect(active.active).toEqual({ 'vision-language': null, 'speech-to-text': two!.id });
+    const resolvedSpeech = await app.manager.activeSpeechFile();
+    expect(await readFile(resolvedSpeech, 'utf8')).toBe('speech weights');
+    await writeFile(resolvedSpeech, 'tampered speech weights');
+    await expect(app.manager.activeSpeechFile()).rejects.toThrow(/verification/);
   });
 
   it('changes selected storage, removes only owned packages and clears their active role', async () => {

@@ -53,5 +53,17 @@ const api: DesktopAPI = {
   listDisplaySources: () => invoke('video:list-displays'),
   selectVideoSource: (sourceId) => invoke('video:select', sourceId),
   submitVideoFrame: (frame) => invoke('video:frame', frame),
+  getAudioStatus: () => invoke('audio:status'),
+  startAudio: (sourceId, label, captureId) => invoke('audio:start', sourceId, label, captureId),
+  stopAudio: (captureId) => invoke('audio:stop', captureId),
+  submitAudioSegment: (segment, captureId) => invoke('audio:segment', segment, captureId),
+  onAudioChange: (listener) => {
+    const receive = (
+      _event: Electron.IpcRendererEvent,
+      snapshot: import('../shared/audio-contract').AudioStatus,
+    ) => listener(snapshot);
+    ipcRenderer.on('audio:change', receive);
+    return () => ipcRenderer.removeListener('audio:change', receive);
+  },
 };
 contextBridge.exposeInMainWorld('lonelyChat', api);
