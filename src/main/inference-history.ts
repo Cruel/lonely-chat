@@ -107,7 +107,8 @@ export class InferenceHistory {
       .filter(
         (item): item is Extract<CaptureEntry, { kind: 'transcript' }> => item.kind === 'transcript',
       )
-      .map((item) => ({ ...item.data }));
+      .map((item) => ({ ...item.data }))
+      .sort((a, b) => a.observedAt - b.observedAt);
     return {
       context,
       cycle,

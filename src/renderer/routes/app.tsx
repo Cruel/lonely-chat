@@ -422,14 +422,16 @@ export function DesktopPage() {
                   <div className="mt-5 border-t border-border pt-4" aria-label="Audio diagnostics">
                     <h4 className="text-sm font-medium">Speech transcription</h4>
                     <p className="mt-2 text-xs text-zinc-400">
-                      {audioStatus.phase} · {audioStatus.label} · {audioStatus.pendingSegments}{' '}
-                      pending
+                      {audioStatus.sources.length} configured ·{' '}
+                      {audioStatus.sources.filter((item) => item.phase === 'ready').length} ready
                     </p>
-                    {audioStatus.error && (
-                      <p role="alert" className="mt-2 text-sm text-amber-300">
-                        {audioStatus.error}
+                    {audioStatus.sources.map((source) => (
+                      <p key={source.id} className="mt-2 text-xs text-zinc-300">
+                        {source.label} ({source.sourceId}) · {source.phase} ·{' '}
+                        {source.pendingSegments} pending
+                        {source.error && <span className="text-amber-300"> · {source.error}</span>}
                       </p>
-                    )}
+                    ))}
                     {audioStatus.transcripts.slice(-8).map((item, index) => (
                       <p key={`${item.observedAt}-${index}`} className="mt-2 text-xs text-zinc-300">
                         {new Date(item.observedAt).toLocaleTimeString()} · {item.source}:{' '}

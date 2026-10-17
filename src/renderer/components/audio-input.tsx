@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -11,123 +11,118 @@ import {
 } from '@/components/ui/select';
 import { MonoResampler, SpeechSegmenter } from '../../main/audio-segmentation';
 import { audioWorkletSource } from '../audio-processor';
-import type { AudioStatus } from '../../shared/audio-contract';
+import type { AudioSourceStatus, AudioStatus } from '../../shared/audio-contract';
 
+const LOOPBACK = 'system-loopback';
+let nextSourceSequence = 0;
 let nextCaptureSequence = 0;
+
+interface ConfiguredInput {
+  readonly id: string;
+  readonly sourceId: string;
+  readonly label: string;
+  readonly enabled: boolean;
+}
 
 function mediaError(error: unknown): string {
   if (error instanceof DOMException) {
     if (error.name === 'NotAllowedError' || error.name === 'SecurityError')
-      return 'Microphone permission denied. Enable microphone access in system settings and retry.';
+      return 'Audio permission denied. Enable capture access in system settings.';
     if (error.name === 'NotFoundError' || error.name === 'OverconstrainedError')
-      return 'Selected microphone is disconnected or no longer available.';
-    if (error.name === 'NotReadableError') return 'Microphone is busy or unavailable.';
+      return 'Selected audio device is disconnected or unavailable.';
+    if (error.name === 'NotReadableError') return 'Audio device is busy or unavailable.';
   }
-  return error instanceof Error ? error.message : 'Unable to start microphone capture.';
+  return error instanceof Error ? error.message : 'Unable to start audio capture.';
 }
 
-/** Ordinary Chromium audioinput; native speech inference occurs in Electron main. */
-export function AudioInput({ visible = true }: { visible?: boolean }) {
-  const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
-  const [selected, setSelected] = useState('none');
-  const [label, setLabel] = useState('Microphone');
-  const [enabled, setEnabled] = useState(false);
+function recoverable(error: unknown): boolean {
+  return (
+    error instanceof DOMException &&
+    ['NotFoundError', 'NotReadableError', 'OverconstrainedError'].includes(error.name)
+  );
+}
+
+function CaptureInput({
+  config,
+  available,
+  status,
+  loopbackRequest,
+  onEdit,
+}: {
+  config: ConfiguredInput;
+  available: boolean;
+  status?: AudioSourceStatus;
+  loopbackRequest?: Promise<MediaStream>;
+  onEdit: (patch: Partial<ConfiguredInput>) => void;
+}) {
+  const { id, sourceId, enabled } = config;
+  const currentLabel = useRef(config.label);
+  currentLabel.current = config.label;
+  const currentlyAvailable = useRef(available);
+  currentlyAvailable.current = available;
+  const wasReady = useRef(false);
   const [error, setError] = useState<string | null>(null);
-  const [status, setStatus] = useState<AudioStatus | null>(null);
-  const [refreshCount, refresh] = useState(0);
-
-  const listDevices = useCallback(async () => {
-    try {
-      if (!navigator.mediaDevices)
-        throw new Error('Audio capture is unavailable in this environment.');
-      setDevices(
-        (await navigator.mediaDevices.enumerateDevices()).filter(
-          (item) => item.kind === 'audioinput' && item.deviceId,
-        ),
-      );
-    } catch (failure) {
-      setError(mediaError(failure));
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!window.lonelyChat) return;
-    let valid = true;
-    const unsubscribe = window.lonelyChat.onAudioChange((next) => {
-      if (!valid) return;
-      setStatus(next);
-      if (next.phase === 'error') {
-        setError(next.error ?? 'Speech transcription stopped unexpectedly.');
-        setEnabled(false);
-      }
-    });
-    void window.lonelyChat.getAudioStatus().then((next) => {
-      if (valid) setStatus(next);
-    });
-    return () => {
-      valid = false;
-      unsubscribe();
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!visible && !enabled) return;
-    void listDevices();
-    navigator.mediaDevices?.addEventListener?.('devicechange', listDevices);
-    return () => navigator.mediaDevices?.removeEventListener?.('devicechange', listDevices);
-  }, [visible, enabled, listDevices, refreshCount]);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let active = true;
+    let ended = false;
     let stream: MediaStream | null = null;
     let context: AudioContext | null = null;
     let node: AudioWorkletNode | null = null;
     let input: MediaStreamAudioSourceNode | null = null;
     let sink: GainNode | null = null;
-    const captureId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${++nextCaptureSequence}`;
-    const stop = () => {
-      node?.port.close();
-      node?.disconnect();
-      input?.disconnect();
-      sink?.disconnect();
-      stream?.getTracks().forEach((track) => track.stop());
-      void context?.close();
-      void window.lonelyChat?.stopAudio(captureId).catch(() => {});
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    const captureId = globalThis.crypto?.randomUUID?.() ?? `capture-${++nextCaptureSequence}`;
+    const api = window.lonelyChat;
+
+    const retry = () => {
+      if (retryTimer !== null) return;
+      retryTimer = setTimeout(() => {
+        if (active) setAttempt((value) => value + 1);
+      }, 2000);
     };
-    if (enabled && selected !== 'none' && window.lonelyChat) {
+    const disconnected = () => {
+      if (!active || ended) return;
+      ended = true;
+      setError('Audio source disconnected. Waiting to reconnect to the same device.');
+      void api?.audioDisconnected(captureId).catch(() => {});
+      if (sourceId === LOOPBACK) onEdit({ enabled: false });
+      else retry();
+    };
+
+    if (enabled && available && sourceId && api) {
       const start = async () => {
         setError(null);
         try {
-          const api = window.lonelyChat!;
           const media = navigator.mediaDevices;
           if (!media) throw new Error('Chromium audio capture is unavailable.');
-          const captured = await media.getUserMedia({
-            audio: {
-              deviceId: { exact: selected },
-              echoCancellation: false,
-              autoGainControl: false,
-              noiseSuppression: false,
-            },
-            video: false,
-          });
+          const captured =
+            sourceId === LOOPBACK
+              ? await (loopbackRequest ??
+                  Promise.reject(new Error('Start loopback capture from the Start button.')))
+              : await media.getUserMedia({
+                  audio: {
+                    deviceId: { exact: sourceId },
+                    echoCancellation: false,
+                    autoGainControl: false,
+                    noiseSuppression: false,
+                  },
+                  video: false,
+                });
           if (!active) {
             captured.getTracks().forEach((track) => track.stop());
             return;
           }
           stream = captured;
           const track = captured.getAudioTracks()[0];
-          if (!track) throw new Error('No microphone audio track was supplied.');
-          track.onended = () => {
-            if (active) {
-              setError('Microphone disconnected. Select or reconnect the device.');
-              setEnabled(false);
-            }
-          };
-          await listDevices();
-          const ready = await api.startAudio(selected, label, captureId);
-          if (!active) return;
-          if (ready.phase !== 'ready')
-            throw new Error(ready.error ?? 'Native speech worker did not become ready.');
+          if (!track) throw new Error('The selected source returned no audio track.');
+          track.addEventListener('ended', disconnected);
+          const ready = await api.startAudio(id, sourceId, currentLabel.current, captureId);
+          if (!active || ended) return;
+          const source = ready.sources.find((item) => item.id === id);
+          if (source?.phase !== 'ready')
+            throw new Error(source?.error ?? 'Speech worker failed to become ready.');
           context = new AudioContext();
           const workletUrl = URL.createObjectURL(
             new Blob([audioWorkletSource], { type: 'text/javascript' }),
@@ -137,7 +132,7 @@ export function AudioInput({ visible = true }: { visible?: boolean }) {
           } finally {
             URL.revokeObjectURL(workletUrl);
           }
-          if (!active) return;
+          if (!active || ended) return;
           const resampler = new MonoResampler(context.sampleRate);
           const segmenter = new SpeechSegmenter();
           input = context.createMediaStreamSource(captured);
@@ -148,118 +143,302 @@ export function AudioInput({ visible = true }: { visible?: boolean }) {
           node.connect(sink);
           sink.connect(context.destination);
           node.port.onmessage = (event: MessageEvent<Float32Array>) => {
-            if (!active || !(event.data instanceof Float32Array)) return;
+            if (!active || ended || !(event.data instanceof Float32Array)) return;
             for (const samples of segmenter.push(resampler.push(event.data))) {
               void api.submitAudioSegment({ samples }, captureId).catch((reason: unknown) => {
-                if (active) setError(mediaError(reason));
+                if (active && !ended) setError(mediaError(reason));
               });
             }
           };
           await context.resume();
         } catch (failure) {
-          if (active) {
-            setError(mediaError(failure));
-            setEnabled(false);
-          }
+          if (!active || ended) return;
+          setError(mediaError(failure));
+          if (sourceId !== LOOPBACK && recoverable(failure)) retry();
+          else onEdit({ enabled: false });
         }
       };
       void start();
     }
+
     return () => {
       active = false;
-      stop();
+      if (retryTimer !== null) clearTimeout(retryTimer);
+      node?.port.close();
+      node?.disconnect();
+      input?.disconnect();
+      sink?.disconnect();
+      stream?.getTracks().forEach((track) => track.stop());
+      void context?.close();
+      if (enabled && !currentlyAvailable.current) {
+        void api?.audioDisconnected(captureId).catch(() => {});
+      } else {
+        void api?.stopAudio(captureId).catch(() => {});
+      }
     };
-  }, [enabled, selected, label, listDevices]);
+  }, [id, sourceId, enabled, available, attempt, loopbackRequest]);
 
-  const unavailable =
-    selected !== 'none' && !devices.some((device) => device.deviceId === selected);
+  useEffect(() => {
+    if (!enabled) wasReady.current = false;
+    else if (status?.phase === 'ready') wasReady.current = true;
+    else if (status?.phase === 'error' && wasReady.current) {
+      setError(status.error ?? 'Speech transcription failed.');
+      onEdit({ enabled: false });
+    }
+  }, [enabled, status?.phase, status?.error, onEdit]);
+
+  const phase = !enabled ? 'off' : !available ? 'disconnected' : (status?.phase ?? 'starting');
   return (
-    <div>
-      <h3 className="font-medium">Audio source</h3>
-      <p className="mt-2 text-sm text-zinc-400">
-        Optionally capture an ordinary microphone or virtual audio input. Speech uses an activated
-        local whisper.cpp model, independent of video and chat inference. No audio is saved.
-      </p>
-      <Label htmlFor="audio-source" className="mt-4 text-sm text-zinc-200">
-        Input device
-      </Label>
-      <Select
-        items={[
-          { value: 'none', label: 'No audio' },
-          ...devices.map((device, index) => ({
-            value: device.deviceId,
-            label: device.label || `Microphone ${index + 1}`,
-          })),
-        ]}
-        value={selected}
-        onValueChange={(value) => {
-          if (typeof value === 'string') {
-            setEnabled(false);
-            setSelected(value);
-          }
-        }}
-      >
-        <SelectTrigger id="audio-source" className="mt-2 w-full text-sm">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value="none">No audio</SelectItem>
-          {devices.map((device, index) => (
-            <SelectItem key={device.deviceId} value={device.deviceId}>
-              {device.label || `Microphone ${index + 1}`}
-            </SelectItem>
-          ))}
-          {unavailable && <SelectItem value={selected}>Disconnected device</SelectItem>}
-        </SelectContent>
-      </Select>
-      <Label htmlFor="audio-label" className="mt-4 text-sm text-zinc-200">
-        Transcript source label
-      </Label>
-      <Input
-        id="audio-label"
-        className="mt-2"
-        maxLength={80}
-        value={label}
-        disabled={enabled}
-        onChange={(event) => setLabel(event.target.value)}
-      />
-      <div className="mt-4 flex flex-wrap items-center gap-3">
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={() => {
-            void listDevices();
-            refresh((n) => n + 1);
-          }}
-        >
-          Refresh devices
-        </Button>
-        <Button
-          size="sm"
-          disabled={selected === 'none' || !label.trim()}
-          onClick={() => setEnabled((value) => !value)}
-        >
-          {enabled ? 'Stop audio' : 'Start audio'}
-        </Button>
-        <span role="status" className="text-xs text-zinc-400">
-          Speech: {enabled ? (status?.phase ?? 'starting') : 'off'}
-        </span>
-      </div>
-      {error && (
-        <p role="alert" className="mt-3 text-sm text-amber-300">
-          {error}
+    <>
+      <span role="status" className="text-xs text-zinc-400">
+        Speech: {phase}
+        {status?.pendingSegments ? ` · ${status.pendingSegments} pending` : ''}
+      </span>
+      {(error || status?.error) && (
+        <p role="alert" className="mt-2 text-xs text-amber-300">
+          {error ?? status?.error}
         </p>
       )}
-      {status?.error && enabled && (
-        <p role="alert" className="mt-3 text-sm text-amber-300">
-          {status.error}
+    </>
+  );
+}
+
+/** User-configured, independently running standard Chromium audio inputs. */
+export function AudioInput({ visible = true }: { visible?: boolean }) {
+  const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
+  const [sources, setSources] = useState<ConfiguredInput[]>([]);
+  const loopbackRequests = useRef(new Map<string, Promise<MediaStream>>());
+  const [loaded, setLoaded] = useState(false);
+  const [status, setStatus] = useState<AudioStatus | null>(null);
+  const [loopback, setLoopback] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const listDevices = useCallback(async () => {
+    try {
+      if (!navigator.mediaDevices)
+        throw new Error('Audio capture is unavailable in this environment.');
+      const found = await navigator.mediaDevices.enumerateDevices();
+      setDevices(found.filter((item) => item.kind === 'audioinput' && item.deviceId));
+    } catch (failure) {
+      setError(mediaError(failure));
+    }
+  }, []);
+
+  useEffect(() => {
+    let live = true;
+    void window.lonelyChat
+      ?.getAudioConfiguration()
+      .then((saved) => {
+        if (!live) return;
+        setSources(saved.map((item) => ({ ...item, enabled: false })));
+        setLoaded(true);
+      })
+      .catch((failure: unknown) => {
+        if (live) setError(mediaError(failure));
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!loaded || sources.some((source) => !source.label.trim())) return;
+    void window.lonelyChat
+      ?.setAudioConfiguration(sources.map(({ id, sourceId, label }) => ({ id, sourceId, label })))
+      .catch((failure: unknown) => setError(mediaError(failure)));
+  }, [loaded, sources]);
+
+  useEffect(() => {
+    const api = window.lonelyChat;
+    if (!api) return;
+    let live = true;
+    const unsubscribe = api.onAudioChange((next) => {
+      if (live) setStatus(next);
+    });
+    void api.getAudioStatus().then((next) => {
+      if (live) setStatus(next);
+    });
+    void api.getAudioCapabilities().then((capabilities) => {
+      if (live) setLoopback(capabilities.windowsLoopback);
+    });
+    return () => {
+      live = false;
+      unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!visible && !sources.some((source) => source.enabled)) return;
+    void listDevices();
+    navigator.mediaDevices?.addEventListener?.('devicechange', listDevices);
+    return () => navigator.mediaDevices?.removeEventListener?.('devicechange', listDevices);
+  }, [visible, sources, listDevices]);
+
+  const update = (id: string, patch: Partial<ConfiguredInput>) => {
+    setSources((items) => items.map((item) => (item.id === id ? { ...item, ...patch } : item)));
+    if (
+      typeof patch.label === 'string' &&
+      patch.label.trim() &&
+      status?.sources.some((item) => item.id === id)
+    ) {
+      void window.lonelyChat?.setAudioLabel(id, patch.label).catch((failure: unknown) => {
+        setError(mediaError(failure));
+      });
+    }
+  };
+
+  return (
+    <div>
+      <h3 className="font-medium">Audio inputs</h3>
+      <p className="mt-2 text-sm text-zinc-400">
+        Add any number of ordinary microphones or virtual audio devices. Each input is transcribed
+        independently with its own label. Audio is not saved.
+      </p>
+      {sources.map((source, index) => {
+        const selected = devices.find((device) => device.deviceId === source.sourceId);
+        const available = source.sourceId === LOOPBACK ? loopback : !!selected;
+        return (
+          <div key={source.id} className="mt-4 rounded-lg border border-border p-3">
+            <div className="flex items-center justify-between gap-2">
+              <h4 className="text-sm font-medium">Input {index + 1}</h4>
+              <Button
+                size="sm"
+                variant="ghost"
+                aria-label={`Remove input ${index + 1}`}
+                onClick={() => {
+                  loopbackRequests.current.delete(source.id);
+                  setSources((items) => items.filter((item) => item.id !== source.id));
+                  void window.lonelyChat?.removeAudioInput(source.id).catch(() => {});
+                }}
+              >
+                Remove
+              </Button>
+            </div>
+            <Label htmlFor={`audio-source-${source.id}`} className="mt-3 text-xs text-zinc-300">
+              Input device
+            </Label>
+            <Select
+              items={[
+                { value: 'none', label: 'Choose an input' },
+                ...devices.map((device, i) => ({
+                  value: device.deviceId,
+                  label: device.label || `Microphone ${i + 1}`,
+                })),
+                ...(loopback
+                  ? [{ value: LOOPBACK, label: 'Windows system audio (loopback)' }]
+                  : []),
+              ]}
+              value={source.sourceId || 'none'}
+              onValueChange={(value) => {
+                if (typeof value === 'string')
+                  update(source.id, {
+                    sourceId: value === 'none' ? '' : value,
+                    enabled: false,
+                  });
+              }}
+            >
+              <SelectTrigger id={`audio-source-${source.id}`} className="mt-1 w-full text-sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">Choose an input</SelectItem>
+                {devices.map((device, i) => (
+                  <SelectItem key={device.deviceId} value={device.deviceId}>
+                    {device.label || `Microphone ${i + 1}`}
+                  </SelectItem>
+                ))}
+                {loopback && (
+                  <SelectItem value={LOOPBACK}>Windows system audio (loopback)</SelectItem>
+                )}
+                {!!source.sourceId && !available && (
+                  <SelectItem value={source.sourceId}>Disconnected device</SelectItem>
+                )}
+              </SelectContent>
+            </Select>
+            <Label htmlFor={`audio-label-${source.id}`} className="mt-3 text-xs text-zinc-300">
+              Transcript source label
+            </Label>
+            <Input
+              id={`audio-label-${source.id}`}
+              className="mt-1"
+              maxLength={80}
+              value={source.label}
+              onChange={(event) => update(source.id, { label: event.target.value })}
+            />
+            <div className="mt-3 flex flex-wrap items-center gap-3">
+              <Button
+                size="sm"
+                disabled={!source.sourceId || !source.label.trim()}
+                onClick={() => {
+                  if (source.enabled) {
+                    loopbackRequests.current.delete(source.id);
+                  } else if (source.sourceId === LOOPBACK) {
+                    // Chromium requires transient user activation for display capture.
+                    // The promise must be created here, not in a subsequent effect.
+                    const media = navigator.mediaDevices;
+                    if (!media?.getDisplayMedia) {
+                      setError('System playback capture is unavailable in this environment.');
+                      return;
+                    }
+                    loopbackRequests.current.set(
+                      source.id,
+                      media.getDisplayMedia({ audio: true, video: true }),
+                    );
+                  }
+                  update(source.id, { enabled: !source.enabled });
+                }}
+              >
+                {source.enabled ? 'Stop audio' : 'Start audio'}
+              </Button>
+              <CaptureInput
+                config={source}
+                available={available}
+                loopbackRequest={loopbackRequests.current.get(source.id)}
+                status={status?.sources.find((item) => item.id === source.id)}
+                onEdit={(patch) => update(source.id, patch)}
+              />
+            </div>
+          </div>
+        );
+      })}
+      <div className="mt-4 flex flex-wrap gap-2">
+        <Button
+          size="sm"
+          disabled={!loaded}
+          onClick={() => {
+            const id =
+              globalThis.crypto?.randomUUID?.() ?? `input-${Date.now()}-${++nextSourceSequence}`;
+            setSources((items) => [
+              ...items,
+              { id, sourceId: '', label: `Audio ${items.length + 1}`, enabled: false },
+            ]);
+          }}
+        >
+          Add audio input
+        </Button>
+        <Button size="sm" variant="secondary" onClick={() => void listDevices()}>
+          Refresh devices
+        </Button>
+      </div>
+      {!loopback && (
+        <p className="mt-3 text-xs text-zinc-500">
+          Windows system playback loopback is available only on Windows. On other platforms, route
+          application audio through a standard virtual input device.
+        </p>
+      )}
+      {error && (
+        <p role="alert" className="mt-3 text-xs text-amber-300">
+          {error}
         </p>
       )}
       {!!status?.transcripts.length && (
         <div className="mt-4 space-y-1" aria-label="Recent speech transcripts">
           <h4 className="text-xs font-medium text-zinc-300">Recent transcripts</h4>
-          {status.transcripts.slice(-4).map((item, index) => (
-            <p key={`${item.observedAt}-${index}`} className="text-xs text-zinc-400">
+          {status.transcripts.slice(-8).map((item, index) => (
+            <p
+              key={`${item.sourceId}-${item.observedAt}-${index}`}
+              className="text-xs text-zinc-400"
+            >
               {item.source}: {item.text}
             </p>
           ))}

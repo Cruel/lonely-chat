@@ -16,6 +16,8 @@ export interface CapturedObservation {
 }
 
 export interface LabeledTranscript {
+  /** Stable identity of the configured input, even when its label changes. */
+  readonly sourceId?: string;
   readonly source: string;
   readonly text: string;
   readonly observedAt: number;

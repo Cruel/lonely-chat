@@ -24,7 +24,7 @@ describe('speech integration and optional input lifecycle', () => {
       stop: () => {},
     } as unknown as NativeSpeech;
     const service = new AudioService(
-      speech,
+      () => speech,
       (entry) => {
         if (session.snapshot().phase === 'running') session.recordTranscript(entry);
       },
@@ -33,8 +33,8 @@ describe('speech integration and optional input lifecycle', () => {
     session.start('hello');
     await flushMicrotasks();
     expect(inputs[0].recentTranscripts).toEqual([]);
-    const state = await service.start('ordinary-microphone', 'Streamer', 'capture-1');
-    expect(state.phase).toBe('ready');
+    const state = await service.start('streamer', 'ordinary-microphone', 'Streamer', 'capture-1');
+    expect(state.sources[0]?.phase).toBe('ready');
     service.submit({ samples: new Float32Array(16000).fill(0.1) }, 'capture-1');
     await flushMicrotasks();
     expect(service.snapshot().transcripts).toMatchObject([
@@ -66,14 +66,14 @@ describe('speech integration and optional input lifecycle', () => {
       stop: () => {},
     } as unknown as NativeSpeech;
     const service = new AudioService(
-      speech,
+      () => speech,
       () => {},
       () => 1_700_000_000_000,
     );
-    await expect(service.start('with a space', 'Mic', 'capture-2')).rejects.toThrow(/microphone/);
-    await expect(service.start('mic', '', 'capture-2')).rejects.toThrow(/label/);
-    expect(service.snapshot().phase).toBe('off');
-    await service.start('mic', ' Voice ', 'capture-2');
+    await expect(service.start('id', 'with a space', 'Mic', 'capture-2')).rejects.toThrow(/device/);
+    await expect(service.start('id', 'mic', '', 'capture-2')).rejects.toThrow(/label/);
+    expect(service.snapshot().sources).toEqual([]);
+    await service.start('id', 'mic', ' Voice ', 'capture-2');
     expect(() => service.submit({ samples: new Float32Array(50) }, 'capture-2')).toThrow(/PCM/);
     expect(() =>
       service.submit({ samples: new Float32Array(1600).fill(Infinity) }, 'capture-2'),
@@ -85,12 +85,12 @@ describe('speech integration and optional input lifecycle', () => {
     expect(segments.length).toBe(12);
     expect(service.snapshot().transcripts).toHaveLength(10);
     expect(service.snapshot().transcripts[0].source).toBe('Voice');
-    expect(service.stop('obsolete-capture').phase).toBe('ready');
+    expect(service.stop('obsolete-capture').sources[0]?.phase).toBe('ready');
     expect(() =>
       service.submit({ samples: new Float32Array(1600).fill(0.1) }, 'obsolete-capture'),
     ).toThrow(/previous capture/);
     service.stop('capture-2');
-    expect(service.snapshot().phase).toBe('off');
+    expect(service.snapshot().sources[0]?.phase).toBe('off');
     expect(() => service.submit({ samples: new Float32Array(1600) }, 'capture-2')).toThrow(
       /previous capture/,
     );
@@ -106,16 +106,19 @@ describe('speech integration and optional input lifecycle', () => {
         }),
       stop: () => {},
     } as unknown as NativeSpeech;
-    const service = new AudioService(speech, () => {
-      throw new Error('must not call');
-    });
-    await service.start('mic', 'Tester', 'capture-3');
+    const service = new AudioService(
+      () => speech,
+      () => {
+        throw new Error('must not call');
+      },
+    );
+    await service.start('id', 'mic', 'Tester', 'capture-3');
     service.submit({ samples: new Float32Array(1600).fill(0.1) }, 'capture-3');
     service.stop();
     const resolve = complete!;
     resolve('late speech');
     await flushMicrotasks();
     expect(service.snapshot().transcripts).toEqual([]);
-    expect(service.snapshot().phase).toBe('off');
+    expect(service.snapshot().sources[0]?.phase).toBe('off');
   });
 });

@@ -12,6 +12,7 @@ import { NativeInference } from './native-inference';
 import { bundledLlamaServer, bundledWhisperWorker } from './native-runtime-path';
 import { NativeSpeech } from './native-speech';
 import { AudioService } from './audio-service';
+import { AudioConfigStore } from './audio-config-store';
 import type { ChatEvent, DesktopInvocations, DesktopArguments } from '../shared/chat-contract';
 
 const rendererDirectory = path.join(__dirname, '../renderer');
@@ -20,6 +21,7 @@ const devOrigin = process.env.LONELY_CHAT_RENDERER_URL;
 const chat = new ChatService();
 const overlay = new OverlayServer(chat, rendererDirectory, devOrigin);
 const preferenceStore = new PreferencesStore(app.getPath('userData'));
+const audioConfig = new AudioConfigStore(app.getPath('userData'));
 const models = new ModelDiscovery();
 const installs = new ModelInstallManager(app.getPath('userData'), models);
 let session: SessionController;
@@ -80,7 +82,12 @@ function registerHandlers(): void {
       if (session.snapshot().phase === 'running' || session.snapshot().phase === 'starting') {
         throw new Error('Stop the simulation before changing the active model.');
       }
-      if (role === 'speech-to-text' && audio.snapshot().phase !== 'off') {
+      if (
+        role === 'speech-to-text' &&
+        audio
+          .snapshot()
+          .sources.some((source) => source.phase === 'ready' || source.phase === 'starting')
+      ) {
         throw new Error('Stop audio capture before changing the speech model.');
       }
       return installs.setActive(role, id);
@@ -90,7 +97,9 @@ function registerHandlers(): void {
         throw new Error('Stop the simulation before removing a model.');
       }
       if (
-        audio.snapshot().phase !== 'off' &&
+        audio
+          .snapshot()
+          .sources.some((source) => source.phase === 'ready' || source.phase === 'starting') &&
         installs
           .snapshot()
           .installations.some((item) => item.id === id && item.role === 'speech-to-text')
@@ -134,9 +143,17 @@ function registerHandlers(): void {
     },
     'video:frame': (frame: import('../shared/video-contract').VideoFrame) =>
       session.recordVideoFrame(frame),
+    'audio:configuration:get': () => audioConfig.read(),
+    'audio:configuration:set': (
+      inputs: import('../shared/audio-contract').AudioInputConfiguration[],
+    ) => audioConfig.write(inputs),
     'audio:status': () => audio.snapshot(),
-    'audio:start': (sourceId: string, label: string, captureId: string) =>
-      audio.start(sourceId, label, captureId),
+    'audio:capabilities': () => ({ windowsLoopback: process.platform === 'win32' }),
+    'audio:start': (id: string, sourceId: string, label: string, captureId: string) =>
+      audio.start(id, sourceId, label, captureId),
+    'audio:label': (id: string, label: string) => audio.changeLabel(id, label),
+    'audio:disconnected': (captureId: string) => audio.disconnected(captureId),
+    'audio:remove': (id: string) => audio.remove(id),
     'audio:stop': (captureId: string) => audio.stop(captureId),
     'audio:segment': (
       segment: import('../shared/audio-contract').AudioSegment,
@@ -189,8 +206,22 @@ function openMainWindow(): void {
         (permission === 'media' || permission === 'display-capture'),
     );
   });
-  window.webContents.session.setDisplayMediaRequestHandler((_request, callback) => {
-    if (selectedDisplaySource) callback({ video: selectedDisplaySource });
+  window.webContents.session.setDisplayMediaRequestHandler((request, callback) => {
+    if (request.frame !== window.webContents.mainFrame) {
+      callback(null);
+      return;
+    }
+    if (request.audioRequested && process.platform === 'win32') {
+      void listDesktopSources()
+        .then((sources) => {
+          const screen = sources.find((source) => source.id.startsWith('screen:'));
+          if (screen) callback({ video: screen, audio: 'loopback' });
+          else callback(null);
+        })
+        .catch(() => callback(null));
+      return;
+    }
+    callback(selectedDisplaySource ? { video: selectedDisplaySource } : null);
   });
   window.webContents.setBackgroundThrottling(false);
   window.on('closed', () => {
@@ -250,7 +281,7 @@ function openMainWindow(): void {
           !result.previewReady ||
           result.session.phase !== 'running' ||
           result.apiKeys.join(',') !==
-            'activateModel,cancelModelDownload,chooseModelDirectory,discoverModels,getAudioStatus,getChatSnapshot,getModelsSnapshot,getOverlayUrl,getPreferences,getSessionSnapshot,installModel,listDisplaySources,onAudioChange,onChatEvent,onModelsChange,onSessionChange,publishSample,removeModel,selectVideoSource,setPreferences,startAudio,startSession,stopAudio,stopSession,submitAudioSegment,submitVideoFrame'
+            'activateModel,audioDisconnected,cancelModelDownload,chooseModelDirectory,discoverModels,getAudioCapabilities,getAudioConfiguration,getAudioStatus,getChatSnapshot,getModelsSnapshot,getOverlayUrl,getPreferences,getSessionSnapshot,installModel,listDisplaySources,onAudioChange,onChatEvent,onModelsChange,onSessionChange,publishSample,removeAudioInput,removeModel,selectVideoSource,setAudioConfiguration,setAudioLabel,setPreferences,startAudio,startSession,stopAudio,stopSession,submitAudioSegment,submitVideoFrame'
         ) {
           throw new Error(`Electron smoke failed: ${JSON.stringify(result)}`);
         }
@@ -313,10 +344,11 @@ async function boot(): Promise<void> {
     }),
   );
   audio = new AudioService(
-    new NativeSpeech({
-      executable: bundledWhisperWorker(app.getAppPath(), app.isPackaged, process.resourcesPath),
-      resolveModel: () => installs.activeSpeechFile(),
-    }),
+    () =>
+      new NativeSpeech({
+        executable: bundledWhisperWorker(app.getAppPath(), app.isPackaged, process.resourcesPath),
+        resolveModel: () => installs.activeSpeechFile(),
+      }),
     (entry) => {
       if (session.snapshot().phase === 'running' || session.snapshot().phase === 'starting') {
         try {
@@ -385,8 +417,14 @@ app.on('will-quit', () => {
   ipcMain.removeHandler('video:list-displays');
   ipcMain.removeHandler('video:select');
   ipcMain.removeHandler('video:frame');
+  ipcMain.removeHandler('audio:configuration:get');
+  ipcMain.removeHandler('audio:configuration:set');
   ipcMain.removeHandler('audio:status');
+  ipcMain.removeHandler('audio:capabilities');
   ipcMain.removeHandler('audio:start');
+  ipcMain.removeHandler('audio:label');
+  ipcMain.removeHandler('audio:disconnected');
+  ipcMain.removeHandler('audio:remove');
   ipcMain.removeHandler('audio:stop');
   ipcMain.removeHandler('audio:segment');
 });

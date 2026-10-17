@@ -53,8 +53,15 @@ const api: DesktopAPI = {
   listDisplaySources: () => invoke('video:list-displays'),
   selectVideoSource: (sourceId) => invoke('video:select', sourceId),
   submitVideoFrame: (frame) => invoke('video:frame', frame),
+  getAudioConfiguration: () => invoke('audio:configuration:get'),
+  setAudioConfiguration: (inputs) => invoke('audio:configuration:set', inputs),
   getAudioStatus: () => invoke('audio:status'),
-  startAudio: (sourceId, label, captureId) => invoke('audio:start', sourceId, label, captureId),
+  getAudioCapabilities: () => invoke('audio:capabilities'),
+  setAudioLabel: (id, label) => invoke('audio:label', id, label),
+  audioDisconnected: (captureId) => invoke('audio:disconnected', captureId),
+  removeAudioInput: (id) => invoke('audio:remove', id),
+  startAudio: (id, sourceId, label, captureId) =>
+    invoke('audio:start', id, sourceId, label, captureId),
   stopAudio: (captureId) => invoke('audio:stop', captureId),
   submitAudioSegment: (segment, captureId) => invoke('audio:segment', segment, captureId),
   onAudioChange: (listener) => {

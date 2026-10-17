@@ -23,7 +23,7 @@ export type ChatEvent = ChatSnapshot | ChatAppend;
 
 import type { InferenceMode, SessionPreferences, SessionSnapshot } from './session-contract';
 import type { VideoFrame, VideoSource } from './video-contract';
-import type { AudioSegment, AudioStatus } from './audio-contract';
+import type { AudioInputConfiguration, AudioSegment, AudioStatus } from './audio-contract';
 import type { ModelDiscoveryResult, ModelRole } from './model-contract';
 import type { ModelInstallRequest, ModelManagerSnapshot } from './model-install-contract';
 
@@ -47,8 +47,14 @@ export interface DesktopInvocations {
   'video:list-displays': VideoSource[];
   'video:select': void;
   'video:frame': void;
+  'audio:configuration:get': AudioInputConfiguration[];
+  'audio:configuration:set': AudioInputConfiguration[];
   'audio:status': AudioStatus;
+  'audio:capabilities': { windowsLoopback: boolean };
   'audio:start': AudioStatus;
+  'audio:label': AudioStatus;
+  'audio:disconnected': AudioStatus;
+  'audio:remove': AudioStatus;
   'audio:stop': AudioStatus;
   'audio:segment': void;
 }
@@ -73,8 +79,14 @@ export interface DesktopArguments {
   'video:list-displays': [];
   'video:select': [sourceId: string | null];
   'video:frame': [frame: VideoFrame];
+  'audio:configuration:get': [];
+  'audio:configuration:set': [inputs: AudioInputConfiguration[]];
   'audio:status': [];
-  'audio:start': [sourceId: string, label: string, captureId: string];
+  'audio:capabilities': [];
+  'audio:start': [id: string, sourceId: string, label: string, captureId: string];
+  'audio:label': [id: string, label: string];
+  'audio:disconnected': [captureId: string];
+  'audio:remove': [id: string];
   'audio:stop': [captureId: string];
   'audio:segment': [segment: AudioSegment, captureId: string];
 }
@@ -101,9 +113,15 @@ export interface DesktopAPI {
   listDisplaySources(): Promise<VideoSource[]>;
   selectVideoSource(sourceId: string | null): Promise<void>;
   submitVideoFrame(frame: VideoFrame): Promise<void>;
+  getAudioConfiguration(): Promise<AudioInputConfiguration[]>;
+  setAudioConfiguration(inputs: AudioInputConfiguration[]): Promise<AudioInputConfiguration[]>;
   getAudioStatus(): Promise<AudioStatus>;
+  getAudioCapabilities(): Promise<{ windowsLoopback: boolean }>;
+  setAudioLabel(id: string, label: string): Promise<AudioStatus>;
+  audioDisconnected(captureId: string): Promise<AudioStatus>;
+  removeAudioInput(id: string): Promise<AudioStatus>;
   onAudioChange(listener: (snapshot: AudioStatus) => void): () => void;
-  startAudio(sourceId: string, label: string, captureId: string): Promise<AudioStatus>;
+  startAudio(id: string, sourceId: string, label: string, captureId: string): Promise<AudioStatus>;
   stopAudio(captureId: string): Promise<AudioStatus>;
   submitAudioSegment(segment: AudioSegment, captureId: string): Promise<void>;
 }
