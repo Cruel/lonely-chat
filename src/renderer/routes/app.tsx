@@ -21,6 +21,7 @@ import {
 } from '@/components/ui/select';
 import { ChatView } from '@/components/chat-view';
 import { FloatingChatControls } from '@/components/floating-chat-controls';
+import { BackgroundControls } from '@/components/background-controls';
 import {
   DesktopSidebar,
   DESKTOP_SECTIONS,
@@ -664,8 +665,11 @@ export function DesktopPage() {
             <section aria-label="Settings">
               <SectionHeading
                 title="Settings"
-                description="Control inference timing and how much recent context is retained."
+                description="Control application behavior, inference timing and context retention."
               />
+              <Panel className="mb-5">
+                <BackgroundControls />
+              </Panel>
               <Panel>
                 <h3 className="font-medium">Inference scheduling</h3>
                 <p className="mt-2 text-sm text-zinc-400">

@@ -26,6 +26,8 @@ const api: DesktopAPI = {
   openFloatingChat: () => invoke('floating:open'),
   closeFloatingChat: () => invoke('floating:close'),
   configureFloatingChat: (settings) => invoke('floating:configure', settings),
+  getWindowStatus: () => invoke('window:get'),
+  setCloseToTray: (enabled) => invoke('window:set-close-to-tray', enabled),
   onFloatingChatChange: (listener) => {
     const receive = (
       _event: Electron.IpcRendererEvent,

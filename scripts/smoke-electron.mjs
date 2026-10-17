@@ -20,3 +20,14 @@ clearTimeout(timeout);
 if (result !== 0 || !succeeded) {
   throw new Error(`Electron smoke failed: exit ${result} and pass reported ${succeeded}`);
 }
+// Explicit Quit must release the owned loopback listener, not only exit the UI.
+let listenerStillOpen = false;
+try {
+  await fetch(`http://127.0.0.1:${process.env.LONELY_CHAT_OVERLAY_PORT ?? 45939}/overlay`, {
+    signal: AbortSignal.timeout(1500),
+  });
+  listenerStillOpen = true;
+} catch {
+  // Connection refused is expected after the managed overlay has stopped.
+}
+if (listenerStillOpen) throw new Error('Overlay listener survived Electron Quit');

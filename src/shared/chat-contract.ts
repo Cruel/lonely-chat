@@ -23,6 +23,7 @@ export type ChatEvent = ChatSnapshot | ChatAppend;
 
 import type { InferenceMode, SessionPreferences, SessionSnapshot } from './session-contract';
 import type { FloatingChatSettings, FloatingChatSnapshot } from './floating-chat-contract';
+import type { WindowStatus } from './window-status-contract';
 import type { AudienceSnapshot } from './audience-contract';
 import type { NativeServiceStatus } from './native-service-contract';
 import type { VideoFrame, VideoSource } from './video-contract';
@@ -39,6 +40,8 @@ export interface DesktopInvocations {
   'floating:open': FloatingChatSnapshot;
   'floating:close': FloatingChatSnapshot;
   'floating:configure': FloatingChatSnapshot;
+  'window:get': WindowStatus;
+  'window:set-close-to-tray': WindowStatus;
   'session:snapshot': SessionSnapshot;
   'session:start': SessionSnapshot;
   'session:stop': SessionSnapshot;
@@ -80,6 +83,8 @@ export interface DesktopArguments {
   'floating:open': [];
   'floating:close': [];
   'floating:configure': [settings: FloatingChatSettings];
+  'window:get': [];
+  'window:set-close-to-tray': [enabled: boolean];
   'session:snapshot': [];
   'session:start': [manualContext: string, mode?: InferenceMode];
   'session:stop': [];
@@ -122,6 +127,8 @@ export interface DesktopAPI {
   closeFloatingChat(): Promise<FloatingChatSnapshot>;
   configureFloatingChat(settings: FloatingChatSettings): Promise<FloatingChatSnapshot>;
   onFloatingChatChange(listener: (state: FloatingChatSnapshot) => void): () => void;
+  getWindowStatus(): Promise<WindowStatus>;
+  setCloseToTray(enabled: boolean): Promise<WindowStatus>;
   getSessionSnapshot(): Promise<SessionSnapshot>;
   onSessionChange(listener: (status: SessionSnapshot) => void): () => void;
   startSession(manualContext: string, mode?: InferenceMode): Promise<SessionSnapshot>;

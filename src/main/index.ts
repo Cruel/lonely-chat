@@ -1,6 +1,16 @@
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { app, BrowserWindow, ipcMain, shell, dialog, desktopCapturer } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  ipcMain,
+  shell,
+  dialog,
+  desktopCapturer,
+  Tray,
+  Menu,
+  nativeImage,
+} from 'electron';
 import { ChatService, publishSample } from './chat-service';
 import { SessionController } from './session-controller';
 import { PreferencesStore } from './preferences-store';
@@ -9,6 +19,13 @@ import { AudienceService } from './audience-service';
 import { FakeInference } from './fake-inference';
 import { OverlayServer } from './overlay-server';
 import { FloatingChatWindowController } from './floating-chat-window';
+import { DesktopLifecycle } from './desktop-lifecycle';
+import { ManagedShutdown } from './shutdown-managed-services';
+import { WindowPreferencesStore } from './window-preferences-store';
+import {
+  DEFAULT_WINDOW_PREFERENCES,
+  type WindowPreferences,
+} from '../shared/window-preferences-contract';
 import { ModelDiscovery } from './model-discovery';
 import { ModelInstallManager } from './model-install-manager';
 import { NativeInference } from './native-inference';
@@ -53,6 +70,66 @@ const floating = new FloatingChatWindowController(
 );
 const preferenceStore = new PreferencesStore(app.getPath('userData'));
 const audioConfig = new AudioConfigStore(app.getPath('userData'));
+const windowStore = new WindowPreferencesStore(app.getPath('userData'));
+let windowPrefs: WindowPreferences = DEFAULT_WINDOW_PREFERENCES;
+let pendingWindowSave: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleWindowSave(): void {
+  if (pendingWindowSave) clearTimeout(pendingWindowSave);
+  pendingWindowSave = setTimeout(() => {
+    pendingWindowSave = null;
+    void windowStore
+      .write(windowPrefs)
+      .catch((error: unknown) => console.error('Unable to save window settings', error));
+  }, 250);
+}
+
+async function flushWindowSave(): Promise<void> {
+  if (pendingWindowSave) clearTimeout(pendingWindowSave);
+  pendingWindowSave = null;
+  await windowStore.write(windowPrefs);
+}
+
+// Compact opaque 24px chat icon. No platform asset path is needed in packaged builds.
+const TRAY_ICON =
+  'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAAo0lEQVR4nO2VSxJAQAxEI2XDGbkFp+AWnJElq1HD5FcRO71MMq/plAHwS1FFFaduOzywcW0LHkbBubOoDbw1Qa4RZVJEFK1aGxiWRuzP/S72xTfQ4JYZ0UB7OsuMGpHFRJJ5yVQUlghNBgmUA6ma2yDFlMdF1dwGHMiyn8uAuqi8ylnINSLghcFbE+qsCHtegB5zdskRcADDlxy5/Jsi/w+f6gRvGkULxKoxWAAAAABJRU5ErkJggg==';
+const lifecycle = new DesktopLifecycle(
+  () => {
+    const icon = nativeImage.createFromBuffer(Buffer.from(TRAY_ICON, 'base64'));
+    if (icon.isEmpty()) throw new Error('Tray icon is unavailable.');
+    const tray = new Tray(icon);
+    tray.setToolTip('Lonely Chat');
+    return {
+      setActions: (actions) =>
+        tray.setContextMenu(
+          Menu.buildFromTemplate(
+            actions.map((action) => ({
+              label: action.label,
+              enabled: action.enabled,
+              click: action.action,
+            })),
+          ),
+        ),
+      onClick: (listener) => tray.on('click', listener),
+      destroy: () => tray.destroy(),
+    };
+  },
+  () => !!session && ['starting', 'running', 'switching'].includes(session.snapshot().phase),
+  () => {
+    session.stop();
+  },
+  () => {
+    app.quit();
+  },
+  () => {
+    if (!mainWindow && !quitting) openMainWindow();
+  },
+  (error) => console.warn('System tray unavailable, main window will close normally:', error),
+);
+
+function windowStatus() {
+  return { closeToTray: windowPrefs.closeToTray, trayAvailable: lifecycle.hasTray };
+}
 const models = new ModelDiscovery();
 const installs = new ModelInstallManager(app.getPath('userData'), models);
 let session: SessionController;
@@ -61,6 +138,7 @@ let nativeInference: NativeInference;
 let audio: AudioService;
 let mainWindow: BrowserWindow | null = null;
 let quitting = false;
+let teardownComplete = false;
 let selectedDisplaySource: Electron.DesktopCapturerSource | null = null;
 let videoSelectionGeneration = 0;
 let rosterRegenerating = false;
@@ -101,9 +179,21 @@ function registerHandlers(): void {
     'floating:get': () => floating.snapshot(),
     'floating:open': () => floating.open(),
     'floating:close': () => floating.close(),
-    'floating:configure': (
+    'floating:configure': async (
       settings: import('../shared/floating-chat-contract').FloatingChatSettings,
-    ) => floating.configure(settings),
+    ) => {
+      const result = floating.configure(settings);
+      await flushWindowSave();
+      return result;
+    },
+    'window:get': () => windowStatus(),
+    'window:set-close-to-tray': async (enabled: boolean) => {
+      if (typeof enabled !== 'boolean') throw new Error('Invalid close-to-tray setting.');
+      windowPrefs = { ...windowPrefs, closeToTray: enabled };
+      lifecycle.setCloseToTray(enabled);
+      await flushWindowSave();
+      return windowStatus();
+    },
     'session:snapshot': () => session.snapshot(),
     'session:start': (
       context: string,
@@ -326,6 +416,7 @@ function openMainWindow(): void {
     },
   });
   mainWindow = window;
+  lifecycle.attach(window);
   window.webContents.session.setPermissionRequestHandler((contents, permission, callback) => {
     callback(
       contents === window.webContents &&
@@ -351,10 +442,7 @@ function openMainWindow(): void {
   });
   window.webContents.setBackgroundThrottling(false);
   window.on('closed', () => {
-    if (mainWindow === window) {
-      mainWindow = null;
-      audio?.stop();
-    }
+    if (mainWindow === window) mainWindow = null;
   });
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (url === overlay.url) void shell.openExternal(url);
@@ -407,7 +495,7 @@ function openMainWindow(): void {
           !result.previewReady ||
           result.session.phase !== 'running' ||
           result.apiKeys.join(',') !==
-            'activateModel,audioDisconnected,cancelModelDownload,chooseModelDirectory,closeFloatingChat,configureFloatingChat,discoverModels,getAudience,getAudioCapabilities,getAudioConfiguration,getAudioStatus,getChatSnapshot,getFloatingChat,getModelsSnapshot,getNativeStatus,getOverlayUrl,getPreferences,getSessionSnapshot,installModel,listDisplaySources,onAudienceChange,onAudioChange,onChatEvent,onFloatingChatChange,onModelsChange,onNativeChange,onSessionChange,openFloatingChat,publishSample,regenerateAudience,removeAudioInput,removeModel,retryAudio,retrySession,selectVideoSource,setAudioConfiguration,setAudioLabel,setPreferences,startAudio,startSession,stopAudio,stopSession,submitAudioSegment,submitVideoFrame'
+            'activateModel,audioDisconnected,cancelModelDownload,chooseModelDirectory,closeFloatingChat,configureFloatingChat,discoverModels,getAudience,getAudioCapabilities,getAudioConfiguration,getAudioStatus,getChatSnapshot,getFloatingChat,getModelsSnapshot,getNativeStatus,getOverlayUrl,getPreferences,getSessionSnapshot,getWindowStatus,installModel,listDisplaySources,onAudienceChange,onAudioChange,onChatEvent,onFloatingChatChange,onModelsChange,onNativeChange,onSessionChange,openFloatingChat,publishSample,regenerateAudience,removeAudioInput,removeModel,retryAudio,retrySession,selectVideoSource,setAudioConfiguration,setAudioLabel,setCloseToTray,setPreferences,startAudio,startSession,stopAudio,stopSession,submitAudioSegment,submitVideoFrame'
         ) {
           throw new Error(`Electron smoke failed: ${JSON.stringify(result)}`);
         }
@@ -451,6 +539,28 @@ function openMainWindow(): void {
         ) {
           throw new Error('Floating capture changed chat delivery or failed to close');
         }
+        const requestedTray = await window.webContents.executeJavaScript(
+          'window.lonelyChat.setCloseToTray(true)',
+        );
+        if (!requestedTray.closeToTray) throw new Error('Close-to-tray preference did not apply');
+        if (requestedTray.trayAvailable) {
+          const floatingAgain = floating.open();
+          if (!floatingAgain.open) throw new Error('Unable to reopen floating presentation');
+          window.close();
+          if (window.isDestroyed() || window.isVisible()) {
+            throw new Error('Main window was not hidden on active simulation close');
+          }
+          if (!floating.snapshot().open || (await fetch(overlay.url)).status !== 200) {
+            throw new Error('Background presentation failed after hiding main window');
+          }
+          await new Promise((resolve) => setTimeout(resolve, 1700));
+          if (chat.snapshot().sequence <= beforeFloatingMessage + 1) {
+            throw new Error('Simulation stopped advancing with hidden configuration window');
+          }
+          lifecycle.show();
+          if (!window.isVisible()) throw new Error('Tray Show failed to restore main window');
+          floating.close();
+        }
         window.minimize();
         await new Promise((resolve) => setTimeout(resolve, 2500));
         const visibleWhileMinimized = chat.snapshot();
@@ -469,9 +579,10 @@ function openMainWindow(): void {
           "window.lonelyChat.startSession('restarted smoke')",
         );
         if (restarted.phase !== 'running') throw new Error('Simulation did not restart');
-        session.stop();
+        // Quit while the scheduler is active; teardown must cancel pending work.
+        if (session.snapshot().phase !== 'running') throw new Error('No active playback at quit');
         console.info(
-          'PASS: Electron preload IPC, floating window presentation/isolation, Start/Stop/Restart, minimized playback, retained chat',
+          'PASS: Electron preload IPC, floating window, tray background lifecycle, Start/Stop/Restart, minimized playback, retained chat',
         );
         app.quit();
       })().catch((error: unknown) => {
@@ -486,6 +597,14 @@ function openMainWindow(): void {
 }
 
 async function boot(): Promise<void> {
+  try {
+    windowPrefs = await windowStore.read();
+  } catch (error) {
+    console.error('Invalid window preferences; using safe defaults', error);
+    windowPrefs = DEFAULT_WINDOW_PREFERENCES;
+  }
+  floating.configure(windowPrefs.floating);
+  lifecycle.initialize(windowPrefs.closeToTray);
   let preferences = DEFAULT_PREFERENCES;
   try {
     preferences = await preferenceStore.read();
@@ -545,11 +664,24 @@ async function boot(): Promise<void> {
   session.subscribe((status) => {
     if (mainWindow && !mainWindow.isDestroyed())
       mainWindow.webContents.send('session:change', status);
+    lifecycle.refreshTray();
   });
   registerHandlers();
   floating.subscribe((state) => {
     if (mainWindow && !mainWindow.isDestroyed())
       mainWindow.webContents.send('floating:change', state);
+    const old = windowPrefs.floating;
+    const next = state.settings;
+    if (
+      old.width !== next.width ||
+      old.height !== next.height ||
+      old.transparent !== next.transparent ||
+      old.decorated !== next.decorated ||
+      old.alwaysOnTop !== next.alwaysOnTop
+    ) {
+      windowPrefs = { ...windowPrefs, floating: next };
+      scheduleWindowSave();
+    }
   });
   chat.subscribe((event: ChatEvent) => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('chat:event', event);
@@ -568,26 +700,40 @@ app
     app.quit();
   });
 app.on('activate', () => {
-  if (!mainWindow && !quitting) openMainWindow();
+  if (!quitting) lifecycle.show();
 });
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
+const shutdown = new ManagedShutdown(
+  () => {
+    session?.stop();
+  },
+  () => {
+    installs.cancel();
+    rosterGenerationAbort?.abort();
+  },
+  () => {
+    floating.close();
+  },
+  [
+    () => session?.terminate() ?? Promise.resolve(),
+    () => audio?.terminate() ?? Promise.resolve(),
+    () => nativeInference?.stop() ?? Promise.resolve(),
+    () => overlay.stop(),
+    () => flushWindowSave(),
+  ],
+  (error) => console.error('Managed shutdown failed', error),
+);
+
 app.on('before-quit', (event) => {
-  if (quitting) return;
+  if (teardownComplete) return;
   event.preventDefault();
+  if (quitting) return; // repeated Quit must not bypass async worker teardown
   quitting = true;
-  installs.cancel();
-  rosterGenerationAbort?.abort();
-  void Promise.allSettled([
-    session?.terminate(),
-    audio?.terminate(),
-    nativeInference?.stop(),
-    overlay.stop(),
-  ]).then((results) => {
-    for (const result of results) {
-      if (result.status === 'rejected') console.error('Native shutdown failed', result.reason);
-    }
+  lifecycle.beginShutdown();
+  void shutdown.stop().then(() => {
+    teardownComplete = true;
     app.quit();
   });
 });
@@ -599,6 +745,8 @@ app.on('will-quit', () => {
   ipcMain.removeHandler('floating:open');
   ipcMain.removeHandler('floating:close');
   ipcMain.removeHandler('floating:configure');
+  ipcMain.removeHandler('window:get');
+  ipcMain.removeHandler('window:set-close-to-tray');
   ipcMain.removeHandler('session:snapshot');
   ipcMain.removeHandler('session:start');
   ipcMain.removeHandler('session:stop');

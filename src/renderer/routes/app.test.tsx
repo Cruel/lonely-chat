@@ -18,6 +18,8 @@ const emptyModels: ModelManagerSnapshot = {
   progress: { phase: 'idle', file: null, receivedBytes: 0, totalBytes: null },
 };
 const modelsAPI = {
+  getWindowStatus: async () => ({ closeToTray: true, trayAvailable: true }),
+  setCloseToTray: async (enabled: boolean) => ({ closeToTray: enabled, trayAvailable: enabled }),
   getFloatingChat: async () => ({
     open: false,
     settings: { width: 420, height: 600, decorated: true, transparent: false, alwaysOnTop: false },
