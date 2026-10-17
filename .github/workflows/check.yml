@@ -64,7 +64,7 @@ jobs:
             target: --win
             artifact: windows-x64
           - name: macOS ARM64
-            os: macos-15-arm64
+            os: macos-26
             platform: darwin-arm64
             target: --mac --arm64
             artifact: macos-arm64
