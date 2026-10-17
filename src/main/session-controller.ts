@@ -53,6 +53,9 @@ export class SessionController {
   private shutdownPromise: Promise<void> = Promise.resolve();
   private chatStartSequence = 0;
   private smoothedMs: number | null = null;
+  private switchAbort: AbortController | null = null;
+  private switchBusy = false;
+  private switchSettled: Promise<void> = Promise.resolve();
 
   constructor(
     chat: ChatService,
@@ -84,7 +87,9 @@ export class SessionController {
     const next = validatePreferences(value);
     if (
       next.audienceCount !== this.preferences.audienceCount &&
-      (this.state.phase === 'starting' || this.state.phase === 'running')
+      (this.state.phase === 'starting' ||
+        this.state.phase === 'running' ||
+        this.state.phase === 'switching')
     ) {
       throw new Error('Stop the simulation before resizing the audience.');
     }
@@ -126,13 +131,26 @@ export class SessionController {
   }
 
   private requireActive(): void {
-    if (this.state.phase !== 'starting' && this.state.phase !== 'running') {
+    if (
+      this.state.phase !== 'starting' &&
+      this.state.phase !== 'running' &&
+      this.state.phase !== 'switching'
+    ) {
       throw new Error('No running session to receive observations.');
     }
   }
 
-  start(rawContext: unknown, mode: InferenceMode = 'fake'): SessionSnapshot {
-    if (this.state.phase === 'running' || this.state.phase === 'starting') {
+  start(
+    rawContext: unknown,
+    mode: InferenceMode = 'fake',
+    modelId: string | null = null,
+  ): SessionSnapshot {
+    if (this.switchBusy) throw new Error('Wait for model switching to finish before restarting.');
+    if (
+      this.state.phase === 'running' ||
+      this.state.phase === 'starting' ||
+      this.state.phase === 'switching'
+    ) {
       throw new Error('The simulation is already running.');
     }
     const context =
@@ -153,6 +171,7 @@ export class SessionController {
     this.setState({
       phase: mode === 'native' ? 'starting' : 'running',
       mode,
+      modelId: mode === 'native' ? modelId : null,
       events: [],
       cycle: 0,
       retryAttempt: 0,
@@ -176,7 +195,10 @@ export class SessionController {
   }
 
   stop(): SessionSnapshot {
+    if (this.state.phase === 'stopped') return this.snapshot();
     this.epoch++;
+    this.switchAbort?.abort();
+    this.switchAbort = null;
     this.abort?.abort();
     const provider = this.activeInference;
     this.shutdownPromise = this.stopProvider(provider);
@@ -191,11 +213,85 @@ export class SessionController {
 
   async terminate(): Promise<void> {
     this.stop();
+    await this.switchSettled;
     await this.shutdownPromise;
+  }
+
+  get switchingModel(): boolean {
+    return this.switchBusy;
+  }
+
+  /**
+   * Switch the native installation without resetting history, chat boundaries or playback.
+   * The repository mutation occurs only after the old worker has fully exited.
+   */
+  async switchNativeModel(
+    activate: () => Promise<void>,
+    modelId: string,
+  ): Promise<SessionSnapshot> {
+    if (
+      this.state.mode !== 'native' ||
+      !['starting', 'running', 'error'].includes(this.state.phase)
+    ) {
+      throw new Error('A native simulation must be active to switch its model.');
+    }
+    if (!this.nativeInference) throw new Error('Native inference is unavailable.');
+    if (this.switchBusy) throw new Error('Model switching is already in progress.');
+    this.switchBusy = true;
+    let settle!: () => void;
+    this.switchSettled = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    const epoch = ++this.epoch;
+    this.abort?.abort();
+    this.abort = null;
+    if (this.inferenceTimer !== null) this.clock.clearTimeout(this.inferenceTimer);
+    this.inferenceTimer = null;
+    const abort = new AbortController();
+    this.switchAbort = abort;
+    this.setState({ phase: 'switching', retryAttempt: 0, error: null, warning: null });
+    try {
+      this.shutdownPromise = this.stopProvider(this.nativeInference);
+      await this.shutdownPromise;
+      if (abort.signal.aborted || epoch !== this.epoch) return this.snapshot();
+      await activate();
+      if (abort.signal.aborted || epoch !== this.epoch) return this.snapshot();
+      // A failed load is visible and retriable; no old requests or output may commit.
+      await this.nativeInference.prepare?.(abort.signal);
+      if (abort.signal.aborted || epoch !== this.epoch) return this.snapshot();
+      this.switchAbort = null;
+      this.setState({ phase: 'running', modelId, error: null, warning: null });
+      this.runCycle(epoch);
+    } catch (error) {
+      if (abort.signal.aborted || epoch !== this.epoch) return this.snapshot();
+      this.shutdownPromise = this.stopProvider(this.nativeInference);
+      const reason = error instanceof Error ? error.message : 'Unable to load the selected model.';
+      this.setState({ phase: 'error', error: `Model switch failed: ${reason}`, warning: null });
+    } finally {
+      if (this.switchAbort === abort) this.switchAbort = null;
+      this.switchBusy = false;
+      settle();
+    }
+    return this.snapshot();
+  }
+
+  /** Restart inference after retry exhaustion without discarding validated history or chat. */
+  retry(): SessionSnapshot {
+    if (this.state.phase !== 'error') throw new Error('There is no failed inference to retry.');
+    const epoch = ++this.epoch;
+    this.setState({
+      phase: this.state.mode === 'native' ? 'starting' : 'running',
+      error: null,
+      warning: null,
+      retryAttempt: 0,
+    });
+    this.runCycle(epoch);
+    return this.snapshot();
   }
 
   /** Wait for asynchronous native worker cleanup before any manual model action. */
   async awaitShutdown(): Promise<void> {
+    await this.switchSettled;
     await this.shutdownPromise;
   }
 
@@ -333,7 +429,6 @@ export class SessionController {
         // snapshot boundary; observations arriving in the meantime remain for the next cycle.
         this.shutdownPromise = this.stopProvider(provider);
         if (attempt >= MAX_ATTEMPTS) {
-          this.context = '';
           this.setState({
             phase: 'error',
             retryAttempt: attempt - 1,

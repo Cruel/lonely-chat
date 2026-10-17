@@ -1,4 +1,4 @@
-export type SessionPhase = 'stopped' | 'starting' | 'running' | 'error';
+export type SessionPhase = 'stopped' | 'starting' | 'running' | 'switching' | 'error';
 export type InferenceMode = 'fake' | 'native';
 export type VideoSamplingStrategy = 'uniform' | 'recent-weighted';
 import type { ChatActivity } from './audience-contract';
@@ -34,6 +34,8 @@ export interface SessionSnapshot {
   readonly retryAttempt: number;
   readonly pendingMessages: number;
   readonly mode: InferenceMode;
+  /** Selected VLM installation ID, or null for fixtures/unconfigured models. */
+  readonly modelId?: string | null;
   readonly events: readonly InferredEvent[];
   readonly latestInferenceMs: number | null;
   readonly smoothedInferenceMs: number | null;

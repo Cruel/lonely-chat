@@ -188,6 +188,9 @@ describe('native llama.cpp adapter', () => {
       },
     });
     providers.push(provider);
+    const transitions: string[] = [];
+    provider.subscribe((status) => transitions.push(status.phase));
+    expect(provider.snapshot().phase).toBe('stopped');
     expect(
       await provider.generateRoster(2, ['ExcludedName'], new AbortController().signal),
     ).toEqual(['TestFox', 'TestCat']);
@@ -196,6 +199,7 @@ describe('native llama.cpp adapter', () => {
       new AbortController().signal,
     );
     expect(parseInferenceResult(result, 1000).messages[0].text).toBe('warm fire');
+    expect(transitions).toEqual(['loading', 'ready']);
     expect(launchedArgs).toContain('--no-webui');
     expect(
       launchedArgs.slice(
@@ -215,8 +219,13 @@ describe('native llama.cpp adapter', () => {
       body: JSON.stringify(nativeChatRequest({ context: 'campfire', cycle: 1 })),
     });
     expect(anonymous.status).toBe(401);
-    await provider.stop();
+    await Promise.all([provider.stop(), provider.stop()]);
+    expect(provider.snapshot().phase).toBe('stopped');
     await expect(fetch(`http://127.0.0.1:${port}/health`)).rejects.toThrow();
+    await provider.prepare(new AbortController().signal);
+    expect(provider.snapshot().phase).toBe('ready');
+    expect(transitions).toEqual(['loading', 'ready', 'stopped', 'loading', 'ready']);
+    await provider.stop();
   });
 
   it('enables reasoning only when explicitly configured', async () => {
@@ -290,7 +299,10 @@ describe('native llama.cpp adapter', () => {
     await expect(provider.prepare(new AbortController().signal)).rejects.toThrow(
       /Unable to launch bundled llama.cpp/,
     );
+    expect(provider.snapshot().phase).toBe('failed');
+    expect(provider.snapshot().error).toMatch(/Unable to launch/);
     await provider.stop();
+    expect(provider.snapshot().phase).toBe('stopped');
   });
 
   it.runIf(Boolean(process.env.LONELY_CHAT_CPU_SMOKE_MODEL))(

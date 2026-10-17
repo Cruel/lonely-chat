@@ -121,7 +121,7 @@ function CaptureInput({
           const ready = await api.startAudio(id, sourceId, currentLabel.current, captureId);
           if (!active || ended) return;
           const source = ready.sources.find((item) => item.id === id);
-          if (source?.phase !== 'ready')
+          if (source?.phase !== 'ready' && source?.phase !== 'starting')
             throw new Error(source?.error ?? 'Speech worker failed to become ready.');
           context = new AudioContext();
           const workletUrl = URL.createObjectURL(
@@ -180,12 +180,11 @@ function CaptureInput({
 
   useEffect(() => {
     if (!enabled) wasReady.current = false;
-    else if (status?.phase === 'ready') wasReady.current = true;
-    else if (status?.phase === 'error' && wasReady.current) {
-      setError(status.error ?? 'Speech transcription failed.');
-      onEdit({ enabled: false });
-    }
-  }, [enabled, status?.phase, status?.error, onEdit]);
+    else if (status?.phase === 'ready') {
+      wasReady.current = true;
+      setError(null);
+    } else if (status?.phase === 'error') setError(status.error ?? 'Speech transcription failed.');
+  }, [enabled, status?.phase, status?.error]);
 
   const phase = !enabled ? 'off' : !available ? 'disconnected' : (status?.phase ?? 'starting');
   return (
@@ -196,8 +195,23 @@ function CaptureInput({
       </span>
       {(error || status?.error) && (
         <p role="alert" className="mt-2 text-xs text-amber-300">
-          {error ?? status?.error}
+          {status?.error ?? error}
         </p>
+      )}
+      {enabled && status?.phase === 'error' && (
+        <Button
+          size="sm"
+          variant="secondary"
+          className="mt-2"
+          onClick={() => {
+            void window.lonelyChat
+              ?.retryAudio(id)
+              .then(() => setError(null))
+              .catch((reason: unknown) => setError(mediaError(reason)));
+          }}
+        >
+          Retry speech worker
+        </Button>
       )}
     </>
   );

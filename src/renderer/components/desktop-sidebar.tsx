@@ -31,7 +31,7 @@ export type DesktopSection = (typeof DESKTOP_SECTIONS)[number]['id'];
 interface DesktopSidebarProps {
   readonly selected: DesktopSection;
   readonly onSelect: (section: DesktopSection) => void;
-  readonly simulationPhase: 'stopped' | 'starting' | 'running' | 'error';
+  readonly simulationPhase: 'stopped' | 'starting' | 'running' | 'switching' | 'error';
 }
 
 export function DesktopSidebar({ selected, onSelect, simulationPhase }: DesktopSidebarProps) {
@@ -86,7 +86,9 @@ export function DesktopSidebar({ selected, onSelect, simulationPhase }: DesktopS
                 />
               )}
               {id === 'simulation' &&
-                (simulationPhase === 'running' || simulationPhase === 'starting') && (
+                (simulationPhase === 'running' ||
+                  simulationPhase === 'starting' ||
+                  simulationPhase === 'switching') && (
                   <span
                     className="ml-auto size-2 rounded-full bg-emerald-400"
                     aria-label="Simulation running"

@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
+import type { NativeServiceStatus } from '../shared/native-service-contract';
 import { randomBytes } from 'node:crypto';
 import { createServer } from 'node:net';
 import path from 'node:path';
@@ -302,24 +303,53 @@ export class NativeInference implements InferenceProvider {
   private failure: Error | null = null;
   private logTail = '';
   private generation = 0;
+  private shutdown: Promise<void> | null = null;
+  private status: NativeServiceStatus = { revision: 0, phase: 'stopped', error: null };
+  private listeners = new Set<(status: NativeServiceStatus) => void>();
+
+  snapshot(): NativeServiceStatus {
+    return { ...this.status };
+  }
+
+  subscribe(listener: (status: NativeServiceStatus) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  private publish(phase: NativeServiceStatus['phase'], error: string | null = null): void {
+    this.status = { revision: this.status.revision + 1, phase, error };
+    for (const listener of this.listeners) listener(this.snapshot());
+  }
 
   constructor(private readonly options: NativeOptions) {}
 
   async prepare(signal: AbortSignal): Promise<void> {
+    if (this.shutdown) await this.shutdown;
     if (signal.aborted) throw new Error('Native inference cancelled.');
     if (this.failure) throw this.failure;
     if (this.child && this.port && !this.failure && !this.startup) return;
     if (!this.startup) {
+      this.publish('loading');
       const generation = ++this.generation;
       const abort = new AbortController();
       this.lifecycle = abort;
       const task = this.launchServer(generation, abort.signal);
       this.startup = task;
       void task
+        .then(
+          () => {
+            if (generation === this.generation && !this.failure) this.publish('ready');
+          },
+          (error: unknown) => {
+            if (generation !== this.generation) return;
+            const failure = error instanceof Error ? error : new Error('Unable to load llama.cpp.');
+            this.failure = failure;
+            this.publish('failed', failure.message);
+          },
+        )
         .finally(() => {
           if (this.startup === task) this.startup = null;
-        })
-        .catch(() => {});
+        });
     }
     await Promise.race([
       this.startup,
@@ -399,6 +429,7 @@ export class NativeInference implements InferenceProvider {
     child.stderr?.on('data', log);
     child.once('error', (error) => {
       this.failure = new Error(`Unable to launch bundled llama.cpp: ${error.message}`);
+      this.publish('failed', this.failure.message);
       this.lifecycle?.abort();
     });
     child.once('exit', (code, termination) => {
@@ -406,6 +437,7 @@ export class NativeInference implements InferenceProvider {
       this.failure = new Error(
         `llama.cpp exited (${termination ?? code ?? 'unknown'}). ${this.logTail.slice(-750)}`,
       );
+      this.publish('failed', this.failure.message);
       this.lifecycle?.abort();
     });
     const fetcher = this.options.fetcher ?? fetch;
@@ -525,7 +557,9 @@ export class NativeInference implements InferenceProvider {
   }
 
   async stop(): Promise<void> {
+    if (this.shutdown) return this.shutdown;
     ++this.generation;
+    this.publish('stopped');
     this.lifecycle?.abort();
     this.lifecycle = null;
     this.startup = null;
@@ -534,19 +568,29 @@ export class NativeInference implements InferenceProvider {
     this.failure = null;
     const child = this.child;
     this.child = null;
-    if (!child) return;
-    if (child.exitCode !== null || child.signalCode !== null) return;
-    const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
-    child.kill();
-    const timeout = new AbortController();
+    if (!child || child.exitCode !== null || child.signalCode !== null) return;
+    const task = (async () => {
+      const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
+      child.kill();
+      const timeout = new AbortController();
+      try {
+        await Promise.race([
+          exited,
+          delay(2000, undefined, { signal: timeout.signal }).catch(() => {}),
+        ]);
+      } finally {
+        timeout.abort();
+      }
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill('SIGKILL');
+        await Promise.race([exited, delay(2000)]);
+      }
+    })();
+    this.shutdown = task;
     try {
-      await Promise.race([
-        exited,
-        delay(2000, undefined, { signal: timeout.signal }).catch(() => {}),
-      ]);
+      await task;
     } finally {
-      timeout.abort();
+      if (this.shutdown === task) this.shutdown = null;
     }
-    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
   }
 }

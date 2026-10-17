@@ -93,6 +93,7 @@ export function useSession() {
     start: (context: string, mode: InferenceMode = 'fake') =>
       perform(() => window.lonelyChat!.startSession(context, mode)),
     stop: () => perform(() => window.lonelyChat!.stopSession()),
+    retry: () => perform(() => window.lonelyChat!.retrySession()),
     updatePreferences,
   };
 }

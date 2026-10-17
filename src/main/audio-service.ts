@@ -2,9 +2,11 @@ import type { AudioSegment, AudioSourceStatus, AudioStatus } from '../shared/aud
 import { validateAudioId, validateAudioLabel } from '../shared/audio-contract';
 import type { LabeledTranscript } from '../shared/session-contract';
 import type { NativeSpeech } from './native-speech';
+import { systemClock, type TimerClock } from './chat-scheduler';
 
 const MAX_SEGMENTS = 10;
 const PCM_LIMIT = 16000 * 30;
+const MAX_RESTARTS = 2;
 
 interface Source {
   status: AudioSourceStatus;
@@ -12,6 +14,10 @@ interface Source {
   epoch: number;
   worker: NativeSpeech | null;
   lastObservedAt: number;
+  restartCount: number;
+  restartTimer: unknown;
+  unsubscribeWorker: (() => void) | null;
+  retiring: Promise<void>;
 }
 
 /** Independently owned source/worker lifecycles; a stopped input cannot affect its peers. */
@@ -25,6 +31,7 @@ export class AudioService {
     private readonly newWorker: () => NativeSpeech,
     private readonly onTranscript: (entry: LabeledTranscript) => void,
     private readonly now = Date.now,
+    private readonly clock: Pick<TimerClock, 'setTimeout' | 'clearTimeout'> = systemClock,
   ) {}
 
   snapshot(): AudioStatus {
@@ -76,28 +83,62 @@ export class AudioService {
         epoch: 0,
         worker: null,
         lastObservedAt: -Infinity,
+        restartCount: 0,
+        restartTimer: null,
+        unsubscribeWorker: null,
+        retiring: Promise.resolve(),
       };
       this.sources.set(inputId, source);
     }
     source.captureId = token;
-    source.worker = this.newWorker();
+    source.restartCount = 0;
     this.patch(source, { label: safeLabel, phase: 'starting', error: null, pendingSegments: 0 });
-    const epoch = source.epoch;
-    const worker = source.worker;
-    try {
-      await worker.start();
-      if (source.epoch === epoch) this.patch(source, { phase: 'ready' });
-      else worker.stop();
-    } catch (error) {
-      if (source.epoch === epoch) {
-        this.release(source);
-        this.patch(source, {
-          phase: 'error',
-          error: error instanceof Error ? error.message : 'Unable to initialize speech worker.',
-        });
-      }
-    }
+    await this.launchWorker(source);
     return this.snapshot();
+  }
+
+  /** Reconnect a failed worker without changing its capture identity or input label. */
+  async retry(id: unknown): Promise<AudioStatus> {
+    const source = this.requireSource(id);
+    if (!source.captureId || source.status.phase !== 'error') {
+      throw new Error('Only a failed active audio input can be retried.');
+    }
+    source.restartCount = 0;
+    await this.launchWorker(source);
+    return this.snapshot();
+  }
+
+  /** Native model changes retire old workers before starting any new ones. */
+  async reloadWorkers(activate: () => Promise<void>): Promise<void> {
+    const active = [...this.sources.values()].filter(
+      (source) => source.captureId !== null && source.status.phase !== 'disconnected',
+    );
+    const exits = active.map((source) => {
+      this.retireWorker(source);
+      this.patch(source, { phase: 'starting', error: null });
+      return source.retiring;
+    });
+    try {
+      await Promise.all(exits);
+      await activate();
+    } catch (error) {
+      for (const source of active) {
+        if (source.captureId)
+          this.patch(source, {
+            phase: 'error',
+            error: error instanceof Error ? error.message : 'Unable to replace speech model.',
+          });
+      }
+      throw error;
+    }
+    await Promise.all(
+      active
+        .filter((source) => source.captureId !== null)
+        .map((source) => {
+          source.restartCount = 0;
+          return this.launchWorker(source);
+        }),
+    );
   }
 
   changeLabel(id: unknown, label: unknown): AudioStatus {
@@ -148,11 +189,7 @@ export class AudioService {
         },
         (error: unknown) => {
           if (epoch !== source.epoch) return;
-          this.release(source);
-          this.patch(source, {
-            phase: 'error',
-            error: error instanceof Error ? error.message : 'Speech worker failed.',
-          });
+          this.workerFailed(source, epoch, error);
         },
       )
       .finally(() => {
@@ -171,6 +208,12 @@ export class AudioService {
       });
     }
     return this.snapshot();
+  }
+
+  /** Quit must await every retired child, not just send termination signals. */
+  async terminate(): Promise<void> {
+    this.stop();
+    await Promise.all([...this.sources.values()].map((source) => source.retiring));
   }
 
   stop(captureId?: string): AudioStatus {
@@ -207,12 +250,83 @@ export class AudioService {
     return [...this.sources.values()].find((source) => source.captureId === token);
   }
 
-  private release(source: Source): void {
+  private async launchWorker(source: Source): Promise<void> {
+    const epoch = source.epoch;
+    try {
+      await source.retiring;
+    } catch (error) {
+      this.workerFailed(source, epoch, error);
+      return;
+    }
+    if (epoch !== source.epoch || !source.captureId) return;
+    const worker = this.newWorker();
+    source.worker = worker;
+    this.patch(source, { phase: 'starting', error: null });
+    source.unsubscribeWorker =
+      worker.subscribe?.((status) => {
+        if (status.phase === 'failed')
+          this.workerFailed(source, epoch, status.error ?? 'Speech worker failed.');
+      }) ?? null;
+    try {
+      await worker.start();
+      if (source.epoch === epoch) this.patch(source, { phase: 'ready', error: null });
+      else worker.stop();
+    } catch (error) {
+      this.workerFailed(source, epoch, error);
+    }
+  }
+
+  private workerFailed(source: Source, epoch: number, error: unknown): void {
+    if (source.epoch !== epoch) return;
+    const reason = error instanceof Error ? error.message : String(error);
+    this.retireWorker(source);
+    if (!source.captureId) return;
+    if (source.restartCount >= MAX_RESTARTS) {
+      this.patch(source, {
+        phase: 'error',
+        error: `Speech worker failed after ${MAX_RESTARTS} restarts: ${reason}`,
+      });
+      return;
+    }
+    source.restartCount++;
+    this.patch(source, {
+      phase: 'starting',
+      error: `Speech worker failed: ${reason}. Restart ${source.restartCount}/${MAX_RESTARTS} pending…`,
+    });
+    const current = source.epoch;
+    source.restartTimer = this.clock.setTimeout(
+      () => {
+        source.restartTimer = null;
+        if (source.epoch === current && source.captureId) void this.launchWorker(source);
+      },
+      500 * 2 ** (source.restartCount - 1),
+    );
+  }
+
+  private retireWorker(source: Source): void {
     ++source.epoch;
-    source.captureId = null;
-    source.worker?.stop();
+    if (source.restartTimer !== null) this.clock.clearTimeout(source.restartTimer);
+    source.restartTimer = null;
+    source.unsubscribeWorker?.();
+    source.unsubscribeWorker = null;
+    const worker = source.worker;
     source.worker = null;
+    if (worker) {
+      const previous = source.retiring;
+      // Stop synchronously so stale capture/IPC callbacks cannot outlive this release.
+      const retirement = worker.shutdown ? worker.shutdown() : (worker.stop(), Promise.resolve());
+      source.retiring = Promise.all([previous.catch(() => {}), retirement]).then(() => {});
+      void source.retiring.catch((error: unknown) => {
+        console.error('Unable to retire speech worker', error);
+      });
+    }
     source.status = { ...source.status, pendingSegments: 0 };
+  }
+
+  private release(source: Source): void {
+    this.retireWorker(source);
+    source.captureId = null;
+    source.restartCount = 0;
   }
 
   private patch(source: Source, changes: Partial<AudioSourceStatus>): void {

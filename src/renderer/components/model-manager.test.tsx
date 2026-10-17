@@ -183,6 +183,48 @@ it('installs selected weights/projector, activates them, and removes managed pac
   expect(chooseModelDirectory).toHaveBeenCalledOnce();
 });
 
+it('allows live VLM switching but not deactivation during an active native session', async () => {
+  const installed = (id: string) => ({
+    id,
+    repo: 'acme/stream',
+    revision: 'main',
+    candidateId: `${id}.gguf`,
+    projectorId: null,
+    role: 'vision-language' as const,
+    installedAt: 1,
+    files: [
+      {
+        path: `${id}.gguf`,
+        relativePath: `files/${id}.gguf`,
+        sizeBytes: 128,
+        sha256: 'a'.repeat(64),
+      },
+    ],
+  });
+  const active = 'model-old';
+  const replacement = 'model-new';
+  const manager = {
+    ...emptyModels,
+    installations: [installed(active), installed(replacement)],
+    active: { ...emptyModels.active, 'vision-language': active },
+  };
+  const activateModel = vi.fn(async () => ({
+    ...manager,
+    active: { ...manager.active, 'vision-language': replacement },
+  }));
+  window.lonelyChat = {
+    ...modelAPI,
+    getModelsSnapshot: async () => manager,
+    activateModel,
+  } as unknown as DesktopAPI;
+  render(<ModelManager sessionMode="native" sessionPhase="running" />);
+  expect((await screen.findByRole('button', { name: 'Deactivate' })).hasAttribute('disabled')).toBe(
+    true,
+  );
+  fireEvent.click(screen.getByRole('button', { name: 'Switch to this model' }));
+  await waitFor(() => expect(activateModel).toHaveBeenCalledWith('vision-language', replacement));
+});
+
 it('shows actionable API failures and does not keep stale results from superseded searches', async () => {
   let resolveFirst!: (result: ModelDiscoveryResult) => void;
   const discoverModels = vi

@@ -57,12 +57,16 @@ describe('native speech IPC and worker lifecycle', () => {
       resolveModel: async () => '/fixture/ggml-base.en.bin',
       launch: launched,
     });
+    expect(speech.snapshot().phase).toBe('stopped');
     await speech.start();
+    expect(speech.snapshot().phase).toBe('ready');
     expect(await speech.transcribe(new Float32Array(16000).fill(0.2))).toBe(
       'hello from test fixture',
     );
     expect(launched).toHaveBeenCalledTimes(1);
+    await speech.shutdown();
     speech.stop();
+    expect(speech.snapshot().phase).toBe('stopped');
     await expect(speech.transcribe(new Float32Array(20))).rejects.toThrow(/segment/);
   });
 

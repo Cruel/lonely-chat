@@ -36,6 +36,7 @@ let selectedDisplaySource: Electron.DesktopCapturerSource | null = null;
 let videoSelectionGeneration = 0;
 let rosterRegenerating = false;
 let rosterGenerationAbort: AbortController | null = null;
+let speechSwitchBusy = false;
 
 async function listDesktopSources(): Promise<Electron.DesktopCapturerSource[]> {
   return desktopCapturer.getSources({
@@ -74,16 +75,22 @@ function registerHandlers(): void {
       mode?: import('../shared/session-contract').InferenceMode,
     ) => {
       if (rosterRegenerating) throw new Error('Roster regeneration is in progress.');
-      return session.start(context, mode);
+      return session.start(
+        context,
+        mode,
+        mode === 'native' ? installs.snapshot().active['vision-language'] : null,
+      );
     },
     'session:stop': () => session.stop(),
+    'session:retry': () => session.retry(),
+    'native:status': () => nativeInference.snapshot(),
     'preferences:get': () => session.getPreferences(),
     'preferences:set': async (
       preferences: import('../shared/session-contract').SessionPreferences,
     ) => {
       const next = validatePreferences(preferences);
       if (next.audienceCount !== session.getPreferences().audienceCount) {
-        if (['starting', 'running'].includes(session.snapshot().phase)) {
+        if (['starting', 'running', 'switching'].includes(session.snapshot().phase)) {
           throw new Error('Stop the simulation before resizing the audience.');
         }
         if (rosterRegenerating) throw new Error('Roster regeneration is in progress.');
@@ -119,27 +126,60 @@ function registerHandlers(): void {
     'models:install': (selection: import('../shared/model-install-contract').ModelInstallRequest) =>
       installs.install(selection),
     'models:cancel': () => installs.cancel(),
-    'models:activate': (role: import('../shared/model-contract').ModelRole, id: string | null) => {
+    'models:activate': async (
+      role: import('../shared/model-contract').ModelRole,
+      id: string | null,
+    ) => {
       if (
         rosterRegenerating ||
-        session.snapshot().phase === 'running' ||
-        session.snapshot().phase === 'starting'
+        speechSwitchBusy ||
+        session.switchingModel ||
+        session.snapshot().phase === 'switching'
       ) {
-        throw new Error('Stop roster generation and simulation before changing the active model.');
+        throw new Error('Another model transition is in progress.');
+      }
+      if (role !== 'vision-language' && role !== 'speech-to-text') {
+        throw new Error('Invalid model role.');
+      }
+      const current = installs.snapshot().active[role];
+      if (current === id) return installs.snapshot();
+      if (
+        role === 'vision-language' &&
+        session.snapshot().mode === 'native' &&
+        ['running', 'starting', 'error'].includes(session.snapshot().phase)
+      ) {
+        if (!id) throw new Error('Select a replacement VLM before deactivating the running model.');
+        await session.switchNativeModel(async () => {
+          await installs.setActive(role, id);
+        }, id);
+        return installs.snapshot();
       }
       if (
         role === 'speech-to-text' &&
         audio
           .snapshot()
-          .sources.some((source) => source.phase === 'ready' || source.phase === 'starting')
+          .sources.some((source) => source.phase !== 'off' && source.phase !== 'disconnected')
       ) {
-        throw new Error('Stop audio capture before changing the speech model.');
+        if (!id)
+          throw new Error('Select a replacement speech model before deactivating active audio.');
+        speechSwitchBusy = true;
+        try {
+          await audio.reloadWorkers(async () => {
+            await installs.setActive(role, id);
+          });
+          return installs.snapshot();
+        } finally {
+          speechSwitchBusy = false;
+        }
       }
       return installs.setActive(role, id);
     },
-    'models:remove': (id: string) => {
+    'models:remove': async (id: string) => {
       if (
         rosterRegenerating ||
+        speechSwitchBusy ||
+        session.switchingModel ||
+        session.snapshot().phase === 'switching' ||
         session.snapshot().phase === 'running' ||
         session.snapshot().phase === 'starting'
       ) {
@@ -155,6 +195,7 @@ function registerHandlers(): void {
       ) {
         throw new Error('Stop audio capture before removing a speech model.');
       }
+      await session.awaitShutdown();
       return installs.remove(id);
     },
     'video:list-displays': async () =>
@@ -200,6 +241,7 @@ function registerHandlers(): void {
     'audio:capabilities': () => ({ windowsLoopback: process.platform === 'win32' }),
     'audio:start': (id: string, sourceId: string, label: string, captureId: string) =>
       audio.start(id, sourceId, label, captureId),
+    'audio:retry': (id: string) => audio.retry(id),
     'audio:label': (id: string, label: string) => audio.changeLabel(id, label),
     'audio:disconnected': (captureId: string) => audio.disconnected(captureId),
     'audio:remove': (id: string) => audio.remove(id),
@@ -330,7 +372,7 @@ function openMainWindow(): void {
           !result.previewReady ||
           result.session.phase !== 'running' ||
           result.apiKeys.join(',') !==
-            'activateModel,audioDisconnected,cancelModelDownload,chooseModelDirectory,discoverModels,getAudience,getAudioCapabilities,getAudioConfiguration,getAudioStatus,getChatSnapshot,getModelsSnapshot,getOverlayUrl,getPreferences,getSessionSnapshot,installModel,listDisplaySources,onAudienceChange,onAudioChange,onChatEvent,onModelsChange,onSessionChange,publishSample,regenerateAudience,removeAudioInput,removeModel,selectVideoSource,setAudioConfiguration,setAudioLabel,setPreferences,startAudio,startSession,stopAudio,stopSession,submitAudioSegment,submitVideoFrame'
+            'activateModel,audioDisconnected,cancelModelDownload,chooseModelDirectory,discoverModels,getAudience,getAudioCapabilities,getAudioConfiguration,getAudioStatus,getChatSnapshot,getModelsSnapshot,getNativeStatus,getOverlayUrl,getPreferences,getSessionSnapshot,installModel,listDisplaySources,onAudienceChange,onAudioChange,onChatEvent,onModelsChange,onNativeChange,onSessionChange,publishSample,regenerateAudience,removeAudioInput,removeModel,retryAudio,retrySession,selectVideoSource,setAudioConfiguration,setAudioLabel,setPreferences,startAudio,startSession,stopAudio,stopSession,submitAudioSegment,submitVideoFrame'
         ) {
           throw new Error(`Electron smoke failed: ${JSON.stringify(result)}`);
         }
@@ -391,6 +433,10 @@ async function boot(): Promise<void> {
     resolveModel: () => installs.activeVisionFiles(),
     reasoningEnabled: () => session.getPreferences().reasoningEnabled,
     inferenceTimeoutMs: () => session.getPreferences().inferenceTimeoutMs,
+  });
+  nativeInference.subscribe((status) => {
+    if (mainWindow && !mainWindow.isDestroyed())
+      mainWindow.webContents.send('native:change', status);
   });
   session = new SessionController(
     chat,
@@ -453,10 +499,17 @@ app.on('before-quit', (event) => {
   quitting = true;
   installs.cancel();
   rosterGenerationAbort?.abort();
-  audio?.stop();
-  void Promise.all([session?.terminate(), nativeInference?.stop(), overlay.stop()]).finally(() =>
-    app.quit(),
-  );
+  void Promise.allSettled([
+    session?.terminate(),
+    audio?.terminate(),
+    nativeInference?.stop(),
+    overlay.stop(),
+  ]).then((results) => {
+    for (const result of results) {
+      if (result.status === 'rejected') console.error('Native shutdown failed', result.reason);
+    }
+    app.quit();
+  });
 });
 app.on('will-quit', () => {
   ipcMain.removeHandler('chat:snapshot');
@@ -465,6 +518,8 @@ app.on('will-quit', () => {
   ipcMain.removeHandler('session:snapshot');
   ipcMain.removeHandler('session:start');
   ipcMain.removeHandler('session:stop');
+  ipcMain.removeHandler('session:retry');
+  ipcMain.removeHandler('native:status');
   ipcMain.removeHandler('preferences:get');
   ipcMain.removeHandler('preferences:set');
   ipcMain.removeHandler('audience:get');
@@ -484,6 +539,7 @@ app.on('will-quit', () => {
   ipcMain.removeHandler('audio:status');
   ipcMain.removeHandler('audio:capabilities');
   ipcMain.removeHandler('audio:start');
+  ipcMain.removeHandler('audio:retry');
   ipcMain.removeHandler('audio:label');
   ipcMain.removeHandler('audio:disconnected');
   ipcMain.removeHandler('audio:remove');

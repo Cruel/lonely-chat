@@ -14,6 +14,7 @@ import {
 } from '@/components/ui/select';
 import type { ModelDiscoveryResult, ModelCandidate } from '../../shared/model-contract';
 import type { ModelManagerSnapshot } from '../../shared/model-install-contract';
+import type { InferenceMode, SessionPhase } from '../../shared/session-contract';
 
 function bytes(value: number | null): string {
   if (value === null) return 'Size unknown';
@@ -27,7 +28,13 @@ function modelLabel(candidate: ModelCandidate): string {
   return `${candidate.id} · ${bytes(candidate.sizeBytes)}`;
 }
 
-export function ModelManager() {
+export function ModelManager({
+  sessionPhase = 'stopped',
+  sessionMode = 'fake',
+}: {
+  sessionPhase?: SessionPhase;
+  sessionMode?: InferenceMode;
+}) {
   const [source, setSource] = useState('');
   const [discovery, setDiscovery] = useState<ModelDiscoveryResult | null>(null);
   const [discoveredInput, setDiscoveredInput] = useState('');
@@ -147,7 +154,8 @@ export function ModelManager() {
         </CardTitle>
         <CardDescription className="text-sm leading-6">
           Browse and install GGUF vision/language weights or native whisper.cpp speech models.
-          Installed models remain local and can be activated without restarting the app.
+          Installed models remain local. Switch the active VLM during native inference without
+          losing existing chat; speech inputs reload their workers when you switch the speech model.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -394,7 +402,15 @@ export function ModelManager() {
                   <Button
                     size="sm"
                     variant={active ? 'secondary' : 'default'}
-                    disabled={isDownloading || managementBusy}
+                    disabled={
+                      isDownloading ||
+                      managementBusy ||
+                      sessionPhase === 'switching' ||
+                      (active &&
+                        entry.role === 'vision-language' &&
+                        sessionMode === 'native' &&
+                        ['starting', 'running', 'error'].includes(sessionPhase))
+                    }
                     onClick={() =>
                       void manage(() =>
                         window.lonelyChat!.activateModel(entry.role, active ? null : entry.id),
@@ -405,6 +421,10 @@ export function ModelManager() {
                       <>
                         <Check size={14} /> Deactivate
                       </>
+                    ) : entry.role === 'vision-language' &&
+                      sessionMode === 'native' &&
+                      ['starting', 'running', 'error'].includes(sessionPhase) ? (
+                      'Switch to this model'
                     ) : (
                       'Activate'
                     )}

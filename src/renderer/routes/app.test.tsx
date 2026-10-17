@@ -18,6 +18,10 @@ const emptyModels: ModelManagerSnapshot = {
   progress: { phase: 'idle', file: null, receivedBytes: 0, totalBytes: null },
 };
 const modelsAPI = {
+  retrySession: async () => ({ ...emptyStatus }),
+  getNativeStatus: async () => ({ revision: 0, phase: 'stopped' as const, error: null }),
+  onNativeChange: () => () => {},
+  retryAudio: async () => ({ revision: 0, sources: [], transcripts: [] }),
   getAudience: async () => ({
     revision: 0,
     phase: 'ready' as const,

@@ -23,6 +23,7 @@ export type ChatEvent = ChatSnapshot | ChatAppend;
 
 import type { InferenceMode, SessionPreferences, SessionSnapshot } from './session-contract';
 import type { AudienceSnapshot } from './audience-contract';
+import type { NativeServiceStatus } from './native-service-contract';
 import type { VideoFrame, VideoSource } from './video-contract';
 import type { AudioInputConfiguration, AudioSegment, AudioStatus } from './audio-contract';
 import type { ModelDiscoveryResult, ModelRole } from './model-contract';
@@ -36,6 +37,8 @@ export interface DesktopInvocations {
   'session:snapshot': SessionSnapshot;
   'session:start': SessionSnapshot;
   'session:stop': SessionSnapshot;
+  'session:retry': SessionSnapshot;
+  'native:status': NativeServiceStatus;
   'preferences:get': SessionPreferences;
   'preferences:set': SessionPreferences;
   'audience:get': AudienceSnapshot;
@@ -55,6 +58,7 @@ export interface DesktopInvocations {
   'audio:status': AudioStatus;
   'audio:capabilities': { windowsLoopback: boolean };
   'audio:start': AudioStatus;
+  'audio:retry': AudioStatus;
   'audio:label': AudioStatus;
   'audio:disconnected': AudioStatus;
   'audio:remove': AudioStatus;
@@ -70,6 +74,8 @@ export interface DesktopArguments {
   'session:snapshot': [];
   'session:start': [manualContext: string, mode?: InferenceMode];
   'session:stop': [];
+  'session:retry': [];
+  'native:status': [];
   'preferences:get': [];
   'preferences:set': [preferences: SessionPreferences];
   'audience:get': [];
@@ -89,6 +95,7 @@ export interface DesktopArguments {
   'audio:status': [];
   'audio:capabilities': [];
   'audio:start': [id: string, sourceId: string, label: string, captureId: string];
+  'audio:retry': [id: string];
   'audio:label': [id: string, label: string];
   'audio:disconnected': [captureId: string];
   'audio:remove': [id: string];
@@ -105,6 +112,9 @@ export interface DesktopAPI {
   onSessionChange(listener: (status: SessionSnapshot) => void): () => void;
   startSession(manualContext: string, mode?: InferenceMode): Promise<SessionSnapshot>;
   stopSession(): Promise<SessionSnapshot>;
+  retrySession(): Promise<SessionSnapshot>;
+  getNativeStatus(): Promise<NativeServiceStatus>;
+  onNativeChange(listener: (status: NativeServiceStatus) => void): () => void;
   getPreferences(): Promise<SessionPreferences>;
   setPreferences(preferences: SessionPreferences): Promise<SessionPreferences>;
   getAudience(): Promise<AudienceSnapshot>;
@@ -130,6 +140,7 @@ export interface DesktopAPI {
   removeAudioInput(id: string): Promise<AudioStatus>;
   onAudioChange(listener: (snapshot: AudioStatus) => void): () => void;
   startAudio(id: string, sourceId: string, label: string, captureId: string): Promise<AudioStatus>;
+  retryAudio(id: string): Promise<AudioStatus>;
   stopAudio(captureId: string): Promise<AudioStatus>;
   submitAudioSegment(segment: AudioSegment, captureId: string): Promise<void>;
 }

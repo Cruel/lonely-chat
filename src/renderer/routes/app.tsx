@@ -30,6 +30,7 @@ import { NumericSettingCombobox } from '@/components/numeric-setting-combobox';
 import { VideoInput } from '@/components/video-input';
 import { AudioInput } from '@/components/audio-input';
 import type { AudioStatus } from '../../shared/audio-contract';
+import type { NativeServiceStatus } from '../../shared/native-service-contract';
 import { useChat } from '../use-chat';
 import { useSession } from '../use-session';
 import { useAudience } from '../use-audience';
@@ -82,6 +83,7 @@ export function DesktopPage() {
   const [inferenceMode, setInferenceMode] = useState<InferenceMode>('fake');
   const [sampleBusy, setSampleBusy] = useState(false);
   const [audioStatus, setAudioStatus] = useState<AudioStatus | null>(null);
+  const [nativeStatus, setNativeStatus] = useState<NativeServiceStatus | null>(null);
   useEffect(() => {
     let live = true;
     const unsubscribe = window.lonelyChat?.onAudioChange((next) => {
@@ -98,6 +100,17 @@ export function DesktopPage() {
 
   useEffect(() => {
     void window.lonelyChat?.getOverlayUrl().then(setOverlayUrl);
+    let live = true;
+    const unsubscribe = window.lonelyChat?.onNativeChange((next) => {
+      if (live) setNativeStatus(next);
+    });
+    void window.lonelyChat?.getNativeStatus().then((next) => {
+      if (live) setNativeStatus(next);
+    });
+    return () => {
+      live = false;
+      unsubscribe?.();
+    };
   }, []);
 
   const publish = async () => {
@@ -110,7 +123,7 @@ export function DesktopPage() {
     }
   };
 
-  const running = session.status.phase === 'running' || session.status.phase === 'starting';
+  const running = ['running', 'starting', 'switching'].includes(session.status.phase);
   const current = DESKTOP_SECTIONS.find((item) => item.id === section)!;
   const update = (changes: Partial<SessionPreferences>) =>
     void session.updatePreferences({ ...session.preferences, ...changes });
@@ -208,11 +221,22 @@ export function DesktopPage() {
                       <Play size={15} /> Start simulation
                     </Button>
                   )}
+                  {session.status.phase === 'error' && (
+                    <Button
+                      variant="secondary"
+                      disabled={!session.ready || session.busy}
+                      onClick={() => void session.retry()}
+                    >
+                      Retry inference
+                    </Button>
+                  )}
                   <span role="status" aria-live="polite" className="text-sm text-zinc-400">
                     {running
-                      ? session.status.phase === 'starting'
-                        ? 'Loading local llama.cpp model…'
-                        : `Running · cycle ${session.status.cycle} · ${session.status.pendingMessages} queued`
+                      ? session.status.phase === 'switching'
+                        ? 'Switching local llama.cpp model…'
+                        : session.status.phase === 'starting'
+                          ? 'Loading local llama.cpp model…'
+                          : `Running · cycle ${session.status.cycle} · ${session.status.pendingMessages} queued`
                       : session.status.phase === 'error'
                         ? 'Simulation error'
                         : 'Stopped'}
@@ -264,7 +288,7 @@ export function DesktopPage() {
                 title="Models"
                 description="Discover, install, activate, and remove local inference models."
               />
-              <ModelManager />
+              <ModelManager sessionPhase={session.status.phase} sessionMode={session.status.mode} />
             </section>
           )}
 
@@ -464,6 +488,10 @@ export function DesktopPage() {
               <SectionHeading title="Logs" description="Runtime status and diagnostics." />
               <Panel>
                 <h3 className="font-medium">Session diagnostics</h3>
+                <p className="mt-2 text-sm text-zinc-400" aria-label="Native inference lifecycle">
+                  llama.cpp: {nativeStatus?.phase ?? 'unknown'}
+                  {nativeStatus?.error ? ` · ${nativeStatus.error}` : ''}
+                </p>
                 <p className="mt-2 text-sm text-zinc-400">
                   A timestamped log viewer and native worker output will be added separately. Only
                   the currently available session status is shown here for now.

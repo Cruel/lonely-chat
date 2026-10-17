@@ -33,6 +33,16 @@ const api: DesktopAPI = {
   },
   startSession: (manualContext, mode) => invoke('session:start', manualContext, mode),
   stopSession: () => invoke('session:stop'),
+  retrySession: () => invoke('session:retry'),
+  getNativeStatus: () => invoke('native:status'),
+  onNativeChange: (listener) => {
+    const receive = (
+      _event: Electron.IpcRendererEvent,
+      status: import('../shared/native-service-contract').NativeServiceStatus,
+    ) => listener(status);
+    ipcRenderer.on('native:change', receive);
+    return () => ipcRenderer.removeListener('native:change', receive);
+  },
   getPreferences: () => invoke('preferences:get'),
   setPreferences: (preferences) => invoke('preferences:set', preferences),
   getAudience: () => invoke('audience:get'),
@@ -72,6 +82,7 @@ const api: DesktopAPI = {
   removeAudioInput: (id) => invoke('audio:remove', id),
   startAudio: (id, sourceId, label, captureId) =>
     invoke('audio:start', id, sourceId, label, captureId),
+  retryAudio: (id) => invoke('audio:retry', id),
   stopAudio: (captureId) => invoke('audio:stop', captureId),
   submitAudioSegment: (segment, captureId) => invoke('audio:segment', segment, captureId),
   onAudioChange: (listener) => {

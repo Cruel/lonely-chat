@@ -113,7 +113,8 @@ describe('independent labeled audio inputs', () => {
     expect(stops).toBeGreaterThanOrEqual(3);
   });
 
-  it('reports a failed speech worker without affecting another active source', async () => {
+  it('restarts a crashed speech worker with backoff without affecting another active source', async () => {
+    const clock = new FakeClock();
     let created = 0;
     const service = new AudioService(
       () => {
@@ -128,6 +129,8 @@ describe('independent labeled audio inputs', () => {
         } as unknown as NativeSpeech;
       },
       () => {},
+      clock.wallNow,
+      clock,
     );
     await service.start('first', 'mic-a', 'Streamer', 'token-a');
     await service.start('second', 'mic-b', 'Voice', 'token-b');
@@ -135,12 +138,19 @@ describe('independent labeled audio inputs', () => {
     service.submit(pcm(), 'token-b');
     await flushMicrotasks();
     expect(service.snapshot().sources).toMatchObject([
-      { phase: 'error', error: 'worker crashed', pendingSegments: 0 },
+      { phase: 'starting', pendingSegments: 0 },
       { phase: 'ready', error: null, pendingSegments: 0 },
     ]);
     expect(service.snapshot().transcripts).toMatchObject([
       { sourceId: 'second', source: 'Voice', text: 'other input is still live' },
     ]);
+    clock.advance(499);
+    await flushMicrotasks();
+    expect(service.snapshot().sources[0].phase).toBe('starting');
+    clock.advance(1);
+    await flushMicrotasks();
+    expect(service.snapshot().sources[0].phase).toBe('ready');
+    expect(service.snapshot().sources[1].phase).toBe('ready');
     service.stop();
   });
 });

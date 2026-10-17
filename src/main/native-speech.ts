@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import path from 'node:path';
+import type { NativeServiceStatus } from '../shared/native-service-contract';
 import { stat } from 'node:fs/promises';
 import {
   MAX_SPEECH_FRAME,
@@ -35,19 +36,41 @@ export class NativeSpeech {
   private tail = '';
   private epoch = 0;
   private ready: Promise<void> | null = null;
+  private exitTask: Promise<void> = Promise.resolve();
+  private status: NativeServiceStatus = { revision: 0, phase: 'stopped', error: null };
+  private listeners = new Set<(status: NativeServiceStatus) => void>();
+
+  snapshot(): NativeServiceStatus {
+    return { ...this.status };
+  }
+
+  subscribe(listener: (status: NativeServiceStatus) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  private publish(phase: NativeServiceStatus['phase'], error: string | null = null): void {
+    this.status = { revision: this.status.revision + 1, phase, error };
+    for (const listener of this.listeners) listener(this.snapshot());
+  }
 
   constructor(private readonly options: SpeechOptions) {}
 
   async start(): Promise<void> {
     if (this.ready) return this.ready;
     const epoch = ++this.epoch;
+    this.publish('loading');
     const task = this.launch(epoch);
     this.ready = task;
     try {
       await task;
+      if (epoch === this.epoch) this.publish('ready');
     } catch (error) {
       // An obsolete load must not kill a newer worker started after Stop/Restart.
-      if (epoch === this.epoch) this.stop();
+      if (epoch === this.epoch) {
+        this.stop();
+        this.publish('failed', error instanceof Error ? error.message : 'Speech worker failed.');
+      }
       throw error;
     }
   }
@@ -176,10 +199,19 @@ export class NativeSpeech {
     if (!this.child) return;
     this.tail = (this.tail + error.message).slice(-1500);
     this.stop(error);
+    this.publish('failed', error.message);
+  }
+
+  /** Await retirement even if a crash already initiated Stop before the caller arrived. */
+  async shutdown(): Promise<void> {
+    this.stop();
+    await this.exitTask;
   }
 
   stop(reason = new Error('Speech transcription stopped.')): void {
+    if (!this.child && !this.ready && !this.pending && this.status.phase === 'stopped') return;
     ++this.epoch;
+    this.publish('stopped');
     const child = this.child;
     this.child = null;
     this.ready = null;
@@ -187,12 +219,33 @@ export class NativeSpeech {
     this.pending = null;
     for (const task of this.queue.splice(0)) task.reject(reason);
     if (child && child.exitCode === null && child.signalCode === null) {
+      const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
       child.kill();
-      const timer = setTimeout(() => {
+      const escalation = setTimeout(() => {
         if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
       }, 2000);
-      timer.unref();
-      child.once('exit', () => clearTimeout(timer));
+      escalation.unref();
+      this.exitTask = (async () => {
+        let deadline: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([
+            exited,
+            new Promise<void>((resolve) => {
+              deadline = setTimeout(resolve, 4500);
+              deadline.unref();
+            }),
+          ]);
+          if (child.exitCode === null && child.signalCode === null) {
+            throw new Error('Speech worker did not exit after SIGKILL.');
+          }
+        } finally {
+          clearTimeout(escalation);
+          if (deadline) clearTimeout(deadline);
+        }
+      })();
+      void this.exitTask.catch((error: unknown) =>
+        console.error('Speech worker retirement failed', error),
+      );
     }
   }
 }
