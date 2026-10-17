@@ -75,7 +75,7 @@ it('browses a direct file URL, preselects weights and requires a choice for ambi
   expect(model.textContent).toContain('model-Q4_K_M.gguf');
   expect(screen.queryByRole('radio')).toBeNull();
   expect(screen.getByText(/Several companions are available/)).toBeTruthy();
-  const projector = screen.getByRole('combobox', { name: 'Vision projector companion' });
+  const projector = screen.getByRole('combobox', { name: /^Vision projector candidate/ });
   expect(projector.textContent).toContain('Choose a projector');
   const user = userEvent.setup();
   await user.click(projector);
@@ -112,7 +112,7 @@ it('changes a preselected model through a Select without retaining an incompatib
   await user.click(model);
   await user.click(await screen.findByRole('option', { name: /model-Q8_0.gguf/i }));
   expect(model.textContent).toContain('model-Q8_0.gguf');
-  expect(screen.queryByRole('combobox', { name: 'Vision projector companion' })).toBeNull();
+  expect(screen.queryByRole('combobox', { name: /^Vision projector candidate/ })).toBeNull();
   expect(screen.getByText(/Selected 1 model file/).textContent).not.toContain('projector:');
   expect(screen.queryByText(/Select a projector explicitly for model-Q4_K_M.gguf/)).toBeNull();
 });
@@ -165,7 +165,7 @@ it('installs selected weights/projector, activates them, and removes managed pac
   await user.click(screen.getByRole('button', { name: 'Discover files' }));
   const install = await screen.findByRole('button', { name: 'Install selected model' });
   expect(install.hasAttribute('disabled')).toBe(true);
-  await user.click(screen.getByRole('combobox', { name: 'Vision projector companion' }));
+  await user.click(screen.getByRole('combobox', { name: /^Vision projector candidate/ }));
   await user.click(await screen.findByRole('option', { name: /mmproj-F16.gguf/i }));
   await user.click(install);
   await waitFor(() =>
