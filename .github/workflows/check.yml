@@ -41,7 +41,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          xvfb-run -a env APPIMAGE_EXTRACT_AND_RUN=1 LONELY_CHAT_SMOKE=1 out/*.AppImage > /tmp/lonely-appimage-smoke.log 2>&1 || {
+          xvfb-run -a env APPIMAGE_EXTRACT_AND_RUN=1 LONELY_CHAT_SMOKE=1 out/*.AppImage --no-sandbox > /tmp/lonely-appimage-smoke.log 2>&1 || {
             tail -60 /tmp/lonely-appimage-smoke.log
             exit 1
           }

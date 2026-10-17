@@ -3,9 +3,11 @@ import process from 'node:process';
 import { unpackedPackage } from './package-layout.mjs';
 
 const packaged = process.argv.includes('--packaged');
+// CI's Linux Electron binary has no configured SUID sandbox; only smoke launches opt out.
+const sandboxArgs = process.platform === 'linux' ? ['--no-sandbox'] : [];
 const child = spawn(
   packaged ? unpackedPackage().executable : 'pnpm',
-  packaged ? [] : ['exec', 'electron', '.'],
+  packaged ? sandboxArgs : ['exec', 'electron', '.', ...sandboxArgs],
   {
     stdio: ['ignore', 'pipe', 'pipe'],
     shell: !packaged && process.platform === 'win32',
