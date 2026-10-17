@@ -5,6 +5,24 @@ allowBuilds:
   esbuild: true
   electron-winstaller: true
 
+# pnpm 11 defaults to a 24-hour minimum release age. These exact versions were
+# explicitly selected and pinned in pnpm-lock.yaml while less than a day old.
+# A frozen CI install must permit these already-reviewed pins, without relaxing
+# the age requirement for any future versions or other dependencies.
+minimumReleaseAgeExclude:
+  - '@voidzero-dev/vite-plus-core@1.3.0'
+  - '@voidzero-dev/vite-plus-darwin-arm64@1.3.0'
+  - '@voidzero-dev/vite-plus-darwin-x64@1.3.0'
+  - '@voidzero-dev/vite-plus-linux-arm64-gnu@1.3.0'
+  - '@voidzero-dev/vite-plus-linux-arm64-musl@1.3.0'
+  - '@voidzero-dev/vite-plus-linux-x64-gnu@1.3.0'
+  - '@voidzero-dev/vite-plus-linux-x64-musl@1.3.0'
+  - '@voidzero-dev/vite-plus-win32-arm64-msvc@1.3.0'
+  - '@voidzero-dev/vite-plus-win32-x64-msvc@1.3.0'
+  - 'asn1js@3.1.0'
+  - 'cn@0.5.0'
+  - 'vite-plus@1.3.0'
+
 # Vite+ core exports the Vite API under its own version, which peer version checks cannot detect.
 peerDependencyRules:
   allowedVersions:
