@@ -26,7 +26,7 @@ jobs:
       - run: node scripts/verify-release-version.mjs
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm check
-      - run: pnpm stage:llama --accelerators
+      - run: node scripts/stage-llama.mjs linux-x64 --accelerators
       - run: pnpm stage:whisper
       - run: node scripts/verify-native-stage.mjs native linux-x64 --accelerators
       - run: pnpm smoke:llama

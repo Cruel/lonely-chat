@@ -14,7 +14,6 @@ import {
   symlink,
   writeFile,
 } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
@@ -72,7 +71,10 @@ try {
 } catch (error) {
   if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error;
 }
-const temporary = await mkdtemp(path.join(tmpdir(), 'lonely-chat-llama-'));
+// The staging directory must share a volume with its final destination:
+// Windows CI may put the OS temp directory on C: but check out sources on D:.
+await mkdir(path.dirname(destination), { recursive: true });
+const temporary = await mkdtemp(path.join(path.dirname(destination), '.lonely-chat-llama-'));
 const staged = path.join(temporary, 'stage');
 await mkdir(staged);
 

@@ -2,7 +2,6 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { cp, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
@@ -38,7 +37,10 @@ function run(command, args) {
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`${command} exited ${result.status}`);
 }
-const temporary = await mkdtemp(path.join(tmpdir(), 'lonely-whisper-'));
+// CMake output and the final staged worker must be on the same volume so
+// publication via rename also works with Windows CI's C:/D: drive split.
+await mkdir(path.dirname(destination), { recursive: true });
+const temporary = await mkdtemp(path.join(path.dirname(destination), '.lonely-whisper-'));
 try {
   const archive = path.join(temporary, 'source.tar.gz');
   const response = await fetch(`https://github.com/ggml-org/whisper.cpp/archive/${COMMIT}.tar.gz`);
