@@ -18,6 +18,17 @@ const emptyModels: ModelManagerSnapshot = {
   progress: { phase: 'idle', file: null, receivedBytes: 0, totalBytes: null },
 };
 const modelsAPI = {
+  getOverlayStatus: async () => ({
+    port: 18080,
+    url: 'http://127.0.0.1:18080/overlay',
+    error: null,
+  }),
+  configureOverlayPort: async (port: number) => ({
+    port,
+    url: `http://127.0.0.1:${port}/overlay`,
+    error: null,
+  }),
+  onOverlayChange: () => () => {},
   getWindowStatus: async () => ({ closeToTray: true, trayAvailable: true }),
   setCloseToTray: async (enabled: boolean) => ({ closeToTray: enabled, trayAvailable: enabled }),
   getFloatingChat: async () => ({
@@ -300,7 +311,7 @@ it('navigates across all categories without losing the session or private draft 
   expect(await screen.findByRole('region', { name: 'Hugging Face model discovery' })).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'Chat & Overlay' }));
   expect(screen.getByText('Live chat preview')).toBeTruthy();
-  expect(screen.getByText('http://127.0.0.1:45939/overlay')).toBeTruthy();
+  expect(await screen.findByText('http://127.0.0.1:18080/overlay')).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'Simulation' }));
   await waitFor(() =>
     expect(screen.getByRole('button', { name: 'Start simulation' }).hasAttribute('disabled')).toBe(
@@ -322,6 +333,53 @@ it('navigates across all categories without losing the session or private draft 
   expect(screen.getByRole('button', { name: 'Stop simulation' })).toBeTruthy();
   expect(screen.getByLabelText('Stream context')).toHaveProperty('value', 'Playing Sonic');
   expect(startSession).toHaveBeenCalledTimes(1);
+});
+
+it('shows an unavailable overlay and lets Settings recover with a custom port', async () => {
+  const initial = {
+    port: 18080,
+    url: null,
+    error: 'Port 18080 is already in use or reserved. Choose another port in Settings.',
+  };
+  const configure = vi.fn(async (port: number) => ({
+    port,
+    url: `http://127.0.0.1:${port}/overlay`,
+    error: null,
+  }));
+  window.lonelyChat = {
+    ...modelsAPI,
+    getOverlayStatus: async () => initial,
+    configureOverlayPort: configure,
+    getChatSnapshot: async () => ({ type: 'snapshot', sequence: 0, messages: [] }),
+    onChatEvent: () => () => {},
+    publishSample: async () => {},
+    getOverlayUrl: async () => null,
+    getSessionSnapshot: async () => ({ ...emptyStatus }),
+    onSessionChange: () => () => {},
+    startSession: async () => ({ ...emptyStatus }),
+    stopSession: async () => ({ ...emptyStatus }),
+    getPreferences: async () => DEFAULT_PREFERENCES,
+    setPreferences: async (value) => value,
+    discoverModels: async () => {
+      throw new Error('Not used');
+    },
+  } satisfies DesktopAPI;
+
+  render(<DesktopPage />);
+  expect(await screen.findByRole('button', { name: 'Overlay port issue · Settings' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Chat & Overlay' }));
+  expect(await screen.findByText(/Port 18080 is already in use or reserved/)).toBeTruthy();
+  expect(screen.getByText('Overlay server unavailable')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Configure overlay port' }));
+  const port = screen.getByRole('spinbutton', { name: 'Overlay port' });
+  expect(port).toHaveProperty('value', '18080');
+  fireEvent.change(port, { target: { value: '19000' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Apply port' }));
+  await waitFor(() => expect(configure).toHaveBeenCalledWith(19000));
+  expect(await screen.findByText('http://127.0.0.1:19000/overlay')).toBeTruthy();
+  expect(screen.queryByText(/Port 18080 is already in use or reserved/)).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Chat & Overlay' }));
+  expect(screen.getByText('http://127.0.0.1:19000/overlay')).toBeTruthy();
 });
 
 it('shows a rejected start error and remains ready to retry', async () => {

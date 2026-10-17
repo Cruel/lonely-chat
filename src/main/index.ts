@@ -18,6 +18,8 @@ import { DEFAULT_PREFERENCES, validatePreferences } from '../shared/session-cont
 import { AudienceService } from './audience-service';
 import { FakeInference } from './fake-inference';
 import { OverlayServer } from './overlay-server';
+import { OverlayController } from './overlay-controller';
+import { OverlayPortStore } from './overlay-port-store';
 import { FloatingChatWindowController } from './floating-chat-window';
 import { DesktopLifecycle } from './desktop-lifecycle';
 import { ManagedShutdown } from './shutdown-managed-services';
@@ -43,7 +45,10 @@ const rendererDirectory = path.join(__dirname, '../renderer');
 const preloadPath = path.join(__dirname, '../preload/preload.cjs');
 const devOrigin = process.env.LONELY_CHAT_RENDERER_URL;
 const chat = new ChatService();
-const overlay = new OverlayServer(chat, rendererDirectory, devOrigin);
+const overlay = new OverlayController(
+  () => new OverlayServer(chat, rendererDirectory, devOrigin),
+  new OverlayPortStore(app.getPath('userData')),
+);
 const floating = new FloatingChatWindowController(
   (options) => {
     const window = new BrowserWindow({
@@ -64,13 +69,18 @@ const floating = new FloatingChatWindowController(
     window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     window.webContents.on('will-navigate', (event, url) => {
       const target = new URL(url);
-      if (target.origin !== new URL(overlay.url).origin || target.pathname !== '/overlay') {
+      const current = overlay.snapshot().url;
+      if (!current || target.origin !== new URL(current).origin || target.pathname !== '/overlay') {
         event.preventDefault();
       }
     });
     return window;
   },
-  () => overlay.url,
+  () => {
+    const url = overlay.snapshot().url;
+    if (!url) throw new Error('Chat overlay server is unavailable.');
+    return url;
+  },
 );
 const preferenceStore = new PreferencesStore(app.getPath('userData'));
 const audioConfig = new AudioConfigStore(app.getPath('userData'));
@@ -179,9 +189,23 @@ function registerHandlers(): void {
     'chat:sample': () => {
       publishSample(chat);
     },
-    'overlay:url': () => overlay.url,
+    'overlay:url': () => overlay.snapshot().url,
+    'overlay:status': () => overlay.snapshot(),
+    'overlay:configure': async (port: number) => {
+      const previous = overlay.snapshot().url;
+      const next = await overlay.configure(port);
+      if (next.url !== previous && floating.snapshot().open) {
+        // Existing capture windows must reconnect to the new listener.
+        floating.close();
+        if (next.url) floating.open();
+      }
+      return next;
+    },
     'floating:get': () => floating.snapshot(),
-    'floating:open': () => floating.open(),
+    'floating:open': () => {
+      if (!overlay.snapshot().url) throw new Error('Start the overlay server in Settings first.');
+      return floating.open();
+    },
     'floating:close': () => floating.close(),
     'floating:configure': async (
       settings: import('../shared/floating-chat-contract').FloatingChatSettings,
@@ -449,7 +473,7 @@ function openMainWindow(): void {
     if (mainWindow === window) mainWindow = null;
   });
   window.webContents.setWindowOpenHandler(({ url }) => {
-    if (url === overlay.url) void shell.openExternal(url);
+    if (url === overlay.snapshot().url) void shell.openExternal(url);
     return { action: 'deny' };
   });
   window.webContents.on('will-navigate', (event, url) => {
@@ -495,11 +519,11 @@ function openMainWindow(): void {
         if (
           result.initial !== 1 ||
           result.later !== 2 ||
-          result.overlayUrl !== overlay.url ||
+          result.overlayUrl !== overlay.snapshot().url ||
           !result.previewReady ||
           result.session.phase !== 'running' ||
           result.apiKeys.join(',') !==
-            'activateModel,audioDisconnected,cancelModelDownload,chooseModelDirectory,closeFloatingChat,configureFloatingChat,discoverModels,getAudience,getAudioCapabilities,getAudioConfiguration,getAudioStatus,getChatSnapshot,getFloatingChat,getModelsSnapshot,getNativeStatus,getOverlayUrl,getPreferences,getSessionSnapshot,getWindowStatus,installModel,listDisplaySources,onAudienceChange,onAudioChange,onChatEvent,onFloatingChatChange,onModelsChange,onNativeChange,onSessionChange,openFloatingChat,publishSample,regenerateAudience,removeAudioInput,removeModel,retryAudio,retrySession,selectVideoSource,setAudioConfiguration,setAudioLabel,setCloseToTray,setPreferences,startAudio,startSession,stopAudio,stopSession,submitAudioSegment,submitVideoFrame'
+            'activateModel,audioDisconnected,cancelModelDownload,chooseModelDirectory,closeFloatingChat,configureFloatingChat,configureOverlayPort,discoverModels,getAudience,getAudioCapabilities,getAudioConfiguration,getAudioStatus,getChatSnapshot,getFloatingChat,getModelsSnapshot,getNativeStatus,getOverlayStatus,getOverlayUrl,getPreferences,getSessionSnapshot,getWindowStatus,installModel,listDisplaySources,onAudienceChange,onAudioChange,onChatEvent,onFloatingChatChange,onModelsChange,onNativeChange,onOverlayChange,onSessionChange,openFloatingChat,publishSample,regenerateAudience,removeAudioInput,removeModel,retryAudio,retrySession,selectVideoSource,setAudioConfiguration,setAudioLabel,setCloseToTray,setPreferences,startAudio,startSession,stopAudio,stopSession,submitAudioSegment,submitVideoFrame'
         ) {
           throw new Error(`Electron smoke failed: ${JSON.stringify(result)}`);
         }
@@ -554,7 +578,7 @@ function openMainWindow(): void {
           if (window.isDestroyed() || window.isVisible()) {
             throw new Error('Main window was not hidden on active simulation close');
           }
-          if (!floating.snapshot().open || (await fetch(overlay.url)).status !== 200) {
+          if (!floating.snapshot().open || (await fetch(overlay.snapshot().url!)).status !== 200) {
             throw new Error('Background presentation failed after hiding main window');
           }
           await new Promise((resolve) => setTimeout(resolve, 1700));
@@ -705,8 +729,13 @@ async function boot(): Promise<void> {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('chat:event', event);
   });
   publishSample(chat);
-  await overlay.start(Number(process.env.LONELY_CHAT_OVERLAY_PORT ?? 45939));
-  console.info(`Lonely Chat overlay: ${overlay.url}`);
+  overlay.subscribe((status) => {
+    if (mainWindow && !mainWindow.isDestroyed())
+      mainWindow.webContents.send('overlay:change', status);
+  });
+  const overlayStatus = await overlay.initialize(process.env.LONELY_CHAT_OVERLAY_PORT);
+  if (overlayStatus.url) console.info(`Lonely Chat overlay: ${overlayStatus.url}`);
+  else console.error('Lonely Chat overlay unavailable:', overlayStatus.error);
   openMainWindow();
 }
 
@@ -759,6 +788,8 @@ app.on('will-quit', () => {
   ipcMain.removeHandler('chat:snapshot');
   ipcMain.removeHandler('chat:sample');
   ipcMain.removeHandler('overlay:url');
+  ipcMain.removeHandler('overlay:status');
+  ipcMain.removeHandler('overlay:configure');
   ipcMain.removeHandler('floating:get');
   ipcMain.removeHandler('floating:open');
   ipcMain.removeHandler('floating:close');

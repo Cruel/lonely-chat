@@ -28,6 +28,7 @@ import type { AudienceSnapshot } from './audience-contract';
 import type { NativeServiceStatus } from './native-service-contract';
 import type { VideoFrame, VideoSource } from './video-contract';
 import type { AudioInputConfiguration, AudioSegment, AudioStatus } from './audio-contract';
+import type { OverlayStatus } from './overlay-contract';
 import type { ModelDiscoveryResult, ModelRole } from './model-contract';
 import type { ModelInstallRequest, ModelManagerSnapshot } from './model-install-contract';
 
@@ -35,7 +36,9 @@ import type { ModelInstallRequest, ModelManagerSnapshot } from './model-install-
 export interface DesktopInvocations {
   'chat:snapshot': ChatSnapshot;
   'chat:sample': void;
-  'overlay:url': string;
+  'overlay:url': string | null;
+  'overlay:status': OverlayStatus;
+  'overlay:configure': OverlayStatus;
   'floating:get': FloatingChatSnapshot;
   'floating:open': FloatingChatSnapshot;
   'floating:close': FloatingChatSnapshot;
@@ -79,6 +82,8 @@ export interface DesktopArguments {
   'chat:snapshot': [];
   'chat:sample': [];
   'overlay:url': [];
+  'overlay:status': [];
+  'overlay:configure': [port: number];
   'floating:get': [];
   'floating:open': [];
   'floating:close': [];
@@ -121,7 +126,10 @@ export interface DesktopAPI {
   getChatSnapshot(): Promise<ChatSnapshot>;
   onChatEvent(listener: (event: ChatEvent) => void): () => void;
   publishSample(): Promise<void>;
-  getOverlayUrl(): Promise<string>;
+  getOverlayUrl(): Promise<string | null>;
+  getOverlayStatus(): Promise<OverlayStatus>;
+  configureOverlayPort(port: number): Promise<OverlayStatus>;
+  onOverlayChange(listener: (status: OverlayStatus) => void): () => void;
   getFloatingChat(): Promise<FloatingChatSnapshot>;
   openFloatingChat(): Promise<FloatingChatSnapshot>;
   closeFloatingChat(): Promise<FloatingChatSnapshot>;

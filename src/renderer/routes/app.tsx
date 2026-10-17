@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
+import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import {
   Select,
@@ -33,6 +34,7 @@ import { VideoInput } from '@/components/video-input';
 import { AudioInput } from '@/components/audio-input';
 import type { AudioStatus } from '../../shared/audio-contract';
 import type { NativeServiceStatus } from '../../shared/native-service-contract';
+import { DEFAULT_OVERLAY_PORT, type OverlayStatus } from '../../shared/overlay-contract';
 import { useChat } from '../use-chat';
 import { useSession } from '../use-session';
 import { useAudience } from '../use-audience';
@@ -92,7 +94,13 @@ export function DesktopPage() {
   const session = useSession();
   const audience = useAudience();
   const [section, setSection] = useState<DesktopSection>('simulation');
-  const [overlayUrl, setOverlayUrl] = useState('');
+  const [overlayStatus, setOverlayStatus] = useState<OverlayStatus>({
+    port: DEFAULT_OVERLAY_PORT,
+    url: null,
+    error: null,
+  });
+  const [overlayPort, setOverlayPort] = useState(String(DEFAULT_OVERLAY_PORT));
+  const [overlayBusy, setOverlayBusy] = useState(false);
   const [manualContext, setManualContext] = useState('');
   const [inferenceMode, setInferenceMode] = useState<InferenceMode>('fake');
   const [sampleBusy, setSampleBusy] = useState(false);
@@ -113,8 +121,13 @@ export function DesktopPage() {
   }, []);
 
   useEffect(() => {
-    void window.lonelyChat?.getOverlayUrl().then(setOverlayUrl);
     let live = true;
+    const stopOverlay = window.lonelyChat?.onOverlayChange((next) => {
+      if (live) setOverlayStatus(next);
+    });
+    void window.lonelyChat?.getOverlayStatus().then((next) => {
+      if (live) setOverlayStatus(next);
+    });
     const unsubscribe = window.lonelyChat?.onNativeChange((next) => {
       if (live) setNativeStatus(next);
     });
@@ -124,8 +137,28 @@ export function DesktopPage() {
     return () => {
       live = false;
       unsubscribe?.();
+      stopOverlay?.();
     };
   }, []);
+
+  useEffect(() => {
+    setOverlayPort(String(overlayStatus.port));
+  }, [overlayStatus.port]);
+
+  const applyOverlayPort = async () => {
+    if (!window.lonelyChat || overlayBusy) return;
+    setOverlayBusy(true);
+    try {
+      setOverlayStatus(await window.lonelyChat.configureOverlayPort(Number(overlayPort)));
+    } catch (error) {
+      setOverlayStatus((previous) => ({
+        ...previous,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+    } finally {
+      setOverlayBusy(false);
+    }
+  };
 
   const publish = async () => {
     if (!window.lonelyChat || sampleBusy) return;
@@ -156,6 +189,16 @@ export function DesktopPage() {
             <h1 className="text-sm font-semibold">{current.title}</h1>
           </div>
           <div className="flex items-center gap-2 text-xs text-zinc-400">
+            {overlayStatus.error && (
+              <Button
+                variant="link"
+                size="sm"
+                className="text-amber-300"
+                onClick={() => setSection('settings')}
+              >
+                Overlay port issue · Settings
+              </Button>
+            )}
             <span
               aria-hidden="true"
               className={
@@ -337,14 +380,24 @@ export function DesktopPage() {
                       Add this local URL as a browser source in OBS or another capture tool.
                     </p>
                     <code className="mt-3 block overflow-hidden text-ellipsis rounded-md bg-[#111116] px-3 py-2 text-xs text-violet-200">
-                      {overlayUrl || 'Starting local server…'}
+                      {overlayStatus.url || 'Overlay server unavailable'}
                     </code>
-                    {overlayUrl && (
+                    {overlayStatus.error && (
+                      <p role="alert" className="mt-3 text-sm text-rose-300">
+                        {overlayStatus.error}
+                      </p>
+                    )}
+                    {!overlayStatus.url && (
+                      <Button variant="link" size="sm" onClick={() => setSection('settings')}>
+                        Configure overlay port
+                      </Button>
+                    )}
+                    {overlayStatus.url && (
                       <Button
                         variant="secondary"
                         className="mt-3"
                         aria-label="Open overlay"
-                        onClick={() => window.open(overlayUrl, '_blank')}
+                        onClick={() => window.open(overlayStatus.url!, '_blank')}
                       >
                         <ExternalLink size={16} /> Open overlay
                       </Button>
@@ -669,6 +722,49 @@ export function DesktopPage() {
               />
               <Panel className="mb-5">
                 <BackgroundControls />
+              </Panel>
+              <Panel className="mb-5">
+                <h3 className="font-medium">Browser overlay server</h3>
+                <p className="mt-2 text-sm text-zinc-400">
+                  The local HTTP port used by OBS browser sources and floating chat windows.
+                  Changing it updates the URL and reconnects the floating window.
+                </p>
+                <div className="mt-4 flex max-w-sm items-end gap-3">
+                  <div className="min-w-0 flex-1">
+                    <Label htmlFor="overlay-port">Overlay port</Label>
+                    <Input
+                      id="overlay-port"
+                      type="number"
+                      min={1}
+                      max={65535}
+                      step={1}
+                      className="mt-2"
+                      value={overlayPort}
+                      onChange={(event) => setOverlayPort(event.target.value)}
+                      disabled={overlayBusy}
+                    />
+                  </div>
+                  <Button
+                    variant="secondary"
+                    disabled={
+                      overlayBusy ||
+                      !/^\d+$/.test(overlayPort) ||
+                      Number(overlayPort) < 1 ||
+                      Number(overlayPort) > 65535
+                    }
+                    onClick={() => void applyOverlayPort()}
+                  >
+                    {overlayBusy ? 'Applying…' : 'Apply port'}
+                  </Button>
+                </div>
+                <p className="mt-3 text-sm text-zinc-300">
+                  {overlayStatus.url ?? 'Overlay server stopped'}
+                </p>
+                {overlayStatus.error && (
+                  <p role="alert" className="mt-2 text-sm text-rose-300">
+                    {overlayStatus.error}
+                  </p>
+                )}
               </Panel>
               <Panel>
                 <h3 className="font-medium">Inference scheduling</h3>

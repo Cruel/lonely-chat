@@ -27,6 +27,15 @@ describe('read-only loopback chat overlay', () => {
     await rm(directory, { recursive: true, force: true });
   });
 
+  it('releases resources after a real bind conflict and can retry later', async () => {
+    const blockedPort = Number(new URL(url).port);
+    const second = new OverlayServer(chat, directory);
+    await expect(second.start(blockedPort)).rejects.toMatchObject({ code: 'EADDRINUSE' });
+    await overlay.stop();
+    expect(await second.start(blockedPort)).toBe(url);
+    await second.stop();
+  });
+
   it('serves overlay only, rejects methods, paths and remote browser origins', async () => {
     const endpoint = new URL(url);
     expect(endpoint.hostname).toBe('127.0.0.1');

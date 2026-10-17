@@ -22,6 +22,16 @@ const api: DesktopAPI = {
   },
   publishSample: () => invoke('chat:sample'),
   getOverlayUrl: () => invoke('overlay:url'),
+  getOverlayStatus: () => invoke('overlay:status'),
+  configureOverlayPort: (port) => invoke('overlay:configure', port),
+  onOverlayChange: (listener) => {
+    const receive = (
+      _event: Electron.IpcRendererEvent,
+      status: import('../shared/overlay-contract').OverlayStatus,
+    ) => listener(status);
+    ipcRenderer.on('overlay:change', receive);
+    return () => ipcRenderer.removeListener('overlay:change', receive);
+  },
   getFloatingChat: () => invoke('floating:get'),
   openFloatingChat: () => invoke('floating:open'),
   closeFloatingChat: () => invoke('floating:close'),

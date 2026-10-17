@@ -33,7 +33,7 @@ if (result !== 0 || !succeeded) {
 // Explicit Quit must release the owned loopback listener, not only exit the UI.
 let listenerStillOpen = false;
 try {
-  await fetch(`http://127.0.0.1:${process.env.LONELY_CHAT_OVERLAY_PORT ?? 45939}/overlay`, {
+  await fetch(`http://127.0.0.1:${process.env.LONELY_CHAT_OVERLAY_PORT ?? 18080}/overlay`, {
     signal: AbortSignal.timeout(1500),
   });
   listenerStillOpen = true;
