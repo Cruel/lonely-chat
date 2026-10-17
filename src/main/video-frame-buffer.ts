@@ -80,7 +80,12 @@ export class VideoFrameBuffer {
     this.prune(now);
   }
 
-  sample(fromMs: number, throughMs: number, firstCycle: boolean): SampledVideoWindow {
+  sample(
+    fromMs: number,
+    throughMs: number,
+    firstCycle: boolean,
+    frameCap = this.options.videoMaxFrames,
+  ): SampledVideoWindow {
     if (!Number.isFinite(fromMs) || !Number.isFinite(throughMs) || throughMs < fromMs) {
       throw new Error('Invalid video inference interval.');
     }
@@ -97,9 +102,9 @@ export class VideoFrameBuffer {
     );
     const elapsedMs = throughMs - start;
     const target = Math.max(
-      this.options.videoMinFrames,
+      Math.min(this.options.videoMinFrames, frameCap),
       Math.min(
-        this.options.videoMaxFrames,
+        Math.min(this.options.videoMaxFrames, frameCap),
         Math.ceil(elapsedMs / this.options.videoCaptureIntervalMs),
       ),
     );

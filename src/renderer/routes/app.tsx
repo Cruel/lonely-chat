@@ -36,6 +36,12 @@ import { useSession } from '../use-session';
 import { useAudience } from '../use-audience';
 import {
   AUDIENCE_COUNT_OPTIONS,
+  RAM_BUDGET_OPTIONS,
+  VRAM_BUDGET_OPTIONS,
+  GPU_COMPUTE_OPTIONS,
+  CPU_THREAD_OPTIONS,
+  CONTEXT_TOKEN_OPTIONS,
+  GPU_LAYER_OPTIONS,
   BASELINE_OPTIONS,
   CYCLE_INTERVAL_OPTIONS,
   HISTORY_AGE_OPTIONS,
@@ -488,6 +494,10 @@ export function DesktopPage() {
               <SectionHeading title="Logs" description="Runtime status and diagnostics." />
               <Panel>
                 <h3 className="font-medium">Session diagnostics</h3>
+                <p className="mt-2 text-xs text-zinc-400">
+                  Measured inference duration and an estimated next duration are not a guarantee of
+                  future execution time.
+                </p>
                 <p className="mt-2 text-sm text-zinc-400" aria-label="Native inference lifecycle">
                   llama.cpp: {nativeStatus?.phase ?? 'unknown'}
                   {nativeStatus?.error ? ` · ${nativeStatus.error}` : ''}
@@ -530,6 +540,34 @@ export function DesktopPage() {
                     </dd>
                   </div>
                   <div>
+                    <dt className="text-zinc-400">Estimated next inference</dt>
+                    <dd className="mt-1">
+                      {session.status.estimatedNextInferenceMs == null
+                        ? '—'
+                        : `${session.status.estimatedNextInferenceMs} ms (estimate)`}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-zinc-400">Effective cycle interval</dt>
+                    <dd className="mt-1">
+                      {session.status.effectiveCycleMs == null
+                        ? '—'
+                        : `${session.status.effectiveCycleMs} ms`}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-zinc-400">Adaptive frame ceiling</dt>
+                    <dd className="mt-1">{session.status.adaptiveFrameLimit ?? '—'}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-zinc-400">llama.cpp worker RSS</dt>
+                    <dd className="mt-1">
+                      {session.status.workerRamMiB == null
+                        ? 'Unavailable on this platform'
+                        : `${Math.round(session.status.workerRamMiB)} MiB (RSS)`}
+                    </dd>
+                  </div>
+                  <div>
                     <dt className="text-zinc-400">Playback window</dt>
                     <dd className="mt-1">{session.status.playbackWindowMs} ms</dd>
                   </div>
@@ -538,6 +576,46 @@ export function DesktopPage() {
                     <dd className="mt-1">{session.status.droppedObservations}</dd>
                   </div>
                 </dl>
+                {nativeStatus?.resources && (
+                  <div
+                    className="mt-4 space-y-1 border-t border-border pt-4 text-xs text-zinc-300"
+                    aria-label="Selected inference resources"
+                  >
+                    <p>
+                      Selected backend: {nativeStatus.resources.backend.toUpperCase()} · available
+                      in this build:{' '}
+                      {nativeStatus.resources.availableBackends
+                        .map((item) => item.toUpperCase())
+                        .join(', ')}
+                    </p>
+                    <p>
+                      Applied: {nativeStatus.resources.cpuThreads} CPU threads ·{' '}
+                      {nativeStatus.resources.contextTokens} context tokens ·{' '}
+                      {nativeStatus.resources.gpuOffloadLayers} GPU layers
+                    </p>
+                    <p>
+                      Advisory targets: {nativeStatus.resources.ramTargetMiB} MiB RAM ·{' '}
+                      {nativeStatus.resources.vramTargetMiB} MiB VRAM ·{' '}
+                      {nativeStatus.resources.gpuComputeTargetPercent}% GPU compute
+                    </p>
+                    {nativeStatus.resources.diagnostic && (
+                      <p className="text-amber-300">{nativeStatus.resources.diagnostic}</p>
+                    )}
+                  </div>
+                )}
+                {session.status.adaptationReason && (
+                  <p className="mt-3 text-xs text-amber-300">{session.status.adaptationReason}</p>
+                )}
+                {!!session.status.recentErrors?.length && (
+                  <div className="mt-4 text-xs text-zinc-400" aria-label="Recent inference errors">
+                    <h4 className="font-medium">Recent inference errors</h4>
+                    {session.status.recentErrors.map((error, index) => (
+                      <p key={index} className="mt-1 text-amber-300">
+                        {error}
+                      </p>
+                    ))}
+                  </div>
+                )}
                 {audioStatus && (
                   <div className="mt-5 border-t border-border pt-4" aria-label="Audio diagnostics">
                     <h4 className="text-sm font-medium">Speech transcription</h4>
@@ -673,6 +751,124 @@ export function DesktopPage() {
                     {session.actionError}
                   </p>
                 )}
+              </Panel>
+              <Panel className="mt-5">
+                <h3 className="font-medium">Resource targets and native backend</h3>
+                <p className="mt-2 text-sm text-zinc-400">
+                  CPU thread count, context size, and GPU offload layers are passed to llama.cpp at
+                  its next launch. RAM, VRAM and GPU-compute targets are{' '}
+                  <strong>best-effort guidance</strong>, not enforceable quotas. There is no hard
+                  GPU partition or exact VRAM cap. The installed backend must expose a usable device
+                  to enable GPU offload.
+                </p>
+                <div className="mt-5 max-w-sm">
+                  <Label htmlFor="resource-backend" className="text-sm text-zinc-200">
+                    Preferred backend (fallback to CPU)
+                  </Label>
+                  <Select
+                    items={[
+                      { value: 'auto', label: 'Auto (detected devices)' },
+                      { value: 'cpu', label: 'CPU (always available)' },
+                      { value: 'cuda', label: 'CUDA (requires CUDA build)' },
+                      { value: 'vulkan', label: 'Vulkan (requires Vulkan build)' },
+                      { value: 'metal', label: 'Metal (requires Metal build)' },
+                    ]}
+                    value={session.preferences.computeBackend}
+                    onValueChange={(value) => {
+                      if (
+                        value === 'auto' ||
+                        value === 'cpu' ||
+                        value === 'cuda' ||
+                        value === 'vulkan' ||
+                        value === 'metal'
+                      )
+                        update({ computeBackend: value });
+                    }}
+                  >
+                    <SelectTrigger
+                      id="resource-backend"
+                      className="mt-2 w-full"
+                      disabled={!session.ready || session.busy || running}
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="auto">Auto (detected devices)</SelectItem>
+                      <SelectItem value="cpu">CPU (always available)</SelectItem>
+                      <SelectItem value="cuda">CUDA (requires CUDA build)</SelectItem>
+                      <SelectItem value="vulkan">Vulkan (requires Vulkan build)</SelectItem>
+                      <SelectItem value="metal">Metal (requires Metal build)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="mt-5 grid gap-5 sm:grid-cols-2">
+                  <NumericSettingCombobox
+                    id="ram-budget"
+                    title="System RAM target (advisory)"
+                    name="ramBudgetMiB"
+                    value={session.preferences.ramBudgetMiB}
+                    options={RAM_BUDGET_OPTIONS}
+                    unit="MiB"
+                    disabled={!session.ready || session.busy}
+                    onChange={(ramBudgetMiB) => update({ ramBudgetMiB })}
+                  />
+                  <NumericSettingCombobox
+                    id="vram-budget"
+                    title="VRAM target (advisory; 0 = off)"
+                    name="vramBudgetMiB"
+                    value={session.preferences.vramBudgetMiB}
+                    options={VRAM_BUDGET_OPTIONS}
+                    unit="MiB"
+                    disabled={!session.ready || session.busy}
+                    onChange={(vramBudgetMiB) => update({ vramBudgetMiB })}
+                  />
+                  <NumericSettingCombobox
+                    id="compute-target"
+                    title="GPU-compute target (best effort; 0 = off)"
+                    name="gpuComputeTargetPercent"
+                    value={session.preferences.gpuComputeTargetPercent}
+                    options={GPU_COMPUTE_OPTIONS}
+                    unit="percent"
+                    disabled={!session.ready || session.busy}
+                    onChange={(gpuComputeTargetPercent) => update({ gpuComputeTargetPercent })}
+                  />
+                  <NumericSettingCombobox
+                    id="cpu-threads"
+                    title="CPU threads (at next load)"
+                    name="cpuThreads"
+                    value={session.preferences.cpuThreads}
+                    options={CPU_THREAD_OPTIONS}
+                    unit="entries"
+                    disabled={!session.ready || session.busy || running}
+                    onChange={(cpuThreads) => update({ cpuThreads })}
+                  />
+                  <NumericSettingCombobox
+                    id="context-tokens"
+                    title="Context tokens (at next load)"
+                    name="contextTokens"
+                    value={session.preferences.contextTokens}
+                    options={CONTEXT_TOKEN_OPTIONS}
+                    unit="entries"
+                    disabled={!session.ready || session.busy || running}
+                    onChange={(contextTokens) => update({ contextTokens })}
+                  />
+                  <NumericSettingCombobox
+                    id="gpu-layers"
+                    title="GPU offload layers (at next load)"
+                    name="gpuOffloadLayers"
+                    value={session.preferences.gpuOffloadLayers}
+                    options={GPU_LAYER_OPTIONS}
+                    unit="entries"
+                    disabled={!session.ready || session.busy || running}
+                    onChange={(gpuOffloadLayers) => update({ gpuOffloadLayers })}
+                  />
+                </div>
+                <p className="mt-3 text-xs text-zinc-500">
+                  The bundled Windows/Linux CPU-only llama.cpp builds expose no GPU device. A
+                  GPU-capable build is required for CUDA or Vulkan; Metal is only possible on a
+                  supported macOS build. Resource telemetry can be unavailable and inference will
+                  continue.
+                </p>
               </Panel>
               <Panel className="mt-5">
                 <h3 className="font-medium">Temporal video sampling</h3>

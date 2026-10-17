@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { spawn } from 'node:child_process';
 import { NativeInference, extractNativeChat, nativeChatRequest } from './native-inference';
 import { AUTHOR_PLACEHOLDER } from '../shared/audience-contract';
+import { DEFAULT_PREFERENCES } from '../shared/session-contract';
 import { parseInferenceResult } from './fake-inference';
 import { bundledLlamaServer } from './native-runtime-path';
 
@@ -225,6 +226,106 @@ describe('native llama.cpp adapter', () => {
     await provider.prepare(new AbortController().signal);
     expect(provider.snapshot().phase).toBe('ready');
     expect(transitions).toEqual(['loading', 'ready', 'stopped', 'loading', 'ready']);
+    await provider.stop();
+  });
+
+  it('applies backend/resource settings and reports unavailable GPU fallback rather than inventing quotas', async () => {
+    const launches: string[][] = [];
+    const selected = {
+      ...DEFAULT_PREFERENCES,
+      computeBackend: 'cuda' as const,
+      ramBudgetMiB: 1024,
+      vramBudgetMiB: 4096,
+      gpuComputeTargetPercent: 40,
+      cpuThreads: 7,
+      contextTokens: 8192,
+      gpuOffloadLayers: 16,
+    };
+    const provider = new NativeInference({
+      executable: process.execPath,
+      resolveModel: async () => ({ modelPath: '/fixture.gguf', projectorPath: null }),
+      resourcePreferences: () => selected,
+      probeDevices: async () => [],
+      launch: (_command, args, options) => {
+        launches.push([...args]);
+        const port = args[args.indexOf('--port') + 1];
+        const key = args[args.indexOf('--api-key') + 1];
+        return spawn(
+          process.execPath,
+          ['--input-type=module', '-e', childScript, port, key],
+          options,
+        );
+      },
+    });
+    providers.push(provider);
+    await provider.prepare(new AbortController().signal);
+    expect(launches[0]).toContain('--threads');
+    expect(
+      launches[0].slice(launches[0].indexOf('--threads'), launches[0].indexOf('--threads') + 2),
+    ).toEqual(['--threads', '7']);
+    expect(
+      launches[0].slice(launches[0].indexOf('--ctx-size'), launches[0].indexOf('--ctx-size') + 2),
+    ).toEqual(['--ctx-size', '8192']);
+    expect(
+      launches[0].slice(
+        launches[0].indexOf('--n-gpu-layers'),
+        launches[0].indexOf('--n-gpu-layers') + 2,
+      ),
+    ).toEqual(['--n-gpu-layers', '0']);
+    expect(launches[0]).not.toContain('--device');
+    expect(provider.snapshot().resources).toMatchObject({
+      backend: 'cpu',
+      availableBackends: ['cpu'],
+      cpuThreads: 7,
+      contextTokens: 8192,
+      gpuOffloadLayers: 0,
+    });
+    expect(provider.snapshot().resources?.diagnostic).toMatch(/CUDA is not available/);
+    expect(provider.snapshot().resources?.diagnostic).toMatch(/not a GPU utilization quota/);
+    const measurement = await provider.resourceMeasurements();
+    // Linux /proc can report the test child, other platforms leave RAM unavailable.
+    expect(measurement.vramUsedMiB).toBeNull();
+    await provider.stop();
+    expect(provider.snapshot().resources).toBeNull();
+  });
+
+  it('selects an actually probed GPU device and configures explicit offload', async () => {
+    let argsSeen: string[] = [];
+    const provider = new NativeInference({
+      executable: process.execPath,
+      resolveModel: async () => ({ modelPath: '/fixture.gguf', projectorPath: null }),
+      resourcePreferences: () => ({
+        ...DEFAULT_PREFERENCES,
+        computeBackend: 'vulkan',
+        vramBudgetMiB: 8192,
+        gpuOffloadLayers: 24,
+      }),
+      probeDevices: async () => [{ name: 'Vulkan0', backend: 'vulkan' }],
+      launch: (_command, args, options) => {
+        argsSeen = [...args];
+        return spawn(
+          process.execPath,
+          [
+            '--input-type=module',
+            '-e',
+            childScript,
+            args[args.indexOf('--port') + 1],
+            args[args.indexOf('--api-key') + 1],
+          ],
+          options,
+        );
+      },
+    });
+    providers.push(provider);
+    await provider.prepare(new AbortController().signal);
+    expect(argsSeen.slice(argsSeen.indexOf('--device'), argsSeen.indexOf('--device') + 2)).toEqual([
+      '--device',
+      'Vulkan0',
+    ]);
+    expect(
+      argsSeen.slice(argsSeen.indexOf('--n-gpu-layers'), argsSeen.indexOf('--n-gpu-layers') + 2),
+    ).toEqual(['--n-gpu-layers', '24']);
+    expect(provider.snapshot().resources?.backend).toBe('vulkan');
     await provider.stop();
   });
 

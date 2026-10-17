@@ -3,6 +3,7 @@ import { ChatScheduler, systemClock, type TimerClock } from './chat-scheduler';
 import { FakeInference, parseInferenceResult, type InferenceProvider } from './fake-inference';
 import { InferenceHistory, type CycleInput } from './inference-history';
 import { VideoFrameBuffer } from './video-frame-buffer';
+import { chooseWorkload, type ResourceMeasurements } from './resource-policy';
 import type { AudienceService } from './audience-service';
 import { CHAT_ACTIVITY_LIMITS } from '../shared/audience-contract';
 import type { VideoFrame } from '../shared/video-contract';
@@ -53,6 +54,7 @@ export class SessionController {
   private shutdownPromise: Promise<void> = Promise.resolve();
   private chatStartSequence = 0;
   private smoothedMs: number | null = null;
+  private measuredResources: ResourceMeasurements | null = null;
   private switchAbort: AbortController | null = null;
   private switchBusy = false;
   private switchSettled: Promise<void> = Promise.resolve();
@@ -167,6 +169,7 @@ export class SessionController {
     this.history.reset(this.clock.wallNow());
     this.chatStartSequence = this.chat.snapshot().sequence;
     this.smoothedMs = null;
+    this.measuredResources = null;
     this.scheduler.start();
     this.setState({
       phase: mode === 'native' ? 'starting' : 'running',
@@ -181,6 +184,12 @@ export class SessionController {
       smoothedInferenceMs: null,
       playbackWindowMs: this.preferences.cycleIntervalMs,
       droppedObservations: 0,
+      estimatedNextInferenceMs: null,
+      adaptiveFrameLimit: null,
+      effectiveCycleMs: null,
+      adaptationReason: null,
+      workerRamMiB: null,
+      recentErrors: [],
     });
     const epoch = this.epoch;
     if (this.preferences.baselineMs > 0) {
@@ -328,7 +337,17 @@ export class SessionController {
       chat,
       this.audience?.snapshot().members,
     );
-    const media = this.video.sample(snapshot.boundary.fromMs, now, cycle === 1);
+    const plan = chooseWorkload(
+      this.preferences,
+      this.state.mode === 'native' ? this.smoothedMs : null,
+      this.state.mode === 'native' ? this.measuredResources : null,
+    );
+    const media = this.video.sample(
+      snapshot.boundary.fromMs,
+      now,
+      cycle === 1,
+      this.state.mode === 'native' ? plan.frameLimit : this.preferences.videoMaxFrames,
+    );
     const input: CycleInput = {
       ...snapshot,
       chatActivity: this.preferences.chatActivity,
@@ -336,7 +355,15 @@ export class SessionController {
       videoWindow: { fromMs: media.fromMs, throughMs: media.throughMs, truncated: media.truncated },
     };
     this.refreshDropped();
-    this.setState({ cycle, retryAttempt: 0, warning: null });
+    this.setState({
+      cycle,
+      retryAttempt: 0,
+      warning: null,
+      adaptiveFrameLimit: this.state.mode === 'native' ? plan.frameLimit : null,
+      effectiveCycleMs:
+        this.state.mode === 'native' ? plan.minimumIntervalMs : this.preferences.cycleIntervalMs,
+      adaptationReason: this.state.mode === 'native' ? plan.reason : null,
+    });
     const cycleStarted = this.clock.now();
     this.runAttempt(epoch, input, cycleStarted, 1);
   }
@@ -390,6 +417,11 @@ export class SessionController {
             ? duration
             : this.smoothedMs * (1 - SMOOTHING_WEIGHT) + duration * SMOOTHING_WEIGHT;
         const windowMs = this.playbackWindow();
+        const nextPlan = chooseWorkload(
+          this.preferences,
+          this.state.mode === 'native' ? this.smoothedMs : null,
+          this.state.mode === 'native' ? this.measuredResources : null,
+        );
         this.history.acknowledge(input.boundary);
         const events = this.history.commitEvents(result.events, this.clock.wallNow());
         this.setState({
@@ -398,6 +430,10 @@ export class SessionController {
           warning: null,
           latestInferenceMs: duration,
           smoothedInferenceMs: Math.round(this.smoothedMs),
+          estimatedNextInferenceMs: Math.round(this.smoothedMs),
+          effectiveCycleMs: nextPlan.minimumIntervalMs,
+          adaptiveFrameLimit: this.state.mode === 'native' ? nextPlan.frameLimit : null,
+          adaptationReason: this.state.mode === 'native' ? nextPlan.reason : null,
           playbackWindowMs: windowMs,
           droppedObservations: this.history.droppedObservations,
         });
@@ -412,9 +448,24 @@ export class SessionController {
             : resolved;
         this.scheduler.enqueue(messages, this.clock.now());
         this.abort = null;
+        if (this.state.mode === 'native' && provider.resourceMeasurements) {
+          void provider
+            .resourceMeasurements()
+            .then((measurements) => {
+              if (!this.active(epoch)) return;
+              this.measuredResources = measurements;
+              this.setState({ workerRamMiB: measurements.ramUsedMiB });
+            })
+            .catch(() => {
+              /* Monitoring is optional and must never interrupt inference. */
+            });
+        }
         const delayMs = Math.max(
           0,
-          this.preferences.cycleIntervalMs - (this.clock.now() - cycleStarted),
+          (this.state.mode === 'native'
+            ? nextPlan.minimumIntervalMs
+            : this.preferences.cycleIntervalMs) -
+            (this.clock.now() - cycleStarted),
         );
         this.inferenceTimer = this.clock.setTimeout(() => {
           this.inferenceTimer = null;
@@ -425,6 +476,7 @@ export class SessionController {
         if (!this.active(epoch) || abort.signal.aborted) return;
         this.abort = null;
         const message = error instanceof Error ? error.message : 'Unknown inference error.';
+        this.setState({ recentErrors: [...(this.state.recentErrors ?? []), message].slice(-5) });
         // Native crashes/model load failures require a new worker. Retry the exact same
         // snapshot boundary; observations arriving in the meantime remain for the next cycle.
         this.shutdownPromise = this.stopProvider(provider);

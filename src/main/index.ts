@@ -433,6 +433,7 @@ async function boot(): Promise<void> {
     resolveModel: () => installs.activeVisionFiles(),
     reasoningEnabled: () => session.getPreferences().reasoningEnabled,
     inferenceTimeoutMs: () => session.getPreferences().inferenceTimeoutMs,
+    resourcePreferences: () => session.getPreferences(),
   });
   nativeInference.subscribe((status) => {
     if (mainWindow && !mainWindow.isDestroyed())

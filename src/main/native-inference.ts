@@ -1,4 +1,14 @@
-import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
+import { spawn, execFile, type ChildProcess, type SpawnOptions } from 'node:child_process';
+import { stat, readFile } from 'node:fs/promises';
+import { promisify } from 'node:util';
+import {
+  chooseBackend,
+  parseBackendDevices,
+  type BackendDevice,
+  type ResourceMeasurements,
+} from './resource-policy';
+import { DEFAULT_PREFERENCES, type SessionPreferences } from '../shared/session-contract';
+import type { NativeRuntimeResources } from '../shared/native-service-contract';
 import type { NativeServiceStatus } from '../shared/native-service-contract';
 import { randomBytes } from 'node:crypto';
 import { createServer } from 'node:net';
@@ -288,6 +298,9 @@ interface NativeOptions {
   readonly reasoningEnabled?: () => boolean;
   /** Evaluated per request so saved changes apply without restarting the model. */
   readonly inferenceTimeoutMs?: () => number;
+  readonly resourcePreferences?: () => SessionPreferences;
+  /** Injectable device detection; production probes the shipped executable. */
+  readonly probeDevices?: () => Promise<readonly BackendDevice[]>;
 }
 
 /**
@@ -306,9 +319,10 @@ export class NativeInference implements InferenceProvider {
   private shutdown: Promise<void> | null = null;
   private status: NativeServiceStatus = { revision: 0, phase: 'stopped', error: null };
   private listeners = new Set<(status: NativeServiceStatus) => void>();
+  private resources: NativeRuntimeResources | null = null;
 
   snapshot(): NativeServiceStatus {
-    return { ...this.status };
+    return { ...this.status, resources: this.resources };
   }
 
   subscribe(listener: (status: NativeServiceStatus) => void): () => void {
@@ -322,6 +336,56 @@ export class NativeInference implements InferenceProvider {
   }
 
   constructor(private readonly options: NativeOptions) {}
+
+  private async devices(): Promise<readonly BackendDevice[]> {
+    if (this.options.probeDevices) return this.options.probeDevices();
+    try {
+      const { stdout, stderr } = await promisify(execFile)(
+        this.options.executable,
+        ['--list-devices'],
+        {
+          timeout: 3000,
+          maxBuffer: 32 * 1024,
+          env: this.processEnvironment(),
+        },
+      );
+      return parseBackendDevices(stdout + '\n' + stderr);
+    } catch {
+      // Missing executable, incompatible binary, or unsupported probe: assume CPU only.
+      return [];
+    }
+  }
+
+  private processEnvironment(): NodeJS.ProcessEnv {
+    const env = Object.fromEntries(
+      Object.entries(process.env).filter(([name]) => !name.startsWith('LLAMA_')),
+    );
+    const directory = path.dirname(this.options.executable);
+    if (process.platform === 'linux')
+      env.LD_LIBRARY_PATH = [directory, process.env.LD_LIBRARY_PATH].filter(Boolean).join(':');
+    if (process.platform === 'darwin')
+      env.DYLD_LIBRARY_PATH = [directory, process.env.DYLD_LIBRARY_PATH].filter(Boolean).join(':');
+    return env;
+  }
+
+  async resourceMeasurements(): Promise<ResourceMeasurements> {
+    const child = this.child;
+    if (!child?.pid || process.platform !== 'linux') {
+      return { ramUsedMiB: null, vramUsedMiB: null, gpuComputePercent: null };
+    }
+    try {
+      const status = await readFile(`/proc/${child.pid}/status`, 'utf8');
+      const match = /^VmRSS:\s+(\d+)\s+kB/m.exec(status);
+      const ramUsedMiB = match ? Number(match[1]) / 1024 : null;
+      if (this.child === child && this.resources && ramUsedMiB !== this.resources.workerRamMiB) {
+        this.resources = { ...this.resources, workerRamMiB: ramUsedMiB };
+        this.publish(this.status.phase, this.status.error);
+      }
+      return { ramUsedMiB, vramUsedMiB: null, gpuComputePercent: null };
+    } catch {
+      return { ramUsedMiB: null, vramUsedMiB: null, gpuComputePercent: null };
+    }
+  }
 
   async prepare(signal: AbortSignal): Promise<void> {
     if (this.shutdown) await this.shutdown;
@@ -370,6 +434,60 @@ export class NativeInference implements InferenceProvider {
     const port = await (this.options.allocatePort ?? findLoopbackPort)();
     if (signal.aborted || this.generation !== generation)
       throw new Error('Native inference cancelled.');
+    const settings = this.options.resourcePreferences?.() ?? DEFAULT_PREFERENCES;
+    const detected = await this.devices();
+    if (signal.aborted || this.generation !== generation)
+      throw new Error('Native inference cancelled.');
+    const requested =
+      settings.computeBackend === 'auto' && settings.gpuOffloadLayers === 0
+        ? 'cpu'
+        : settings.computeBackend;
+    const selection = chooseBackend(requested, detected);
+    let diagnostic = selection.warning;
+    const appendDiagnostic = (value: string) => {
+      diagnostic = diagnostic ? diagnostic + ' ' + value : value;
+    };
+    let fileSizeMiB: number | null = null;
+    try {
+      fileSizeMiB = (await stat(files.modelPath)).size / (1024 * 1024);
+    } catch {
+      /* unavailable in mocked or removed packages */
+    }
+    if (
+      fileSizeMiB !== null &&
+      fileSizeMiB > settings.ramBudgetMiB &&
+      selection.selected === 'cpu'
+    ) {
+      appendDiagnostic(
+        `Selected GGUF weight file is ${Math.ceil(fileSizeMiB)} MiB, above the advisory RAM target of ${settings.ramBudgetMiB} MiB. Select a smaller model or increase the target; this is not an OS memory limit.`,
+      );
+    }
+    if (signal.aborted || this.generation !== generation)
+      throw new Error('Native inference cancelled.');
+    if (settings.gpuComputeTargetPercent > 0)
+      appendDiagnostic(
+        'GPU compute target is a best-effort frame/pacing policy, not a GPU utilization quota.',
+      );
+    if (settings.vramBudgetMiB > 0)
+      appendDiagnostic(
+        'VRAM target is advisory; llama.cpp does not provide a guaranteed per-process VRAM ceiling.',
+      );
+    const gpuOffloadLayers =
+      selection.selected === 'cpu' || settings.vramBudgetMiB === 0 ? 0 : settings.gpuOffloadLayers;
+    if (selection.selected !== 'cpu' && gpuOffloadLayers === 0)
+      appendDiagnostic('GPU offload is disabled (zero layers or zero VRAM target).');
+    this.resources = {
+      backend: gpuOffloadLayers > 0 ? selection.selected : 'cpu',
+      availableBackends: selection.available,
+      cpuThreads: settings.cpuThreads,
+      contextTokens: settings.contextTokens,
+      gpuOffloadLayers,
+      ramTargetMiB: settings.ramBudgetMiB,
+      vramTargetMiB: settings.vramBudgetMiB,
+      gpuComputeTargetPercent: settings.gpuComputeTargetPercent,
+      workerRamMiB: null,
+      diagnostic,
+    };
     const key = randomBytes(32).toString('hex');
     const args = [
       '--model',
@@ -382,12 +500,15 @@ export class NativeInference implements InferenceProvider {
       key,
       '--no-webui',
       '--ctx-size',
-      '4096',
+      String(settings.contextTokens),
+      '--threads',
+      String(settings.cpuThreads),
       '--n-gpu-layers',
-      '0',
+      String(gpuOffloadLayers),
       '--reasoning',
       this.options.reasoningEnabled?.() ? 'on' : 'off',
     ];
+    if (selection.device && gpuOffloadLayers > 0) args.push('--device', selection.device);
     if (files.projectorPath) args.push('--mmproj', files.projectorPath);
     this.port = port;
     this.apiKey = key;
@@ -397,28 +518,7 @@ export class NativeInference implements InferenceProvider {
       cwd: path.dirname(this.options.executable),
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
-      env: {
-        ...Object.fromEntries(
-          Object.entries(process.env).filter(([name]) => !name.startsWith('LLAMA_')),
-        ),
-        ...(process.platform === 'linux'
-          ? {
-              LD_LIBRARY_PATH: [path.dirname(this.options.executable), process.env.LD_LIBRARY_PATH]
-                .filter(Boolean)
-                .join(':'),
-            }
-          : {}),
-        ...(process.platform === 'darwin'
-          ? {
-              DYLD_LIBRARY_PATH: [
-                path.dirname(this.options.executable),
-                process.env.DYLD_LIBRARY_PATH,
-              ]
-                .filter(Boolean)
-                .join(':'),
-            }
-          : {}),
-      },
+      env: this.processEnvironment(),
     });
     this.child = child;
     const log = (chunk: Buffer) => {
@@ -559,6 +659,7 @@ export class NativeInference implements InferenceProvider {
   async stop(): Promise<void> {
     if (this.shutdown) return this.shutdown;
     ++this.generation;
+    this.resources = null;
     this.publish('stopped');
     this.lifecycle?.abort();
     this.lifecycle = null;
@@ -566,6 +667,7 @@ export class NativeInference implements InferenceProvider {
     this.port = null;
     this.apiKey = null;
     this.failure = null;
+    this.resources = null;
     const child = this.child;
     this.child = null;
     if (!child || child.exitCode !== null || child.signalCode !== null) return;

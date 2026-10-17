@@ -176,6 +176,32 @@ it('starts and stops manual-context simulation, shows status and only saves pref
       videoSamplingStrategy: 'recent-weighted',
     }),
   );
+  const backend = screen.getByRole('combobox', { name: 'Preferred backend (fallback to CPU)' });
+  await user.click(backend);
+  await user.click(await screen.findByRole('option', { name: 'Vulkan (requires Vulkan build)' }));
+  await waitFor(() =>
+    expect(setPreferences).toHaveBeenCalledWith(
+      expect.objectContaining({ computeBackend: 'vulkan' }),
+    ),
+  );
+  const ram = screen.getByRole('combobox', { name: 'System RAM target (advisory)' });
+  await user.click(ram);
+  await user.click(await screen.findByRole('option', { name: '8192 MiB' }));
+  await waitFor(() =>
+    expect(setPreferences).toHaveBeenCalledWith(
+      expect.objectContaining({ computeBackend: 'vulkan', ramBudgetMiB: 8192 }),
+    ),
+  );
+  const compute = screen.getByRole('combobox', {
+    name: 'GPU-compute target (best effort; 0 = off)',
+  });
+  await user.click(compute);
+  await user.click(await screen.findByRole('option', { name: '40 percent' }));
+  await waitFor(() =>
+    expect(setPreferences).toHaveBeenCalledWith(
+      expect.objectContaining({ ramBudgetMiB: 8192, gpuComputeTargetPercent: 40 }),
+    ),
+  );
   fireEvent.click(screen.getByRole('button', { name: 'Simulation' }));
   expect(screen.getByLabelText('Stream context')).toHaveProperty(
     'value',

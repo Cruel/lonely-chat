@@ -25,7 +25,7 @@ describe('versioned preferences', () => {
     expect(await settings.read()).toEqual(DEFAULT_PREFERENCES);
     expect(await settings.write(pace(1500))).toEqual(pace(1500));
     const data = JSON.parse(await readFile(path.join(directory, 'preferences.json'), 'utf8'));
-    expect(data).toEqual({ version: 6, simulation: pace(1500) });
+    expect(data).toEqual({ version: 7, simulation: pace(1500) });
     expect(await settings.read()).toEqual(pace(1500));
     expect(await readdir(directory)).toEqual(['preferences.json']);
     expect(JSON.stringify(data)).not.toContain('manual context');
@@ -63,12 +63,19 @@ describe('versioned preferences', () => {
     ).toMatchObject({ baselineMs: 1000, historyMaxCount: 16, historyMaxAgeMs: 30000 });
     expect(
       JSON.parse(await readFile(path.join(directory, 'preferences.json'), 'utf8')).version,
-    ).toBe(6);
+    ).toBe(7);
   });
 
   it('migrates existing version-two preferences with reasoning disabled by default', async () => {
     const { store: settings, directory } = await store();
     const {
+      ramBudgetMiB: _ram,
+      vramBudgetMiB: _vram,
+      gpuComputeTargetPercent: _compute,
+      computeBackend: _backend,
+      cpuThreads: _threads,
+      contextTokens: _context,
+      gpuOffloadLayers: _layers,
       audienceCount: _audience,
       chatActivity: _activity,
       reasoningEnabled: _ignoredReasoning,
@@ -94,6 +101,13 @@ describe('versioned preferences', () => {
   it('migrates version-three settings and retains custom values', async () => {
     const { store: settings, directory } = await store();
     const {
+      ramBudgetMiB: _ram,
+      vramBudgetMiB: _vram,
+      gpuComputeTargetPercent: _compute,
+      computeBackend: _backend,
+      cpuThreads: _threads,
+      contextTokens: _context,
+      gpuOffloadLayers: _layers,
       audienceCount: _audience,
       chatActivity: _activity,
       inferenceTimeoutMs: _ignoredTimeout,
@@ -130,6 +144,13 @@ describe('versioned preferences', () => {
   it('upgrades v4 video defaults without changing existing inference settings', async () => {
     const { store: settings, directory } = await store();
     const {
+      ramBudgetMiB: _ram,
+      vramBudgetMiB: _vram,
+      gpuComputeTargetPercent: _compute,
+      computeBackend: _backend,
+      cpuThreads: _threads,
+      contextTokens: _context,
+      gpuOffloadLayers: _layers,
       audienceCount: _audience,
       chatActivity: _activity,
       videoCaptureIntervalMs: _capture,
@@ -161,16 +182,54 @@ describe('versioned preferences', () => {
 
   it('upgrades v5 video settings with new audience defaults', async () => {
     const { store: settings, directory } = await store();
-    const { audienceCount: _size, chatActivity: _activity, ...previous } = pace(3500);
+    const {
+      audienceCount: _size,
+      chatActivity: _activity,
+      ramBudgetMiB: _ram,
+      vramBudgetMiB: _vram,
+      gpuComputeTargetPercent: _compute,
+      computeBackend: _backend,
+      cpuThreads: _threads,
+      contextTokens: _context,
+      gpuOffloadLayers: _layers,
+      ...previous
+    } = pace(3500);
     await writeFile(
       path.join(directory, 'preferences.json'),
       JSON.stringify({ version: 5, simulation: previous }),
     );
-    expect(await settings.read()).toEqual({
-      ...previous,
-      audienceCount: 3,
-      chatActivity: 'normal',
-    });
+    expect(await settings.read()).toEqual({ ...DEFAULT_PREFERENCES, ...previous });
+  });
+
+  it('upgrades v6 audience settings and persists resource targets in v7', async () => {
+    const { store: settings, directory } = await store();
+    const {
+      ramBudgetMiB: _ram,
+      vramBudgetMiB: _vram,
+      gpuComputeTargetPercent: _compute,
+      computeBackend: _backend,
+      cpuThreads: _threads,
+      contextTokens: _context,
+      gpuOffloadLayers: _layers,
+      ...previous
+    } = pace(4800);
+    await writeFile(
+      path.join(directory, 'preferences.json'),
+      JSON.stringify({ version: 6, simulation: previous }),
+    );
+    expect(await settings.read()).toEqual({ ...DEFAULT_PREFERENCES, ...previous });
+    const customized = {
+      ...pace(4800),
+      ramBudgetMiB: 8192,
+      vramBudgetMiB: 4096,
+      gpuComputeTargetPercent: 40,
+      computeBackend: 'vulkan' as const,
+      cpuThreads: 8,
+      contextTokens: 8192,
+      gpuOffloadLayers: 16,
+    };
+    await settings.write(customized);
+    expect(await settings.read()).toEqual(customized);
   });
 
   it('rejects out-of-range, fractional-count and malformed preferences', async () => {
@@ -182,6 +241,15 @@ describe('versioned preferences', () => {
       { audienceCount: 101 },
       { audienceCount: 1.5 },
       { chatActivity: 'extreme' },
+      { ramBudgetMiB: 0 },
+      { ramBudgetMiB: 102.5 },
+      { vramBudgetMiB: -1 },
+      { gpuComputeTargetPercent: 101 },
+      { gpuComputeTargetPercent: 40.5 },
+      { computeBackend: 'directx' },
+      { cpuThreads: 0 },
+      { contextTokens: 513 },
+      { gpuOffloadLayers: -1 },
       { baselineMs: 61000 },
       { historyMaxCount: 1.5 },
       { historyMaxCount: 300 },
@@ -213,7 +281,7 @@ describe('versioned preferences', () => {
     await writeFile(
       path.join(directory, 'preferences.json'),
       JSON.stringify({
-        version: 7,
+        version: 8,
         simulation: { cycleIntervalMs: 3000 },
       }),
     );

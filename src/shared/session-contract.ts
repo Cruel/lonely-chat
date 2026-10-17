@@ -1,6 +1,7 @@
 export type SessionPhase = 'stopped' | 'starting' | 'running' | 'switching' | 'error';
 export type InferenceMode = 'fake' | 'native';
 export type VideoSamplingStrategy = 'uniform' | 'recent-weighted';
+export type ComputeBackend = 'auto' | 'cpu' | 'cuda' | 'vulkan' | 'metal';
 import type { ChatActivity } from './audience-contract';
 
 export interface InferredEvent {
@@ -41,6 +42,12 @@ export interface SessionSnapshot {
   readonly smoothedInferenceMs: number | null;
   readonly playbackWindowMs: number;
   readonly droppedObservations: number;
+  readonly estimatedNextInferenceMs?: number | null;
+  readonly adaptiveFrameLimit?: number | null;
+  readonly effectiveCycleMs?: number | null;
+  readonly adaptationReason?: string | null;
+  readonly workerRamMiB?: number | null;
+  readonly recentErrors?: readonly string[];
 }
 
 export interface SessionPreferences {
@@ -62,6 +69,14 @@ export interface SessionPreferences {
   readonly videoMinFrames: number;
   readonly videoMaxFrames: number;
   readonly videoSamplingStrategy: VideoSamplingStrategy;
+  /** Best-effort process/model targets, never enforceable memory or compute quotas. */
+  readonly ramBudgetMiB: number;
+  readonly vramBudgetMiB: number;
+  readonly gpuComputeTargetPercent: number;
+  readonly computeBackend: ComputeBackend;
+  readonly cpuThreads: number;
+  readonly contextTokens: number;
+  readonly gpuOffloadLayers: number;
 }
 
 export const DEFAULT_PREFERENCES: SessionPreferences = {
@@ -78,6 +93,13 @@ export const DEFAULT_PREFERENCES: SessionPreferences = {
   videoMinFrames: 2,
   videoMaxFrames: 24,
   videoSamplingStrategy: 'uniform',
+  ramBudgetMiB: 4096,
+  vramBudgetMiB: 0,
+  gpuComputeTargetPercent: 0,
+  computeBackend: 'auto',
+  cpuThreads: 4,
+  contextTokens: 4096,
+  gpuOffloadLayers: 0,
 };
 export const AUDIENCE_COUNT_OPTIONS = [3, 5, 10, 25, 50] as const;
 export const CYCLE_INTERVAL_OPTIONS = [1500, 3000, 5000] as const;
@@ -88,6 +110,12 @@ export const INFERENCE_TIMEOUT_OPTIONS = [30000, 120000, 300000, 600000, 1200000
 export const VIDEO_CAPTURE_INTERVAL_OPTIONS = [250, 500, 1000, 2000] as const;
 export const VIDEO_COVERAGE_OPTIONS = [10000, 30000, 60000] as const;
 export const VIDEO_FRAME_COUNT_OPTIONS = [2, 4, 8, 12, 24, 32] as const;
+export const RAM_BUDGET_OPTIONS = [1024, 2048, 4096, 8192, 16384] as const;
+export const VRAM_BUDGET_OPTIONS = [0, 2048, 4096, 8192, 12288, 16384] as const;
+export const GPU_COMPUTE_OPTIONS = [0, 25, 40, 60, 80, 100] as const;
+export const CPU_THREAD_OPTIONS = [1, 2, 4, 8, 12, 16] as const;
+export const CONTEXT_TOKEN_OPTIONS = [2048, 4096, 8192, 16384] as const;
+export const GPU_LAYER_OPTIONS = [0, 8, 16, 32, 64] as const;
 
 /** Editable settings use strict bounds to limit timers, memory and prompt size. */
 export const NUMERIC_PREFERENCE_LIMITS = {
@@ -101,6 +129,12 @@ export const NUMERIC_PREFERENCE_LIMITS = {
   videoCoverageMs: { min: 3000, max: 60000, step: 1000 },
   videoMinFrames: { min: 1, max: 32, step: 1 },
   videoMaxFrames: { min: 1, max: 32, step: 1 },
+  ramBudgetMiB: { min: 256, max: 262144, step: 1 },
+  vramBudgetMiB: { min: 0, max: 262144, step: 1 },
+  gpuComputeTargetPercent: { min: 0, max: 100, step: 1 },
+  cpuThreads: { min: 1, max: 128, step: 1 },
+  contextTokens: { min: 512, max: 32768, step: 256 },
+  gpuOffloadLayers: { min: 0, max: 999, step: 1 },
 } as const;
 
 export type NumericPreference = keyof typeof NUMERIC_PREFERENCE_LIMITS;
@@ -148,6 +182,19 @@ export function validatePreferences(value: unknown): SessionPreferences {
       !validNumericPreference('videoCaptureIntervalMs', record.videoCaptureIntervalMs)) ||
     (record.videoCoverageMs !== undefined &&
       !validNumericPreference('videoCoverageMs', record.videoCoverageMs)) ||
+    (record.ramBudgetMiB !== undefined &&
+      !validNumericPreference('ramBudgetMiB', record.ramBudgetMiB)) ||
+    (record.vramBudgetMiB !== undefined &&
+      !validNumericPreference('vramBudgetMiB', record.vramBudgetMiB)) ||
+    (record.gpuComputeTargetPercent !== undefined &&
+      !validNumericPreference('gpuComputeTargetPercent', record.gpuComputeTargetPercent)) ||
+    (record.cpuThreads !== undefined && !validNumericPreference('cpuThreads', record.cpuThreads)) ||
+    (record.contextTokens !== undefined &&
+      !validNumericPreference('contextTokens', record.contextTokens)) ||
+    (record.gpuOffloadLayers !== undefined &&
+      !validNumericPreference('gpuOffloadLayers', record.gpuOffloadLayers)) ||
+    (record.computeBackend !== undefined &&
+      !['auto', 'cpu', 'cuda', 'vulkan', 'metal'].includes(record.computeBackend as string)) ||
     (record.videoMinFrames !== undefined &&
       !validNumericPreference('videoMinFrames', record.videoMinFrames)) ||
     (record.videoMaxFrames !== undefined &&

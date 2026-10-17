@@ -1,6 +1,7 @@
 import type { ScheduledChat } from './chat-scheduler';
 import { CHAT_ACTIVITY_LIMITS, type ChatActivity } from '../shared/audience-contract';
 import type { VideoFrame } from '../shared/video-contract';
+import type { ResourceMeasurements } from './resource-policy';
 import type {
   CapturedObservation,
   InferredEvent,
@@ -36,6 +37,7 @@ export interface InferenceProvider {
     signal: AbortSignal,
   ): Promise<string[]>;
   stop?(): Promise<void> | void;
+  resourceMeasurements?(): Promise<ResourceMeasurements>;
 }
 
 export const AUDIENCE = [

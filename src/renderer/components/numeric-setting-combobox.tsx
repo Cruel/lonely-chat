@@ -20,7 +20,7 @@ interface NumericSettingComboboxProps {
   name: NumericPreference;
   value: number;
   options: readonly number[];
-  unit: 'seconds' | 'entries';
+  unit: 'seconds' | 'entries' | 'MiB' | 'percent';
   disabled: boolean;
   onChange: (value: number) => void;
 }
