@@ -25,7 +25,7 @@ describe('versioned preferences', () => {
     expect(await settings.read()).toEqual(DEFAULT_PREFERENCES);
     expect(await settings.write(pace(1500))).toEqual(pace(1500));
     const data = JSON.parse(await readFile(path.join(directory, 'preferences.json'), 'utf8'));
-    expect(data).toEqual({ version: 5, simulation: pace(1500) });
+    expect(data).toEqual({ version: 6, simulation: pace(1500) });
     expect(await settings.read()).toEqual(pace(1500));
     expect(await readdir(directory)).toEqual(['preferences.json']);
     expect(JSON.stringify(data)).not.toContain('manual context');
@@ -63,12 +63,14 @@ describe('versioned preferences', () => {
     ).toMatchObject({ baselineMs: 1000, historyMaxCount: 16, historyMaxAgeMs: 30000 });
     expect(
       JSON.parse(await readFile(path.join(directory, 'preferences.json'), 'utf8')).version,
-    ).toBe(5);
+    ).toBe(6);
   });
 
   it('migrates existing version-two preferences with reasoning disabled by default', async () => {
     const { store: settings, directory } = await store();
     const {
+      audienceCount: _audience,
+      chatActivity: _activity,
       reasoningEnabled: _ignoredReasoning,
       inferenceTimeoutMs: _ignoredTimeout,
       videoCaptureIntervalMs: _capture,
@@ -92,6 +94,8 @@ describe('versioned preferences', () => {
   it('migrates version-three settings and retains custom values', async () => {
     const { store: settings, directory } = await store();
     const {
+      audienceCount: _audience,
+      chatActivity: _activity,
       inferenceTimeoutMs: _ignoredTimeout,
       videoCaptureIntervalMs: _capture,
       videoCoverageMs: _coverage,
@@ -126,6 +130,8 @@ describe('versioned preferences', () => {
   it('upgrades v4 video defaults without changing existing inference settings', async () => {
     const { store: settings, directory } = await store();
     const {
+      audienceCount: _audience,
+      chatActivity: _activity,
       videoCaptureIntervalMs: _capture,
       videoCoverageMs: _coverage,
       videoMinFrames: _min,
@@ -153,11 +159,29 @@ describe('versioned preferences', () => {
     expect(await settings.read()).toEqual(updated);
   });
 
+  it('upgrades v5 video settings with new audience defaults', async () => {
+    const { store: settings, directory } = await store();
+    const { audienceCount: _size, chatActivity: _activity, ...previous } = pace(3500);
+    await writeFile(
+      path.join(directory, 'preferences.json'),
+      JSON.stringify({ version: 5, simulation: previous }),
+    );
+    expect(await settings.read()).toEqual({
+      ...previous,
+      audienceCount: 3,
+      chatActivity: 'normal',
+    });
+  });
+
   it('rejects out-of-range, fractional-count and malformed preferences', async () => {
     const { store: settings } = await store();
     for (const bad of [
       { cycleIntervalMs: 100 },
       { cycleIntervalMs: -1 },
+      { audienceCount: 0 },
+      { audienceCount: 101 },
+      { audienceCount: 1.5 },
+      { chatActivity: 'extreme' },
       { baselineMs: 61000 },
       { historyMaxCount: 1.5 },
       { historyMaxCount: 300 },
@@ -189,7 +213,7 @@ describe('versioned preferences', () => {
     await writeFile(
       path.join(directory, 'preferences.json'),
       JSON.stringify({
-        version: 6,
+        version: 7,
         simulation: { cycleIntervalMs: 3000 },
       }),
     );

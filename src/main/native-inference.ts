@@ -4,13 +4,18 @@ import { createServer } from 'node:net';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { AUDIENCE, type InferenceInput, type InferenceProvider } from './fake-inference';
+import {
+  AUTHOR_PLACEHOLDER,
+  CHAT_ACTIVITY_LIMITS,
+  type ChatActivity,
+  type ChatterIdentity,
+} from '../shared/audience-contract';
 
 export interface NativeModelFiles {
   readonly modelPath: string;
   readonly projectorPath: string | null;
 }
 
-const ROSTER = Object.fromEntries(AUDIENCE.map(({ author, color }) => [author, color]));
 const AUTHORS = AUDIENCE.map(({ author }) => author);
 const MAX_REPLY_BYTES = 1024 * 1024;
 const STARTUP_TIMEOUT_MS = 300_000;
@@ -44,7 +49,7 @@ export const INFERENCE_SCHEMA = {
         additionalProperties: false,
         required: ['author', 'text', 'offsetMs'],
         properties: {
-          author: { type: 'string', enum: AUTHORS },
+          author: { type: 'string', enum: [...AUTHORS, AUTHOR_PLACEHOLDER] },
           text: { type: 'string', minLength: 1, maxLength: 500 },
           offsetMs: { type: 'integer', minimum: 0, maximum: 60000 },
         },
@@ -53,8 +58,34 @@ export const INFERENCE_SCHEMA = {
   },
 } as const;
 
+/** Dynamic constrained grammar must match the roster actually supplied to the model. */
+export function inferenceSchema(roster: readonly ChatterIdentity[], activity: ChatActivity) {
+  return {
+    ...INFERENCE_SCHEMA,
+    properties: {
+      ...INFERENCE_SCHEMA.properties,
+      messages: {
+        ...INFERENCE_SCHEMA.properties.messages,
+        maxItems: CHAT_ACTIVITY_LIMITS[activity],
+        items: {
+          ...INFERENCE_SCHEMA.properties.messages.items,
+          properties: {
+            ...INFERENCE_SCHEMA.properties.messages.items.properties,
+            author: {
+              type: 'string',
+              enum: [...roster.map((member) => member.author), AUTHOR_PLACEHOLDER],
+            },
+          },
+        },
+      },
+    },
+  };
+}
+
 /** Prompt snapshots contain no paths, installation metadata or IPC capabilities. */
 export function nativeChatRequest(input: InferenceInput) {
+  const roster = input.roster ?? AUDIENCE;
+  const activity = input.chatActivity ?? 'normal';
   const history = (input.recentEvents ?? []).map((event) => ({
     kind: event.kind,
     summary: event.summary,
@@ -67,7 +98,8 @@ export function nativeChatRequest(input: InferenceInput) {
     recentTranscripts: input.recentTranscripts ?? [],
     observations: input.observations ?? [],
     recentChat: input.recentChat ?? [],
-    roster: input.roster ?? AUDIENCE,
+    roster,
+    chatActivity: activity,
     observationWindow: input.boundary ?? null,
     playbackWindowMs: input.playbackWindowMs ?? 3000,
     videoWindow: input.videoWindow ?? null,
@@ -98,12 +130,13 @@ export function nativeChatRequest(input: InferenceInput) {
     max_tokens: COMPLETION_MAX_TOKENS,
     // Pinned llama-server b11700 enforces this schema via json_object. Its json_schema
     // response_format variant silently ignored the schema for tested GGUF models.
-    response_format: { type: 'json_object', schema: INFERENCE_SCHEMA },
+    response_format: { type: 'json_object', schema: inferenceSchema(roster, activity) },
     messages: [
       {
         role: 'system',
         content:
-          'You simulate a small friendly live-stream audience. From the context, infer at most 3 short events and write 1-4 natural viewer chat messages. ' +
+          `You simulate a friendly live-stream audience. Infer at most 3 short events and write 1-${CHAT_ACTIVITY_LIMITS[activity]} natural viewer chat messages (activity: ${activity}). ` +
+          `Use only roster identities, or ${AUTHOR_PLACEHOLDER} when any eligible roster member can speak. Prefer using explicit authors to follow earlier conversation threads. ` +
           'Only use the allowed author identities. Each visual frame is ordered and labeled with absolute and relative observation timestamps. Infer visual events from the images, not their metadata alone. A truncated videoWindow indicates missing earlier footage; do not invent it. ' +
           'ageMs is how many milliseconds before the observationWindow.throughMs an event happened (use 0 for ongoing context). ' +
           'offsetMs is when to display a chat message after this reply, within the requested playbackWindowMs. ' +
@@ -118,7 +151,7 @@ export function nativeChatRequest(input: InferenceInput) {
   };
 }
 
-export function extractNativeChat(body: unknown): unknown {
+function parseCompletion(body: unknown): unknown {
   if (!body || typeof body !== 'object') throw new Error('llama.cpp returned an invalid response.');
   const choice = (body as { choices?: unknown }).choices;
   if (!Array.isArray(choice) || choice.length !== 1) {
@@ -161,20 +194,42 @@ export function extractNativeChat(body: unknown): unknown {
   } catch {
     throw new Error('llama.cpp generated malformed JSON.');
   }
+  return parsed;
+}
+
+export function extractNativeChat(
+  body: unknown,
+  roster: readonly ChatterIdentity[] = AUDIENCE,
+  recentChat: readonly { author: string }[] = [],
+): unknown {
+  const parsed = parseCompletion(body);
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error('llama.cpp generated an invalid cycle.');
   }
   const record = parsed as Record<string, unknown>;
   if (!Array.isArray(record.messages)) throw new Error('llama.cpp omitted its chat batch.');
+  const allowed = new Map(roster.map((item) => [item.author, item.color]));
+  const uses = new Map<string, number>();
+  for (const item of recentChat) uses.set(item.author, (uses.get(item.author) ?? 0) + 1);
   const messages = record.messages.map((entry: unknown) => {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
       throw new Error('llama.cpp generated an invalid chat message.');
     }
     const item = entry as Record<string, unknown>;
-    if (typeof item.author !== 'string' || !Object.hasOwn(ROSTER, item.author)) {
+    let author = item.author;
+    if (author === AUTHOR_PLACEHOLDER) {
+      const candidate = roster.reduce<ChatterIdentity | null>(
+        (best, member) =>
+          !best || (uses.get(member.author) ?? 0) < (uses.get(best.author) ?? 0) ? member : best,
+        null,
+      );
+      author = candidate?.author;
+    }
+    if (typeof author !== 'string' || !allowed.has(author)) {
       throw new Error('llama.cpp generated a chatter outside the configured roster.');
     }
-    return { ...item, color: ROSTER[item.author] };
+    uses.set(author, (uses.get(author) ?? 0) + 1);
+    return { ...item, author, color: allowed.get(author) };
   });
   return { ...record, messages };
 }
@@ -380,7 +435,59 @@ export class NativeInference implements InferenceProvider {
     throw new Error(`Timed out loading llama.cpp model. ${this.logTail.slice(-750)}`);
   }
 
+  async generateRoster(
+    count: number,
+    excluded: readonly string[],
+    signal: AbortSignal,
+  ): Promise<string[]> {
+    const prompt = {
+      stream: false,
+      temperature: 0.85,
+      max_tokens: 1024,
+      response_format: {
+        type: 'json_object',
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['names'],
+          properties: {
+            names: {
+              type: 'array',
+              minItems: count,
+              maxItems: count,
+              items: { type: 'string', pattern: '^[A-Za-z0-9_]{3,24}$' },
+            },
+          },
+        },
+      },
+      messages: [
+        {
+          role: 'system',
+          content:
+            'Generate distinct, varied, plausible live-stream viewer usernames. Only ASCII letters, numbers and underscores, 3-24 characters. Return only the JSON schema. Do not reuse excluded usernames, ignoring case.',
+        },
+        { role: 'user', content: JSON.stringify({ count, excluded }) },
+      ],
+    };
+    const result = parseCompletion(await this.complete(prompt, signal));
+    if (
+      !result ||
+      typeof result !== 'object' ||
+      Array.isArray(result) ||
+      Object.keys(result).join(',') !== 'names' ||
+      !Array.isArray((result as { names?: unknown }).names)
+    ) {
+      throw new Error('llama.cpp generated an invalid username list.');
+    }
+    return (result as { names: string[] }).names;
+  }
+
   async generate(input: InferenceInput, signal: AbortSignal): Promise<unknown> {
+    const response = await this.complete(nativeChatRequest(input), signal);
+    return extractNativeChat(response, input.roster ?? AUDIENCE, input.recentChat ?? []);
+  }
+
+  private async complete(request: unknown, signal: AbortSignal): Promise<unknown> {
     await this.prepare(signal);
     if (signal.aborted || !this.lifecycle || !this.port || !this.apiKey) {
       throw new Error('Native inference cancelled.');
@@ -392,7 +499,7 @@ export class NativeInference implements InferenceProvider {
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.apiKey}` },
-          body: JSON.stringify(nativeChatRequest(input)),
+          body: JSON.stringify(request),
           signal: AbortSignal.any([signal, this.lifecycle.signal, AbortSignal.timeout(timeoutMs)]),
         },
       );
@@ -403,7 +510,7 @@ export class NativeInference implements InferenceProvider {
       }
       if (signal.aborted || this.lifecycle.signal.aborted)
         throw new Error('Native inference cancelled.');
-      return extractNativeChat(body);
+      return body;
     } catch (error) {
       if (this.failure) throw this.failure;
       if (signal.aborted || this.lifecycle?.signal.aborted)

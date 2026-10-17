@@ -35,6 +35,16 @@ const api: DesktopAPI = {
   stopSession: () => invoke('session:stop'),
   getPreferences: () => invoke('preferences:get'),
   setPreferences: (preferences) => invoke('preferences:set', preferences),
+  getAudience: () => invoke('audience:get'),
+  regenerateAudience: (mode) => invoke('audience:regenerate', mode),
+  onAudienceChange: (listener) => {
+    const receive = (
+      _event: Electron.IpcRendererEvent,
+      status: import('../shared/audience-contract').AudienceSnapshot,
+    ) => listener(status);
+    ipcRenderer.on('audience:change', receive);
+    return () => ipcRenderer.removeListener('audience:change', receive);
+  },
   discoverModels: (source) => invoke('models:discover', source),
   getModelsSnapshot: () => invoke('models:snapshot'),
   onModelsChange: (listener) => {

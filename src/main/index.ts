@@ -4,7 +4,9 @@ import { app, BrowserWindow, ipcMain, shell, dialog, desktopCapturer } from 'ele
 import { ChatService, publishSample } from './chat-service';
 import { SessionController } from './session-controller';
 import { PreferencesStore } from './preferences-store';
-import { DEFAULT_PREFERENCES } from '../shared/session-contract';
+import { DEFAULT_PREFERENCES, validatePreferences } from '../shared/session-contract';
+import { AudienceService } from './audience-service';
+import { FakeInference } from './fake-inference';
 import { OverlayServer } from './overlay-server';
 import { ModelDiscovery } from './model-discovery';
 import { ModelInstallManager } from './model-install-manager';
@@ -25,11 +27,15 @@ const audioConfig = new AudioConfigStore(app.getPath('userData'));
 const models = new ModelDiscovery();
 const installs = new ModelInstallManager(app.getPath('userData'), models);
 let session: SessionController;
+let audience: AudienceService;
+let nativeInference: NativeInference;
 let audio: AudioService;
 let mainWindow: BrowserWindow | null = null;
 let quitting = false;
 let selectedDisplaySource: Electron.DesktopCapturerSource | null = null;
 let videoSelectionGeneration = 0;
+let rosterRegenerating = false;
+let rosterGenerationAbort: AbortController | null = null;
 
 async function listDesktopSources(): Promise<Electron.DesktopCapturerSource[]> {
   return desktopCapturer.getSources({
@@ -63,15 +69,50 @@ function registerHandlers(): void {
     },
     'overlay:url': () => overlay.url,
     'session:snapshot': () => session.snapshot(),
-    'session:start': (context: string, mode?: import('../shared/session-contract').InferenceMode) =>
-      session.start(context, mode),
+    'session:start': (
+      context: string,
+      mode?: import('../shared/session-contract').InferenceMode,
+    ) => {
+      if (rosterRegenerating) throw new Error('Roster regeneration is in progress.');
+      return session.start(context, mode);
+    },
     'session:stop': () => session.stop(),
     'preferences:get': () => session.getPreferences(),
     'preferences:set': async (
       preferences: import('../shared/session-contract').SessionPreferences,
     ) => {
-      const written = await preferenceStore.write(preferences);
+      const next = validatePreferences(preferences);
+      if (next.audienceCount !== session.getPreferences().audienceCount) {
+        if (['starting', 'running'].includes(session.snapshot().phase)) {
+          throw new Error('Stop the simulation before resizing the audience.');
+        }
+        if (rosterRegenerating) throw new Error('Roster regeneration is in progress.');
+      }
+      const written = await preferenceStore.write(next);
+      if (written.audienceCount !== audience.snapshot().targetCount) {
+        await audience.setTarget(written.audienceCount);
+      }
       return session.setPreferences(written);
+    },
+    'audience:get': () => audience.snapshot(),
+    'audience:regenerate': async (mode: import('../shared/session-contract').InferenceMode) => {
+      if (!['stopped', 'error'].includes(session.snapshot().phase)) {
+        throw new Error('Stop the simulation before regenerating its audience.');
+      }
+      if (mode !== 'fake' && mode !== 'native') throw new Error('Invalid inference mode.');
+      if (rosterRegenerating) throw new Error('Roster regeneration is already in progress.');
+      rosterRegenerating = true;
+      const provider = mode === 'native' ? nativeInference : new FakeInference();
+      const abort = new AbortController();
+      rosterGenerationAbort = abort;
+      try {
+        await session.awaitShutdown();
+        return await audience.ensure(provider, abort.signal, true);
+      } finally {
+        if (mode === 'native') await nativeInference.stop();
+        rosterRegenerating = false;
+        rosterGenerationAbort = null;
+      }
     },
     'models:discover': (source: string) => models.discover(source),
     'models:snapshot': () => installs.snapshot(),
@@ -79,8 +120,12 @@ function registerHandlers(): void {
       installs.install(selection),
     'models:cancel': () => installs.cancel(),
     'models:activate': (role: import('../shared/model-contract').ModelRole, id: string | null) => {
-      if (session.snapshot().phase === 'running' || session.snapshot().phase === 'starting') {
-        throw new Error('Stop the simulation before changing the active model.');
+      if (
+        rosterRegenerating ||
+        session.snapshot().phase === 'running' ||
+        session.snapshot().phase === 'starting'
+      ) {
+        throw new Error('Stop roster generation and simulation before changing the active model.');
       }
       if (
         role === 'speech-to-text' &&
@@ -93,8 +138,12 @@ function registerHandlers(): void {
       return installs.setActive(role, id);
     },
     'models:remove': (id: string) => {
-      if (session.snapshot().phase === 'running' || session.snapshot().phase === 'starting') {
-        throw new Error('Stop the simulation before removing a model.');
+      if (
+        rosterRegenerating ||
+        session.snapshot().phase === 'running' ||
+        session.snapshot().phase === 'starting'
+      ) {
+        throw new Error('Stop roster generation and simulation before removing a model.');
       }
       if (
         audio
@@ -281,7 +330,7 @@ function openMainWindow(): void {
           !result.previewReady ||
           result.session.phase !== 'running' ||
           result.apiKeys.join(',') !==
-            'activateModel,audioDisconnected,cancelModelDownload,chooseModelDirectory,discoverModels,getAudioCapabilities,getAudioConfiguration,getAudioStatus,getChatSnapshot,getModelsSnapshot,getOverlayUrl,getPreferences,getSessionSnapshot,installModel,listDisplaySources,onAudioChange,onChatEvent,onModelsChange,onSessionChange,publishSample,removeAudioInput,removeModel,selectVideoSource,setAudioConfiguration,setAudioLabel,setPreferences,startAudio,startSession,stopAudio,stopSession,submitAudioSegment,submitVideoFrame'
+            'activateModel,audioDisconnected,cancelModelDownload,chooseModelDirectory,discoverModels,getAudience,getAudioCapabilities,getAudioConfiguration,getAudioStatus,getChatSnapshot,getModelsSnapshot,getOverlayUrl,getPreferences,getSessionSnapshot,installModel,listDisplaySources,onAudienceChange,onAudioChange,onChatEvent,onModelsChange,onSessionChange,publishSample,regenerateAudience,removeAudioInput,removeModel,selectVideoSource,setAudioConfiguration,setAudioLabel,setPreferences,startAudio,startSession,stopAudio,stopSession,submitAudioSegment,submitVideoFrame'
         ) {
           throw new Error(`Electron smoke failed: ${JSON.stringify(result)}`);
         }
@@ -327,21 +376,29 @@ async function boot(): Promise<void> {
     console.error('Invalid local preferences; using safe defaults', error);
   }
   await installs.open();
+  audience = new AudienceService(app.getPath('userData'), preferences.audienceCount);
+  await audience.open();
+  audience.subscribe((status) => {
+    if (mainWindow && !mainWindow.isDestroyed())
+      mainWindow.webContents.send('audience:change', status);
+  });
   installs.subscribe((snapshot) => {
     if (mainWindow && !mainWindow.isDestroyed())
       mainWindow.webContents.send('models:change', snapshot);
+  });
+  nativeInference = new NativeInference({
+    executable: bundledLlamaServer(app.getAppPath(), app.isPackaged, process.resourcesPath),
+    resolveModel: () => installs.activeVisionFiles(),
+    reasoningEnabled: () => session.getPreferences().reasoningEnabled,
+    inferenceTimeoutMs: () => session.getPreferences().inferenceTimeoutMs,
   });
   session = new SessionController(
     chat,
     undefined,
     undefined,
     preferences,
-    new NativeInference({
-      executable: bundledLlamaServer(app.getAppPath(), app.isPackaged, process.resourcesPath),
-      resolveModel: () => installs.activeVisionFiles(),
-      reasoningEnabled: () => session.getPreferences().reasoningEnabled,
-      inferenceTimeoutMs: () => session.getPreferences().inferenceTimeoutMs,
-    }),
+    nativeInference,
+    audience,
   );
   audio = new AudioService(
     () =>
@@ -395,8 +452,11 @@ app.on('before-quit', (event) => {
   event.preventDefault();
   quitting = true;
   installs.cancel();
+  rosterGenerationAbort?.abort();
   audio?.stop();
-  void Promise.all([session?.terminate(), overlay.stop()]).finally(() => app.quit());
+  void Promise.all([session?.terminate(), nativeInference?.stop(), overlay.stop()]).finally(() =>
+    app.quit(),
+  );
 });
 app.on('will-quit', () => {
   ipcMain.removeHandler('chat:snapshot');
@@ -407,6 +467,8 @@ app.on('will-quit', () => {
   ipcMain.removeHandler('session:stop');
   ipcMain.removeHandler('preferences:get');
   ipcMain.removeHandler('preferences:set');
+  ipcMain.removeHandler('audience:get');
+  ipcMain.removeHandler('audience:regenerate');
   ipcMain.removeHandler('models:discover');
   ipcMain.removeHandler('models:snapshot');
   ipcMain.removeHandler('models:install');

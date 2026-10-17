@@ -32,7 +32,9 @@ import { AudioInput } from '@/components/audio-input';
 import type { AudioStatus } from '../../shared/audio-contract';
 import { useChat } from '../use-chat';
 import { useSession } from '../use-session';
+import { useAudience } from '../use-audience';
 import {
+  AUDIENCE_COUNT_OPTIONS,
   BASELINE_OPTIONS,
   CYCLE_INTERVAL_OPTIONS,
   HISTORY_AGE_OPTIONS,
@@ -73,6 +75,7 @@ function Panel({ children, className = '' }: { children: React.ReactNode; classN
 export function DesktopPage() {
   const { snapshot, connected } = useChat();
   const session = useSession();
+  const audience = useAudience();
   const [section, setSection] = useState<DesktopSection>('simulation');
   const [overlayUrl, setOverlayUrl] = useState('');
   const [manualContext, setManualContext] = useState('');
@@ -338,11 +341,100 @@ export function DesktopPage() {
                 description="Configure your simulated viewers and their activity."
               />
               <Panel>
-                <h3 className="font-medium">Audience controls are coming next</h3>
+                <h3 className="font-medium">Persistent chatter roster</h3>
                 <p className="mt-2 text-sm text-zinc-400">
-                  Persistent viewer identities, audience size, and activity controls will be added
-                  with the chatter roster feature (#9).
+                  Names are generated on first simulation start using its selected inference mode.
+                  They are saved locally and remain stable across sessions. Reducing the count does
+                  not change previously displayed chat authors.
                 </p>
+                <div className="mt-5 grid gap-5 sm:grid-cols-2">
+                  <NumericSettingCombobox
+                    id="audience-count"
+                    title="Target viewer count"
+                    name="audienceCount"
+                    value={session.preferences.audienceCount}
+                    options={AUDIENCE_COUNT_OPTIONS}
+                    unit="entries"
+                    disabled={!session.ready || session.busy || running || audience.busy}
+                    onChange={(audienceCount) => update({ audienceCount })}
+                  />
+                  <div>
+                    <Label htmlFor="chat-activity" className="text-sm text-zinc-200">
+                      Chat activity
+                    </Label>
+                    <Select
+                      items={[
+                        { value: 'quiet', label: 'Quiet (up to 2 per cycle)' },
+                        { value: 'normal', label: 'Normal (up to 4 per cycle)' },
+                        { value: 'busy', label: 'Busy (up to 8 per cycle)' },
+                      ]}
+                      value={session.preferences.chatActivity}
+                      onValueChange={(value) => {
+                        if (value === 'quiet' || value === 'normal' || value === 'busy')
+                          update({ chatActivity: value });
+                      }}
+                    >
+                      <SelectTrigger
+                        id="chat-activity"
+                        className="mt-2 w-full"
+                        disabled={!session.ready || session.busy}
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="quiet">Quiet (up to 2 per cycle)</SelectItem>
+                        <SelectItem value="normal">Normal (up to 4 per cycle)</SelectItem>
+                        <SelectItem value="busy">Busy (up to 8 per cycle)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                <div className="mt-5 flex flex-wrap items-center justify-between gap-4 border-t border-border pt-4">
+                  <p className="text-sm text-zinc-300" role="status">
+                    {audience.status.phase === 'generating'
+                      ? 'Generating usernames using the selected model…'
+                      : `${audience.status.members.length} of ${session.preferences.audienceCount} viewers configured`}
+                  </p>
+                  <Button
+                    variant="secondary"
+                    disabled={
+                      running ||
+                      audience.busy ||
+                      !session.ready ||
+                      session.busy ||
+                      audience.status.phase === 'generating'
+                    }
+                    onClick={() => void audience.regenerate(inferenceMode)}
+                  >
+                    Regenerate roster ({inferenceMode === 'native' ? 'native model' : 'fixture'})
+                  </Button>
+                </div>
+                {(audience.error || audience.status.error || session.actionError) && (
+                  <p role="alert" className="mt-3 text-sm text-rose-300">
+                    {audience.error || audience.status.error || session.actionError}
+                  </p>
+                )}
+                {audience.status.members.length < session.preferences.audienceCount && (
+                  <p className="mt-3 text-xs text-zinc-400">
+                    The next simulation start will generate missing names. If generation fails, the
+                    roster is retained; stop and retry from this panel.
+                  </p>
+                )}
+                <ul className="mt-4 grid gap-2 sm:grid-cols-2">
+                  {audience.status.members.map((member) => (
+                    <li
+                      key={member.author}
+                      className="flex items-center gap-2 rounded-md border border-border p-2 text-sm"
+                    >
+                      <span
+                        aria-hidden="true"
+                        className="size-2 rounded-full"
+                        style={{ backgroundColor: member.color }}
+                      />
+                      {member.author}
+                    </li>
+                  ))}
+                </ul>
               </Panel>
             </section>
           )}

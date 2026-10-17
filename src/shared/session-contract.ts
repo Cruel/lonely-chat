@@ -1,6 +1,7 @@
 export type SessionPhase = 'stopped' | 'starting' | 'running' | 'error';
 export type InferenceMode = 'fake' | 'native';
 export type VideoSamplingStrategy = 'uniform' | 'recent-weighted';
+import type { ChatActivity } from './audience-contract';
 
 export interface InferredEvent {
   readonly kind: 'context' | 'reaction';
@@ -43,6 +44,8 @@ export interface SessionSnapshot {
 export interface SessionPreferences {
   /** Minimum interval between inference starts, independent of playback. */
   readonly cycleIntervalMs: number;
+  readonly audienceCount: number;
+  readonly chatActivity: ChatActivity;
   readonly baselineMs: number;
   readonly historyMaxCount: number;
   readonly historyMaxAgeMs: number;
@@ -61,6 +64,8 @@ export interface SessionPreferences {
 
 export const DEFAULT_PREFERENCES: SessionPreferences = {
   cycleIntervalMs: 3000,
+  audienceCount: 3,
+  chatActivity: 'normal',
   baselineMs: 0,
   historyMaxCount: 32,
   historyMaxAgeMs: 60000,
@@ -72,6 +77,7 @@ export const DEFAULT_PREFERENCES: SessionPreferences = {
   videoMaxFrames: 24,
   videoSamplingStrategy: 'uniform',
 };
+export const AUDIENCE_COUNT_OPTIONS = [3, 5, 10, 25, 50] as const;
 export const CYCLE_INTERVAL_OPTIONS = [1500, 3000, 5000] as const;
 export const BASELINE_OPTIONS = [0, 1000, 3000] as const;
 export const HISTORY_COUNT_OPTIONS = [16, 32, 64] as const;
@@ -84,6 +90,7 @@ export const VIDEO_FRAME_COUNT_OPTIONS = [2, 4, 8, 12, 24, 32] as const;
 /** Editable settings use strict bounds to limit timers, memory and prompt size. */
 export const NUMERIC_PREFERENCE_LIMITS = {
   cycleIntervalMs: { min: 500, max: 60000, step: 100 },
+  audienceCount: { min: 1, max: 100, step: 1 },
   baselineMs: { min: 0, max: 60000, step: 100 },
   historyMaxCount: { min: 1, max: 256, step: 1 },
   historyMaxAgeMs: { min: 1000, max: 3600000, step: 1000 },
@@ -123,6 +130,10 @@ export function validatePreferences(value: unknown): SessionPreferences {
   if (
     Object.keys(record).some((key) => !Object.hasOwn(DEFAULT_PREFERENCES, key)) ||
     !validNumericPreference('cycleIntervalMs', record.cycleIntervalMs) ||
+    (record.audienceCount !== undefined &&
+      !validNumericPreference('audienceCount', record.audienceCount)) ||
+    (record.chatActivity !== undefined &&
+      !['quiet', 'normal', 'busy'].includes(record.chatActivity as string)) ||
     (record.baselineMs !== undefined && !validNumericPreference('baselineMs', record.baselineMs)) ||
     (record.historyMaxCount !== undefined &&
       !validNumericPreference('historyMaxCount', record.historyMaxCount)) ||

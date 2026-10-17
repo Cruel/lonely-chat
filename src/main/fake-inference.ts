@@ -1,4 +1,5 @@
 import type { ScheduledChat } from './chat-scheduler';
+import { CHAT_ACTIVITY_LIMITS, type ChatActivity } from '../shared/audience-contract';
 import type { VideoFrame } from '../shared/video-contract';
 import type {
   CapturedObservation,
@@ -17,6 +18,7 @@ export interface InferenceInput {
   readonly videoWindow?: { fromMs: number; throughMs: number; truncated: boolean };
   readonly recentChat?: readonly { author: string; text: string; presentedAt: number }[];
   readonly roster?: readonly { author: string; color: string }[];
+  readonly chatActivity?: ChatActivity;
   readonly boundary?: {
     fromSequence: number;
     throughSequence: number;
@@ -28,6 +30,11 @@ export interface InferenceInput {
 export interface InferenceProvider {
   generate(input: InferenceInput, signal: AbortSignal): Promise<unknown>;
   prepare?(signal: AbortSignal): Promise<void>;
+  generateRoster?(
+    count: number,
+    excluded: readonly string[],
+    signal: AbortSignal,
+  ): Promise<string[]>;
   stop?(): Promise<void> | void;
 }
 
@@ -39,28 +46,54 @@ export const AUDIENCE = [
 
 /** No hardware or model needed. Stable fixture output for a given cycle and context. */
 export class FakeInference implements InferenceProvider {
-  async generate({ context, cycle }: InferenceInput, _signal: AbortSignal): Promise<unknown> {
+  async generateRoster(
+    count: number,
+    excluded: readonly string[],
+    _signal: AbortSignal,
+  ): Promise<string[]> {
+    const taken = new Set(excluded.map((value) => value.toLowerCase()));
+    const names: string[] = [];
+    for (let index = 1; names.length < count; index++) {
+      const name = index <= AUDIENCE.length ? AUDIENCE[index - 1].author : `viewer_${index}`;
+      if (!taken.has(name.toLowerCase())) names.push(name);
+    }
+    return names;
+  }
+
+  async generate(
+    { context, cycle, roster = AUDIENCE, chatActivity = 'normal' }: InferenceInput,
+    _signal: AbortSignal,
+  ): Promise<unknown> {
     const subject = context.replace(/\s+/g, ' ').slice(0, 90);
     const messages: ScheduledChat[] = [
       {
-        ...AUDIENCE[(cycle - 1) % AUDIENCE.length],
+        ...roster[(cycle - 1) % roster.length],
         text: cycle === 1 ? `Chat is watching: ${subject}` : `Still following: ${subject}`,
         offsetMs: 0,
       },
       {
-        ...AUDIENCE[cycle % AUDIENCE.length],
+        ...roster[cycle % roster.length],
         text: cycle % 2 === 0 ? 'Did you see that?' : "I'm here for this!",
         offsetMs: 900,
       },
       {
-        ...AUDIENCE[(cycle + 1) % AUDIENCE.length],
+        ...roster[(cycle + 1) % roster.length],
         text: 'What happens next?',
         offsetMs: 2100,
       },
     ];
+    if (chatActivity === 'busy') {
+      for (let index = 3; index < CHAT_ACTIVITY_LIMITS.busy; index++) {
+        messages.push({
+          ...roster[(cycle + index) % roster.length],
+          text: `Following along (${index + 1})`,
+          offsetMs: index * 400,
+        });
+      }
+    }
     return {
       events: cycle === 1 ? [{ kind: 'context', summary: subject, ageMs: 0 }] : [],
-      messages,
+      messages: messages.slice(0, CHAT_ACTIVITY_LIMITS[chatActivity]),
     };
   }
 }

@@ -22,6 +22,7 @@ export interface ChatAppend {
 export type ChatEvent = ChatSnapshot | ChatAppend;
 
 import type { InferenceMode, SessionPreferences, SessionSnapshot } from './session-contract';
+import type { AudienceSnapshot } from './audience-contract';
 import type { VideoFrame, VideoSource } from './video-contract';
 import type { AudioInputConfiguration, AudioSegment, AudioStatus } from './audio-contract';
 import type { ModelDiscoveryResult, ModelRole } from './model-contract';
@@ -37,6 +38,8 @@ export interface DesktopInvocations {
   'session:stop': SessionSnapshot;
   'preferences:get': SessionPreferences;
   'preferences:set': SessionPreferences;
+  'audience:get': AudienceSnapshot;
+  'audience:regenerate': AudienceSnapshot;
   'models:discover': ModelDiscoveryResult;
   'models:snapshot': ModelManagerSnapshot;
   'models:install': ModelManagerSnapshot;
@@ -69,6 +72,8 @@ export interface DesktopArguments {
   'session:stop': [];
   'preferences:get': [];
   'preferences:set': [preferences: SessionPreferences];
+  'audience:get': [];
+  'audience:regenerate': [mode: InferenceMode];
   'models:discover': [source: string];
   'models:snapshot': [];
   'models:install': [selection: ModelInstallRequest];
@@ -102,6 +107,9 @@ export interface DesktopAPI {
   stopSession(): Promise<SessionSnapshot>;
   getPreferences(): Promise<SessionPreferences>;
   setPreferences(preferences: SessionPreferences): Promise<SessionPreferences>;
+  getAudience(): Promise<AudienceSnapshot>;
+  regenerateAudience(mode: InferenceMode): Promise<AudienceSnapshot>;
+  onAudienceChange(listener: (snapshot: AudienceSnapshot) => void): () => void;
   discoverModels(source: string): Promise<ModelDiscoveryResult>;
   getModelsSnapshot(): Promise<ModelManagerSnapshot>;
   onModelsChange(listener: (snapshot: ModelManagerSnapshot) => void): () => void;

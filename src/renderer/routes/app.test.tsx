@@ -18,6 +18,21 @@ const emptyModels: ModelManagerSnapshot = {
   progress: { phase: 'idle', file: null, receivedBytes: 0, totalBytes: null },
 };
 const modelsAPI = {
+  getAudience: async () => ({
+    revision: 0,
+    phase: 'ready' as const,
+    members: [],
+    targetCount: 3,
+    error: null,
+  }),
+  regenerateAudience: async () => ({
+    revision: 1,
+    phase: 'ready' as const,
+    members: [{ author: 'viewer_one', color: '#bba5ff' }],
+    targetCount: 3,
+    error: null,
+  }),
+  onAudienceChange: () => () => {},
   getModelsSnapshot: async () => emptyModels,
   onModelsChange: () => () => {},
   installModel: async () => emptyModels,
@@ -165,6 +180,15 @@ it('starts and stops manual-context simulation, shows status and only saves pref
   expect(screen.getByRole('button', { name: 'Simulation' }).getAttribute('aria-current')).toBe(
     'page',
   );
+  fireEvent.click(screen.getByRole('button', { name: 'Audience' }));
+  const activity = screen.getByRole('combobox', { name: 'Chat activity' });
+  await user.click(activity);
+  await user.click(await screen.findByRole('option', { name: 'Busy (up to 8 per cycle)' }));
+  await waitFor(() =>
+    expect(setPreferences).toHaveBeenCalledWith(expect.objectContaining({ chatActivity: 'busy' })),
+  );
+  await user.click(screen.getByRole('button', { name: /Regenerate roster/ }));
+  expect(await screen.findByText('viewer_one')).toBeTruthy();
 });
 
 it('navigates across all categories without losing the session or private draft context', async () => {

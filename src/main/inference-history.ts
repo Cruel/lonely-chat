@@ -88,6 +88,7 @@ export class InferenceHistory {
     now: number,
     playbackWindowMs: number,
     chat: readonly ChatMessage[],
+    roster: readonly { author: string; color: string }[] = AUDIENCE,
   ): CycleInput {
     this.prune(now);
     const boundary: InferenceBoundary = {
@@ -122,7 +123,7 @@ export class InferenceHistory {
         text: item.text,
         presentedAt: item.presentedAt,
       })),
-      roster: AUDIENCE.map((item) => ({ ...item })),
+      roster: roster.map((item) => ({ ...item })),
     };
   }
 

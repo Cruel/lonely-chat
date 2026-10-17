@@ -3,6 +3,8 @@ import { ChatScheduler, systemClock, type TimerClock } from './chat-scheduler';
 import { FakeInference, parseInferenceResult, type InferenceProvider } from './fake-inference';
 import { InferenceHistory, type CycleInput } from './inference-history';
 import { VideoFrameBuffer } from './video-frame-buffer';
+import type { AudienceService } from './audience-service';
+import { CHAT_ACTIVITY_LIMITS } from '../shared/audience-contract';
 import type { VideoFrame } from '../shared/video-contract';
 import {
   DEFAULT_PREFERENCES,
@@ -60,6 +62,7 @@ export class SessionController {
       | SessionPreferences
       | Pick<SessionPreferences, 'cycleIntervalMs'> = DEFAULT_PREFERENCES,
     private readonly nativeInference?: InferenceProvider,
+    private readonly audience?: AudienceService,
   ) {
     this.chat = chat;
     this.activeInference = inference;
@@ -78,7 +81,14 @@ export class SessionController {
   }
 
   setPreferences(value: unknown): SessionPreferences {
-    this.preferences = validatePreferences(value);
+    const next = validatePreferences(value);
+    if (
+      next.audienceCount !== this.preferences.audienceCount &&
+      (this.state.phase === 'starting' || this.state.phase === 'running')
+    ) {
+      throw new Error('Stop the simulation before resizing the audience.');
+    }
+    this.preferences = next;
     this.history.configure(this.preferences, this.clock.wallNow());
     this.video.configure(this.preferences, this.clock.wallNow());
     this.setState({
@@ -184,6 +194,11 @@ export class SessionController {
     await this.shutdownPromise;
   }
 
+  /** Wait for asynchronous native worker cleanup before any manual model action. */
+  async awaitShutdown(): Promise<void> {
+    await this.shutdownPromise;
+  }
+
   private active(epoch: number): boolean {
     return (
       epoch === this.epoch && (this.state.phase === 'running' || this.state.phase === 'starting')
@@ -209,10 +224,18 @@ export class SessionController {
       .messages.filter(
         (message) => Number(message.id.slice('chat-'.length)) > this.chatStartSequence,
       );
-    const snapshot = this.history.snapshot(this.context, cycle, now, this.playbackWindow(), chat);
+    const snapshot = this.history.snapshot(
+      this.context,
+      cycle,
+      now,
+      this.playbackWindow(),
+      chat,
+      this.audience?.snapshot().members,
+    );
     const media = this.video.sample(snapshot.boundary.fromMs, now, cycle === 1);
     const input: CycleInput = {
       ...snapshot,
+      chatActivity: this.preferences.chatActivity,
       frames: media.frames,
       videoWindow: { fromMs: media.fromMs, throughMs: media.throughMs, truncated: media.truncated },
     };
@@ -233,20 +256,37 @@ export class SessionController {
     this.abort = abort;
     const provider = this.activeInference;
     let inferenceStarted = this.clock.now();
+    let effectiveInput = input;
     void Promise.resolve()
       .then(async () => {
         // A prior asynchronous stop must finish before this worker is reused.
         await this.shutdownPromise;
         if (!this.active(epoch) || abort.signal.aborted) return undefined;
+        if (this.audience) {
+          await this.audience.ensure(provider, abort.signal);
+          effectiveInput = { ...input, roster: this.audience.snapshot().members };
+        }
+        if (!this.active(epoch) || abort.signal.aborted) return undefined;
         await provider.prepare?.(abort.signal);
         if (!this.active(epoch) || abort.signal.aborted) return undefined;
         if (this.state.phase === 'starting') this.setState({ phase: 'running' });
         inferenceStarted = this.clock.now();
-        return provider.generate(input, abort.signal);
+        return provider.generate(effectiveInput, abort.signal);
       })
       .then((raw) => {
         if (!this.active(epoch) || abort.signal.aborted) return;
         const result = parseInferenceResult(raw, input.boundary.throughMs);
+        if (
+          this.audience &&
+          result.messages.length > CHAT_ACTIVITY_LIMITS[effectiveInput.chatActivity ?? 'normal']
+        ) {
+          throw new Error(
+            'Inference generated more messages than the configured chat activity allows.',
+          );
+        }
+        const resolved = this.audience
+          ? this.audience.resolve(result.messages, effectiveInput.recentChat ?? [])
+          : result.messages;
         // All validation precedes every state change, history acknowledgement and playback.
         const duration = Math.max(0, this.clock.now() - inferenceStarted);
         this.smoothedMs =
@@ -269,11 +309,11 @@ export class SessionController {
         // deterministic fixture offsets as-is to keep the playback/scheduler test surface.
         const messages =
           this.state.mode === 'native'
-            ? result.messages.map((item) => ({
+            ? resolved.map((item) => ({
                 ...item,
                 offsetMs: Math.min(item.offsetMs, windowMs),
               }))
-            : result.messages;
+            : resolved;
         this.scheduler.enqueue(messages, this.clock.now());
         this.abort = null;
         const delayMs = Math.max(

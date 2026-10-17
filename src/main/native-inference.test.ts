@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { spawn } from 'node:child_process';
 import { NativeInference, extractNativeChat, nativeChatRequest } from './native-inference';
+import { AUTHOR_PLACEHOLDER } from '../shared/audience-contract';
 import { parseInferenceResult } from './fake-inference';
 import { bundledLlamaServer } from './native-runtime-path';
 
@@ -27,6 +28,10 @@ const server = createServer(async (request, response) => {
   let body='';
   for await (const chunk of request) body += chunk;
   const parsed = JSON.parse(body);
+  if (parsed.messages[0].content.startsWith('Generate distinct')) {
+    response.end(JSON.stringify({choices:[{finish_reason:'stop', message:{content:JSON.stringify({names:['TestFox','TestCat']})}}]}));
+    return;
+  }
   if (parsed.response_format?.type !== 'json_object' || parsed.messages[1].content.indexOf('campfire') < 0) {
     response.writeHead(400);
     response.end(JSON.stringify({error:'invalid structured request'}));
@@ -109,6 +114,60 @@ describe('native llama.cpp adapter', () => {
     ).toThrow(/invalid event/);
   });
 
+  it('uses dynamic roster grammar and resolves placeholders while preferring names outside recent history', () => {
+    const roster = [
+      { author: 'ChatFox', color: '#123456' },
+      { author: 'ChatCat', color: '#abcdef' },
+    ];
+    const prompt = nativeChatRequest({
+      context: 'campfire',
+      cycle: 2,
+      roster,
+      chatActivity: 'quiet',
+      recentChat: [{ author: 'ChatFox', text: 'first', presentedAt: 123 }],
+    });
+    expect(prompt.response_format.schema.properties.messages.maxItems).toBe(2);
+    expect(prompt.response_format.schema.properties.messages.items.properties.author.enum).toEqual([
+      'ChatFox',
+      'ChatCat',
+      AUTHOR_PLACEHOLDER,
+    ]);
+    const payload = {
+      choices: [
+        {
+          finish_reason: 'stop',
+          message: {
+            content: JSON.stringify({
+              events: [],
+              messages: [{ author: AUTHOR_PLACEHOLDER, text: 'hello', offsetMs: 0 }],
+            }),
+          },
+        },
+      ],
+    };
+    expect(extractNativeChat(payload, roster, [{ author: 'ChatFox' }])).toMatchObject({
+      messages: [{ author: 'ChatCat', color: '#abcdef' }],
+    });
+    expect(() =>
+      extractNativeChat(
+        {
+          choices: [
+            {
+              finish_reason: 'stop',
+              message: {
+                content: JSON.stringify({
+                  events: [],
+                  messages: [{ author: 'unknown', text: 'bad', offsetMs: 0 }],
+                }),
+              },
+            },
+          ],
+        },
+        roster,
+      ),
+    ).toThrow(/outside the configured roster/);
+  });
+
   it('starts a private server, awaits health, authorizes completion and stops the process', async () => {
     let launchedArgs: string[] = [];
     const provider = new NativeInference({
@@ -129,6 +188,9 @@ describe('native llama.cpp adapter', () => {
       },
     });
     providers.push(provider);
+    expect(
+      await provider.generateRoster(2, ['ExcludedName'], new AbortController().signal),
+    ).toEqual(['TestFox', 'TestCat']);
     const result = await provider.generate(
       { context: 'campfire', cycle: 1 },
       new AbortController().signal,
