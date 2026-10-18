@@ -386,6 +386,79 @@ it('navigates across all categories without losing the session or private draft 
   expect(startSession).toHaveBeenCalledTimes(1);
 });
 
+it('preserves Freeform drafts, completed responses and in-flight results across Speech tab switches', async () => {
+  let finish!: (result: import('../../shared/playground-contract').FreeformResult) => void;
+  const run = vi.fn(
+    (_request: import('../../shared/playground-contract').FreeformRequest) =>
+      new Promise<import('../../shared/playground-contract').FreeformResult>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  window.lonelyChat = {
+    ...modelsAPI,
+    getModelsSnapshot: async () => ({
+      ...emptyModels,
+      installations: [
+        {
+          id: 'model-a',
+          repo: 'test/model',
+          revision: '1',
+          candidateId: 'model.gguf',
+          projectorId: null,
+          role: 'vision-language' as const,
+          files: [],
+          installedAt: 0,
+        },
+      ],
+      active: { 'vision-language': 'model-a', 'speech-to-text': null },
+    }),
+    runFreeform: run,
+    getOverlayUrl: async () => null,
+    getChatSnapshot: async () => ({ type: 'snapshot', sequence: 0, messages: [] }),
+    onChatEvent: () => () => {},
+    publishSample: async () => {},
+    getSessionSnapshot: async () => ({ ...emptyStatus }),
+    onSessionChange: () => () => {},
+    startSession: async () => ({ ...emptyStatus }),
+    stopSession: async () => ({ ...emptyStatus }),
+    getPreferences: async () => DEFAULT_PREFERENCES,
+    setPreferences: async (value) => value,
+    discoverModels: async () => {
+      throw new Error('Unused');
+    },
+  } satisfies DesktopAPI;
+  render(<DesktopPage />);
+  fireEvent.click(screen.getByRole('button', { name: 'Playground' }));
+  await waitFor(() =>
+    expect(screen.getByRole('combobox', { name: 'Installed model' }).textContent).toContain(
+      'test/model',
+    ),
+  );
+  fireEvent.change(screen.getByLabelText('User prompt'), {
+    target: { value: 'Retain this prompt' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Run freeform' }));
+  await waitFor(() => expect(run).toHaveBeenCalledOnce());
+  fireEvent.click(screen.getByRole('button', { name: 'Speech testing' }));
+  expect(screen.getByRole('region', { name: 'Speech Playground' })).toBeTruthy();
+  finish({
+    modelId: 'model-a',
+    request: run.mock.calls[0][0],
+    effectiveSeed: 3,
+    startedAt: '2026-10-18T09:00:00.000Z',
+    durationMs: 10,
+    finishReason: 'stop',
+    content: 'Completed while Speech was open',
+    usage: null,
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Freeform inference' }));
+  expect(screen.getByLabelText('User prompt')).toHaveProperty('value', 'Retain this prompt');
+  expect(await screen.findByText('Completed while Speech was open')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Speech testing' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Freeform inference' }));
+  expect(screen.getByText('Completed while Speech was open')).toBeTruthy();
+});
+
 it('shows an unavailable overlay and lets Settings recover with a custom port', async () => {
   const initial = {
     port: 18080,

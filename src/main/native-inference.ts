@@ -16,6 +16,7 @@ import { createServer } from 'node:net';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { AUDIENCE, type InferenceInput, type InferenceProvider } from './fake-inference';
+import { PrivateInferenceError } from './private-inference-error';
 import {
   AUTHOR_PLACEHOLDER,
   CHAT_ACTIVITY_LIMITS,
@@ -750,8 +751,10 @@ export class NativeInference implements InferenceProvider {
       );
       const body = await readBounded(response);
       if (!response.ok) {
-        const detail = JSON.stringify(body).slice(0, 500);
-        throw new Error(`llama.cpp inference failed (HTTP ${response.status}): ${detail}`);
+        throw new PrivateInferenceError(
+          `llama.cpp inference failed (HTTP ${response.status}). Enable private diagnostics to inspect the response.`,
+          { httpStatus: response.status, responseBody: body },
+        );
       }
       if (signal.aborted || this.lifecycle.signal.aborted)
         throw new Error('Native inference cancelled.');

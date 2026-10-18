@@ -35,6 +35,7 @@ export class SpeechPlaygroundService {
   private generation = 0;
   private nextSegment = 0;
   private retiring: Promise<void> = Promise.resolve();
+  private failedStartupReleased = false;
 
   constructor(
     private readonly newWorker: () => SpeechWorker,
@@ -43,7 +44,7 @@ export class SpeechPlaygroundService {
   ) {}
 
   get busy(): boolean {
-    return this.state.phase !== 'idle';
+    return this.state.phase !== 'idle' && !this.failedStartupReleased;
   }
 
   snapshot(): SpeechTestSnapshot {
@@ -67,6 +68,7 @@ export class SpeechPlaygroundService {
     if (!this.canStart())
       throw new Error('Stop Simulation and other model operations before testing speech.');
     const generation = ++this.generation;
+    this.failedStartupReleased = false;
     this.resampler = new MonoResampler(request.sampleRate);
     this.segmenter = new SpeechSegmenter();
     this.wholeFile = [];
@@ -99,8 +101,15 @@ export class SpeechPlaygroundService {
       return this.snapshot();
     } catch (error) {
       if (generation === this.generation) {
-        this.patch({ phase: 'error', error: errorText(error) });
         await this.retireWorker();
+        // A failed initial load does not own a worker. Preserve the error for
+        // the workspace, but permit model activation and another Start.
+        this.resampler = null;
+        this.segmenter = null;
+        this.wholeFile = [];
+        this.wholeSamples = 0;
+        this.failedStartupReleased = true;
+        this.patch({ phase: 'error', error: errorText(error) });
       }
       throw error;
     }
@@ -242,6 +251,7 @@ export class SpeechPlaygroundService {
   /** Stop releases capture/resampler buffers immediately; late worker results cannot repopulate history. */
   async stop(): Promise<SpeechTestSnapshot> {
     ++this.generation;
+    this.failedStartupReleased = false;
     this.resampler = null;
     this.segmenter?.reset();
     this.segmenter = null;

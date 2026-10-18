@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { NativeInference, extractNativeChat, nativeChatRequest } from './native-inference';
+import { PrivateInferenceError } from './private-inference-error';
 import { AUTHOR_PLACEHOLDER } from '../shared/audience-contract';
 import { DEFAULT_PREFERENCES } from '../shared/session-contract';
 import { parseInferenceResult } from './fake-inference';
@@ -225,9 +226,16 @@ describe('native llama.cpp adapter', () => {
     expect(result.durationMs).toBeGreaterThanOrEqual(0);
     // Server checks exact fields. A rejected HTTP request remains a visible error
     // and does not permanently poison the worker; a second request can succeed.
-    await expect(
-      provider.completeFreeform({ ...request, topK: 30 }, new AbortController().signal),
-    ).rejects.toThrow(/HTTP 422/);
+    const rejected = await provider
+      .completeFreeform({ ...request, topK: 30 }, new AbortController().signal)
+      .catch((error: unknown) => error);
+    expect(rejected).toBeInstanceOf(PrivateInferenceError);
+    expect((rejected as PrivateInferenceError).message).toContain('HTTP 422');
+    expect((rejected as PrivateInferenceError).message).not.toContain('incorrect Freeform fields');
+    expect((rejected as PrivateInferenceError).diagnosticDetails).toMatchObject({
+      httpStatus: 422,
+      responseBody: { error: 'incorrect Freeform fields' },
+    });
     expect((await provider.completeFreeform(request, new AbortController().signal)).content).toBe(
       'An original haiku',
     );

@@ -5,6 +5,7 @@ import { ChatScheduler, systemClock, type TimerClock } from './chat-scheduler';
 import { FakeInference, parseInferenceResult, type InferenceProvider } from './fake-inference';
 import { InferenceHistory, type CycleInput } from './inference-history';
 import { VideoFrameBuffer } from './video-frame-buffer';
+import { PrivateInferenceError } from './private-inference-error';
 import { chooseWorkload, type ResourceMeasurements } from './resource-policy';
 import type { AudienceService } from './audience-service';
 import { CHAT_ACTIVITY_LIMITS } from '../shared/audience-contract';
@@ -542,7 +543,11 @@ export class SessionController {
         this.diagnostics?.record(
           effectiveInput,
           Math.max(0, this.clock.now() - inferenceStarted),
-          receivedOutput ? { error: message, rawOutput } : { error: message },
+          receivedOutput
+            ? { error: message, rawOutput }
+            : error instanceof PrivateInferenceError
+              ? { error: message, privateProviderResponse: error.diagnosticDetails }
+              : { error: message },
           diagnosticToken,
         );
         const logEntry = `${new Date().toISOString()} · cycle ${input.cycle}, attempt ${attempt}: ${message}`;

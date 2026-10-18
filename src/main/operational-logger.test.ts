@@ -1,7 +1,8 @@
 import { mkdtemp, readFile, readdir, rm, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { PrivateInferenceError } from './private-inference-error';
 import { OperationalLogger } from './operational-logger';
 
 const roots: string[] = [];
@@ -54,6 +55,58 @@ describe('operational logger', () => {
     expect(JSON.stringify(entry)).not.toMatch(/verysecret|abc123|secret-token|sensitive/);
     expect(entry.context).toEqual({ backend: 'cuda', cycle: 2 });
     await logger.close();
+  });
+
+  it('never persists model responses, echoed prompts or untrusted field names in provider errors', async () => {
+    const { root, logger } = await setup();
+    const secret = 'PRIVATE_TRANSCRIPT_DO_NOT_PERSIST_3490';
+    logger.error(
+      'session',
+      'Inference attempt failed',
+      new Error(`Inference returned unexpected fields: ["${secret}"]`),
+    );
+    logger.error(
+      'llama.cpp',
+      'Inference worker failed',
+      new PrivateInferenceError('llama.cpp inference failed (HTTP 422).', { raw: secret }),
+    );
+    logger.error('whisper', 'Speech worker failed', new Error(`Worker failed: ${secret}`));
+    await logger.open();
+    await logger.flush();
+    const entries = logger.snapshot().entries;
+    expect(entries[0].error?.message).toContain('validation');
+    expect(entries[1].error?.message).toContain('HTTP 422');
+    expect(JSON.stringify(entries)).not.toContain(secret);
+    const directory = path.join(root, 'operational-logs');
+    const contents = await Promise.all(
+      (await readdir(directory))
+        .filter((name) => name.endsWith('.jsonl'))
+        .map((name) => readFile(path.join(directory, name), 'utf8')),
+    );
+    expect(contents.join('')).not.toContain(secret);
+    await logger.close();
+  });
+
+  it('expires a quiet live session without another log write, keeping memory and disk capped', async () => {
+    vi.useFakeTimers();
+    try {
+      const start = new Date('2026-10-01T00:00:00.000Z');
+      vi.setSystemTime(start);
+      const { root, logger } = await setup();
+      await logger.open();
+      await logger.configure({ ageDays: 1, maxMiB: 5 });
+      logger.info('application', 'low volume entry');
+      await logger.flush();
+      const directory = path.join(root, 'operational-logs');
+      expect((await readdir(directory)).some((name) => name.endsWith('.jsonl'))).toBe(true);
+      await vi.advanceTimersByTimeAsync(2 * 86400_000);
+      await logger.flush();
+      expect(logger.snapshot().entries).toEqual([]);
+      expect((await readdir(directory)).filter((name) => name.endsWith('.jsonl'))).toEqual([]);
+      await logger.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('rotates with configured size caps, discards old files and validates limits', async () => {

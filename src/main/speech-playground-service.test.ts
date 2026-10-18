@@ -144,6 +144,38 @@ describe('isolated speech Playground', () => {
     expect(service.snapshot().phase).toBe('idle');
   });
 
+  it('releases a failed startup so the user can activate a model and immediately retry', async () => {
+    let available = false;
+    let activated = false;
+    const workers = [fakeWorker(), fakeWorker()];
+    workers[0].start.mockRejectedValue(new Error('No speech model is activated.'));
+    const service = new SpeechPlaygroundService(
+      () => workers.shift()!,
+      () => available,
+    );
+    const config = {
+      mode: 'whole-file' as const,
+      sourceId: 'file',
+      label: 'Video',
+      sampleRate: 16000,
+    };
+    available = true;
+    await expect(service.start(config)).rejects.toThrow(/No speech model/);
+    expect(service.snapshot()).toMatchObject({
+      phase: 'error',
+      error: 'No speech model is activated.',
+    });
+    expect(service.busy).toBe(false);
+    expect(workers).toHaveLength(1);
+    // This is the same model-operation gate used by activation and Simulation.
+    if (!service.busy) activated = true;
+    expect(activated).toBe(true);
+    await service.start(config);
+    expect(service.busy).toBe(true);
+    expect(service.snapshot().phase).toBe('ready');
+    await service.stop();
+  });
+
   it('throttles accelerated file PCM instead of dropping speech while Whisper is busy', async () => {
     const finishers: Array<(text: string) => void> = [];
     const worker = fakeWorker(

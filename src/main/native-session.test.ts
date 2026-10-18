@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ChatService } from './chat-service';
 import { DiagnosticCapture } from './diagnostic-capture';
+import { PrivateInferenceError } from './private-inference-error';
 import { SessionController } from './session-controller';
 import type { InferenceProvider } from './fake-inference';
 import { FakeClock, flushMicrotasks } from './test-support/fake-clock';
@@ -90,6 +91,39 @@ describe('native session integration', () => {
       rawOutput: rejected,
     });
     expect(chat.snapshot().messages).toEqual([]);
+    session.stop();
+  });
+
+  it('retains private HTTP bodies only when opted into diagnostic capture', async () => {
+    const diagnostics = new DiagnosticCapture();
+    diagnostics.configure(true);
+    const clock = new FakeClock();
+    const secret = 'PRIVATE_SERVER_ECHO_3429';
+    const session = new SessionController(
+      new ChatService(),
+      undefined,
+      clock,
+      undefined,
+      {
+        generate: async () => {
+          throw new PrivateInferenceError(
+            'llama.cpp inference failed (HTTP 422). Enable private diagnostics to inspect the response.',
+            { httpStatus: 422, responseBody: { error: secret } },
+          );
+        },
+      },
+      undefined,
+      diagnostics,
+    );
+    session.start('secret manual prompt', 'native');
+    await flushMicrotasks();
+    expect(session.snapshot().warning).toContain('HTTP 422');
+    expect(JSON.parse(diagnostics.export()).samples[0].result).toEqual({
+      error: expect.stringContaining('HTTP 422'),
+      privateProviderResponse: { httpStatus: 422, responseBody: { error: secret } },
+    });
+    diagnostics.configure(false);
+    expect(diagnostics.status().samples).toBe(0);
     session.stop();
   });
 

@@ -85,6 +85,76 @@ it('retains STT completed during switching and stops all producers through the d
   await audio.terminate();
 });
 
+it('continues accepting recorded frames through retry exhaustion and manual Retry using the IPC media boundary', async () => {
+  const clock = new FakeClock();
+  const inputs: InferenceInput[] = [];
+  let fail = true;
+  const provider: InferenceProvider = {
+    generate: async (input) => {
+      inputs.push(input);
+      if (fail) throw new Error('temporary llama failure');
+      return {
+        events: [],
+        messages: [{ author: 'viewer', color: '#ffffff', text: 'recovered', offsetMs: 0 }],
+      };
+    },
+  };
+  const chat = new ChatService();
+  const session = new SessionController(chat, undefined, clock, undefined, provider);
+  const audio = new AudioService(
+    () =>
+      ({
+        start: async () => {},
+        stop: () => {},
+        transcribe: async () => '',
+      }) as unknown as NativeSpeech,
+    () => {},
+  );
+  const media = new SessionMedia(session, audio, () => {});
+  session.selectVideoSource('recorded:video');
+  session.start('recorded playback', 'native', 'model', {
+    inputMode: 'recorded',
+    publishToOverlay: false,
+    hasVideoFile: true,
+  });
+  const frame = (at: number) =>
+    media.recordVideoFrame({
+      sourceId: 'recorded:video',
+      observedAt: at,
+      mediaTimeMs: at - 1700000000000,
+      width: 2,
+      height: 2,
+      dataUrl: 'data:image/jpeg;base64,/9j/',
+    });
+  frame(clock.wallNow());
+  await flushMicrotasks();
+  clock.advance(500);
+  await flushMicrotasks();
+  clock.advance(1000);
+  await flushMicrotasks();
+  expect(session.snapshot().phase).toBe('error');
+  // Frames from the recorded producer are still accepted by the same video:frame delegate.
+  frame(clock.wallNow());
+  expect(() =>
+    media.recordVideoFrame({
+      sourceId: 'camera:stale',
+      observedAt: clock.wallNow(),
+      width: 2,
+      height: 2,
+      dataUrl: 'data:image/jpeg;base64,/9j/',
+    }),
+  ).not.toThrow();
+  fail = false;
+  session.retry();
+  await flushMicrotasks();
+  expect(inputs.at(-1)?.frames?.length).toBeGreaterThan(0);
+  expect(chat.snapshot().messages.some((message) => message.text === 'recovered')).toBe(true);
+  expect(chat.publicSnapshot().messages).toEqual([]);
+  media.stop();
+  await session.terminate();
+  await audio.terminate();
+});
+
 it('retiring a failed recorded decoder stops audio and renderer capture while retaining the visible error', async () => {
   const clock = new FakeClock();
   const session = new SessionController(new ChatService(), undefined, clock);

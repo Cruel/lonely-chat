@@ -483,18 +483,8 @@ function registerHandlers(): void {
       }
       return observationNow();
     },
-    'video:frame': (frame: import('../shared/video-contract').VideoFrame) => {
-      const state = session.snapshot();
-      if (
-        state.inputMode === 'recorded' &&
-        ['starting', 'running', 'switching'].includes(state.phase)
-      ) {
-        if (frame.sourceId !== 'recorded:video') return; // Retiring live capture may still have an in-flight frame.
-      } else if (frame.sourceId === 'recorded:video') {
-        throw new Error('Recorded frames require an active recorded simulation.');
-      }
-      session.recordVideoFrame(frame);
-    },
+    'video:frame': (frame: import('../shared/video-contract').VideoFrame) =>
+      sessionMedia!.recordVideoFrame(frame),
     'audio:configuration:get': () => audioConfig.read(),
     'audio:configuration:set': (
       inputs: import('../shared/audio-contract').AudioInputConfiguration[],

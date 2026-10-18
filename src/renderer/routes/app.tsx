@@ -264,9 +264,10 @@ export function DesktopPage() {
                 Speech testing
               </Button>
             </div>
-            {playgroundTab === 'freeform' ? (
+            <div hidden={playgroundTab !== 'freeform'}>
               <FreeformPlayground simulationActive={running || session.busy || audience.busy} />
-            ) : (
+            </div>
+            {playgroundTab === 'speech' && (
               <SpeechPlayground simulationActive={running || session.busy || audience.busy} />
             )}
           </div>

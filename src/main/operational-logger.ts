@@ -33,6 +33,8 @@ const RUN_MARKER = 'active-session.json';
 const MAX_MEMORY_ENTRIES = 1000;
 const MAX_ENTRY_BYTES = 16 * 1024;
 const FILE_ROTATE_BYTES = 256 * 1024;
+const FILE_ROTATE_MS = 60 * 60 * 1000;
+const MAINTENANCE_MS = 60 * 60 * 1000;
 const SAFE_CONTEXT_KEYS = new Set([
   'backend',
   'phase',
@@ -45,7 +47,6 @@ const SAFE_CONTEXT_KEYS = new Set([
   'modelRole',
   'sourceKind',
   'operation',
-  'reason',
 ]);
 
 /** Mask common credential forms even in Error.message, Error.stack and Error.cause. */
@@ -61,6 +62,40 @@ function redact(value: string): string {
 }
 function clean(value: string, limit = 8000): string {
   return redact(value).slice(0, limit);
+}
+/** Retain trustworthy code locations but never the untrusted first stack line. */
+function providerStack(error: unknown): string | undefined {
+  if (!(error instanceof Error) || !error.stack) return;
+  const frames = error.stack
+    .split('\n')
+    .slice(1)
+    .flatMap((line) => {
+      const frame = line.match(
+        /(?:\(|\s)(file:\/\/[^\s()]+|node:[\w/.-]+|\/[\w/.-]+|[A-Za-z]:\\[^\s()]+):(\d+):(\d+)\)?$/,
+      );
+      return frame ? [`at ${frame[1]}:${frame[2]}:${frame[3]}`] : [];
+    });
+  return frames.length ? clean(frames.slice(0, 12).join('\n'), 2500) : undefined;
+}
+
+/** Providers and model validators can echo entire private inputs in error strings. */
+function operationalProviderError(error: unknown): LogError {
+  const message = error instanceof Error ? error.message : '';
+  const http = /llama\.cpp inference failed \(HTTP (\d{3})\)/.exec(message);
+  const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+  return {
+    message: http
+      ? `Native inference returned HTTP ${http[1]}; inspect opt-in diagnostics for details.`
+      : /timed out/i.test(message)
+        ? 'Native model operation timed out.'
+        : /invalid|unexpected|parse|schema|JSON|finish_reason|validat/i.test(message)
+          ? 'Native response failed validation; inspect opt-in diagnostics for details.'
+          : 'Native operation failed; private error details omitted from operational logs.',
+    ...(providerStack(error) ? { stack: providerStack(error) } : {}),
+    ...(typeof code === 'string' && /^[A-Z_]{2,24}$/.test(code)
+      ? { cause: { message: `System error ${code}` } }
+      : {}),
+  };
 }
 function safeError(error: unknown, depth = 0): LogError {
   if (!(error instanceof Error)) return { message: clean(String(error)) };
@@ -119,8 +154,13 @@ export class OperationalLogger {
   private activeFile: string | null = null;
   private activeBytes = 0;
   private bytesSincePrune = 0;
+  private openedAt = 0;
+  private maintenance: ReturnType<typeof setInterval> | null = null;
 
-  constructor(userData: string) {
+  constructor(
+    userData: string,
+    private readonly now: () => number = Date.now,
+  ) {
     this.directory = path.join(userData, LOG_DIRECTORY);
   }
 
@@ -157,11 +197,17 @@ export class OperationalLogger {
     const filteredContext = safeContext(context);
     const entry: LogEntry = {
       id: randomUUID(),
-      timestamp: new Date().toISOString(),
+      timestamp: new Date(this.now()).toISOString(),
       level,
       source: clean(source, 64).replace(/[\r\n]+/g, ' '),
       text: clean(text, 2000).replace(/[\r\n]+/g, ' '),
-      ...(error === undefined ? {} : { error: safeError(error) }),
+      ...(error === undefined
+        ? {}
+        : {
+            error: ['session', 'llama.cpp', 'whisper', 'media'].includes(source)
+              ? operationalProviderError(error)
+              : safeError(error),
+          }),
       ...(filteredContext ? { context: filteredContext } : {}),
     };
     // Bound both individual entries and the in-memory listing.
@@ -211,7 +257,8 @@ export class OperationalLogger {
       for (const line of contents.split('\n')) {
         if (!line) continue;
         const entry = parseLine(line);
-        if (entry) history.push(entry);
+        if (entry && Date.parse(entry.timestamp) >= this.now() - this.retention.ageDays * 86400_000)
+          history.push(entry);
         if (history.length > MAX_MEMORY_ENTRIES) history.shift();
       }
     }
@@ -232,6 +279,19 @@ export class OperationalLogger {
     this.initialized = true;
     for (const entry of this.pending.splice(0)) this.enqueue(entry);
     await this.flush();
+    // Retention applies to quiet, long-running applications as well as busy ones.
+    this.maintenance = setInterval(() => {
+      this.writes = this.writes
+        .then(async () => {
+          this.activeFile = null; // Retire the previous append-only segment.
+          this.activeBytes = 0;
+          await this.prune();
+        })
+        .catch((error: unknown) => {
+          process.stderr.write('Operational logger maintenance failed: ' + String(error) + '\\n');
+        });
+    }, MAINTENANCE_MS);
+    this.maintenance.unref?.();
   }
 
   async configure(value: unknown): Promise<LogRetention> {
@@ -261,13 +321,22 @@ export class OperationalLogger {
   }
 
   private async prune(): Promise<void> {
-    const cutoff = Date.now() - this.retention.ageDays * 86400_000;
+    const cutoff = this.now() - this.retention.ageDays * 86400_000;
+    this.entries = this.entries.filter((entry) => Date.parse(entry.timestamp) >= cutoff);
     const files = [];
     let total = 0;
     for (const name of await this.logFiles()) {
       const filename = path.join(this.directory, name);
       const details = await stat(filename);
-      if (details.mtimeMs < cutoff && filename !== this.activeFile) {
+      // An external filesystem clock can disagree with the application's clock.
+      // Segment names provide a conservative upper bound on the final entry age:
+      // time-based rotation never appends after this one-hour window.
+      const stamp = /^events-(\d{4}-\d{2}-\d{2}T\d{2})-(\d{2})-(\d{2})(\.\d{3}Z)-/.exec(name);
+      const opened = stamp ? Date.parse(`${stamp[1]}:${stamp[2]}:${stamp[3]}${stamp[4]}`) : NaN;
+      const lastPossibleWrite = Number.isFinite(opened)
+        ? Math.min(details.mtimeMs, opened + FILE_ROTATE_MS)
+        : details.mtimeMs;
+      if (lastPossibleWrite < cutoff && filename !== this.activeFile) {
         await rm(filename, { force: true });
         continue;
       }
@@ -289,16 +358,22 @@ export class OperationalLogger {
     const bytes = Buffer.byteLength(payload);
     this.writes = this.writes
       .then(async () => {
-        if (!this.activeFile || this.activeBytes + bytes > FILE_ROTATE_BYTES) {
+        const writtenAt = Date.parse(entry.timestamp);
+        if (
+          !this.activeFile ||
+          this.activeBytes + bytes > FILE_ROTATE_BYTES ||
+          writtenAt - this.openedAt >= FILE_ROTATE_MS
+        ) {
           this.activeFile = path.join(
             this.directory,
             'events-' +
-              new Date().toISOString().replace(/[:]/g, '-') +
+              new Date(this.now()).toISOString().replace(/[:]/g, '-') +
               '-' +
               randomUUID() +
               '.jsonl',
           );
           this.activeBytes = 0;
+          this.openedAt = writtenAt;
           await writeFile(this.activeFile, '', { flag: 'wx', mode: 0o600 });
         }
         await appendFile(this.activeFile, payload, { mode: 0o600 });
@@ -318,6 +393,8 @@ export class OperationalLogger {
 
   async close(): Promise<void> {
     await this.open();
+    if (this.maintenance !== null) clearInterval(this.maintenance);
+    this.maintenance = null;
     this.info('application', 'Logging session finished');
     await this.flush();
     await rm(path.join(this.directory, RUN_MARKER), { force: true });
