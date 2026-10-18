@@ -84,3 +84,45 @@ it('retains STT completed during switching and stops all producers through the d
   await session.terminate();
   await audio.terminate();
 });
+
+it('retiring a failed recorded decoder stops audio and renderer capture while retaining the visible error', async () => {
+  const clock = new FakeClock();
+  const session = new SessionController(new ChatService(), undefined, clock);
+  const stopWorker = vi.fn(async () => {});
+  const audio = new AudioService(
+    () =>
+      ({
+        start: async () => {},
+        stop: stopWorker,
+        transcribe: async () => '',
+      }) as unknown as NativeSpeech,
+    () => {},
+    clock.wallNow,
+  );
+  const stopCapture = vi.fn();
+  const media = new SessionMedia(session, audio, stopCapture);
+  await audio.start('microphone', 'mic', 'Voice', 'capture');
+  session.selectVideoSource('recorded:video');
+  session.start('stream', 'fake', null, {
+    inputMode: 'recorded',
+    publishToOverlay: false,
+    hasVideoFile: true,
+  });
+  const state = media.failRecordedVideo('Unsupported codec');
+  expect(state.phase).toBe('error');
+  expect(state.error).toContain('Unsupported codec');
+  expect(stopWorker).toHaveBeenCalledOnce();
+  expect(stopCapture).toHaveBeenCalledOnce();
+  expect(audio.snapshot().sources.every((source) => source.phase === 'off')).toBe(true);
+  expect(() =>
+    session.recordVideoFrame({
+      sourceId: 'recorded:video',
+      observedAt: clock.wallNow(),
+      width: 1,
+      height: 1,
+      dataUrl: 'data:image/jpeg;base64,/9j/',
+    }),
+  ).toThrow(/inactive/);
+  await session.terminate();
+  await audio.terminate();
+});

@@ -89,4 +89,32 @@ describe('read-only loopback chat overlay', () => {
     reconnect.ws.close();
     await once(reconnect.ws, 'close');
   });
+
+  it('excludes private recorded chat from both live events and late-joining overlay snapshots', async () => {
+    const connect = async () => {
+      const socket = new WebSocket(new URL('/overlay/live', url));
+      const messages: ChatEvent[] = [];
+      socket.on('message', (raw) => messages.push(JSON.parse(raw.toString()) as ChatEvent));
+      await once(socket, 'open');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return { socket, messages };
+    };
+    const first = await connect();
+    chat.publish({ author: 'private', text: 'hidden', color: '#ffffff' }, Date.now(), false);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(first.messages).toHaveLength(1);
+    expect(chat.snapshot().messages).toHaveLength(1);
+    expect(chat.publicSnapshot().messages).toEqual([]);
+    chat.publish({ author: 'public', text: 'shown', color: '#ffffff' });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(first.messages.at(-1)).toMatchObject({ type: 'append', sequence: 1 });
+    first.socket.close();
+    await once(first.socket, 'close');
+    const second = await connect();
+    expect(second.messages[0]).toMatchObject({ type: 'snapshot', sequence: 1 });
+    if (second.messages[0].type !== 'snapshot') throw new Error('Expected snapshot');
+    expect(second.messages[0].messages.map((message) => message.text)).toEqual(['shown']);
+    second.socket.close();
+    await once(second.socket, 'close');
+  });
 });

@@ -1,5 +1,11 @@
 export type SessionPhase = 'stopped' | 'starting' | 'running' | 'switching' | 'error';
 export type InferenceMode = 'fake' | 'native';
+export interface SimulationInputOptions {
+  readonly inputMode: 'live' | 'recorded';
+  /** Recorded chat stays in desktop preview unless explicitly published. */
+  readonly publishToOverlay: boolean;
+  readonly hasVideoFile?: boolean;
+}
 export type VideoSamplingStrategy = 'uniform' | 'recent-weighted';
 export type ComputeBackend = 'auto' | 'cpu' | 'cuda' | 'vulkan' | 'metal';
 import type { ChatActivity } from './audience-contract';
@@ -35,6 +41,7 @@ export interface SessionSnapshot {
   readonly retryAttempt: number;
   readonly pendingMessages: number;
   readonly mode: InferenceMode;
+  readonly inputMode?: 'live' | 'recorded';
   /** Selected VLM installation ID, or null for fixtures/unconfigured models. */
   readonly modelId?: string | null;
   readonly events: readonly InferredEvent[];

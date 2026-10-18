@@ -58,6 +58,10 @@ export class VideoFrameBuffer {
       !this.sourceId ||
       frame.sourceId !== this.sourceId ||
       !Number.isFinite(frame.observedAt) ||
+      (frame.mediaTimeMs !== undefined &&
+        (!Number.isFinite(frame.mediaTimeMs) ||
+          frame.mediaTimeMs < 0 ||
+          frame.mediaTimeMs > 1e12)) ||
       frame.observedAt < now - this.options.videoCoverageMs - BASELINE_LOOKBACK_MS ||
       frame.observedAt > now + 1000 ||
       !Number.isSafeInteger(frame.width) ||

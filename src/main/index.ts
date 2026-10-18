@@ -290,14 +290,25 @@ function registerHandlers(): void {
     'session:start': (
       context: string,
       mode?: import('../shared/session-contract').InferenceMode,
+      options?: import('../shared/session-contract').SimulationInputOptions,
     ) => {
       if (rosterRegenerating) throw new Error('Roster regeneration is in progress.');
       if (playground.busy || speechTest.busy)
         throw new Error('Stop Playground experiments before starting Simulation.');
+      if (options?.inputMode === 'recorded') {
+        ++videoSelectionGeneration;
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('media:stop');
+        session.selectVideoSource(options.hasVideoFile ? 'recorded:video' : null);
+      } else if (options?.inputMode === 'live' || !options) {
+        // The live capture producer retains ownership of its existing source.
+      } else {
+        throw new Error('Unknown simulation media mode.');
+      }
       return session.start(
         context,
         mode,
         mode === 'native' ? installs.snapshot().active['vision-language'] : null,
+        options,
       );
     },
     'session:stop': () => stopSession(),
@@ -427,6 +438,12 @@ function registerHandlers(): void {
       await session.awaitShutdown();
       return installs.remove(id);
     },
+    'video:clock': () => observationNow(),
+    'session:media-error': (message: string) => {
+      const result = sessionMedia!.failRecordedVideo(message);
+      logger.error('media', 'Recorded video decoding failed', new Error(message));
+      return result;
+    },
     'video:list-displays': async () =>
       (await listDesktopSources()).map((source) => ({
         id: `display:${source.id}`,
@@ -434,6 +451,11 @@ function registerHandlers(): void {
         kind: source.id.startsWith('screen:') ? ('screen' as const) : ('window' as const),
       })),
     'video:select': async (sourceId: string | null) => {
+      if (
+        session.snapshot().inputMode === 'recorded' &&
+        ['starting', 'running', 'switching'].includes(session.snapshot().phase)
+      )
+        throw new Error('Live capture is disabled during a recorded simulation.');
       if (
         sourceId !== null &&
         (typeof sourceId !== 'string' ||
@@ -461,8 +483,18 @@ function registerHandlers(): void {
       }
       return observationNow();
     },
-    'video:frame': (frame: import('../shared/video-contract').VideoFrame) =>
-      session.recordVideoFrame(frame),
+    'video:frame': (frame: import('../shared/video-contract').VideoFrame) => {
+      const state = session.snapshot();
+      if (
+        state.inputMode === 'recorded' &&
+        ['starting', 'running', 'switching'].includes(state.phase)
+      ) {
+        if (frame.sourceId !== 'recorded:video') return; // Retiring live capture may still have an in-flight frame.
+      } else if (frame.sourceId === 'recorded:video') {
+        throw new Error('Recorded frames require an active recorded simulation.');
+      }
+      session.recordVideoFrame(frame);
+    },
     'audio:configuration:get': () => audioConfig.read(),
     'audio:configuration:set': (
       inputs: import('../shared/audio-contract').AudioInputConfiguration[],
@@ -520,6 +552,8 @@ function openMainWindow(): void {
       contextIsolation: true,
       nodeIntegration: false,
       webSecurity: true,
+      // Keep live and recorded video sampling independent of window visibility.
+      backgroundThrottling: false,
     },
   });
   mainWindow = window;
@@ -870,6 +904,8 @@ app.on('will-quit', () => {
   ipcMain.removeHandler('models:activate');
   ipcMain.removeHandler('models:remove');
   ipcMain.removeHandler('models:choose-directory');
+  ipcMain.removeHandler('video:clock');
+  ipcMain.removeHandler('session:media-error');
   ipcMain.removeHandler('video:list-displays');
   ipcMain.removeHandler('video:select');
   ipcMain.removeHandler('video:frame');

@@ -19,6 +19,14 @@ export class SessionMedia {
     return this.session.stop();
   }
 
+  failRecordedVideo(message: string) {
+    const state = this.session.failRecordedVideo(message);
+    this.session.selectVideoSource(null);
+    this.audio.stop();
+    this.stopRendererCapture();
+    return state;
+  }
+
   recordTranscript(entry: LabeledTranscript): void {
     if (['running', 'starting', 'switching'].includes(this.session.snapshot().phase)) {
       this.session.recordTranscript(entry);

@@ -44,12 +44,12 @@ export class OverlayServer {
     });
     sockets.on('connection', (client: WebSocket) => {
       // Subscribe before snapshot, on the same event loop turn, to prevent lost updates.
-      const unsubscribe = this.chat.subscribe((event) => {
+      const unsubscribe = this.chat.subscribePublic((event) => {
         if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify(event));
       });
       client.once('close', unsubscribe);
       client.once('error', () => client.close());
-      client.send(JSON.stringify(this.chat.snapshot()));
+      client.send(JSON.stringify(this.chat.publicSnapshot()));
     });
     try {
       await new Promise<void>((resolve, reject) => {

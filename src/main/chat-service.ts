@@ -7,24 +7,51 @@ export class ChatService {
   private sequence = 0;
   private messages: ChatMessage[] = [];
   private subscribers = new Set<(event: ChatAppend) => void>();
+  private publicSequence = 0;
+  private publicMessages: ChatMessage[] = [];
+  private publicSubscribers = new Set<(event: ChatAppend) => void>();
 
   snapshot(): ChatSnapshot {
     return { type: 'snapshot', sequence: this.sequence, messages: [...this.messages] };
   }
 
-  publish(message: Omit<ChatMessage, 'id' | 'presentedAt'>, time = Date.now()): ChatMessage {
+  /** The overlay uses a separate, gap-free sequence. Private recorded messages never enter it. */
+  publicSnapshot(): ChatSnapshot {
+    return { type: 'snapshot', sequence: this.publicSequence, messages: [...this.publicMessages] };
+  }
+
+  publish(
+    message: Omit<ChatMessage, 'id' | 'presentedAt'>,
+    time = Date.now(),
+    externally = true,
+  ): ChatMessage {
     const sequence = ++this.sequence;
     const visible: ChatMessage = { ...message, id: `chat-${sequence}`, presentedAt: time };
     this.messages.push(visible);
     if (this.messages.length > HISTORY_LIMIT) this.messages.shift();
     const event: ChatAppend = { type: 'append', sequence, message: visible };
     for (const subscriber of this.subscribers) subscriber(event);
+    if (externally) {
+      const publicEvent: ChatAppend = {
+        type: 'append',
+        sequence: ++this.publicSequence,
+        message: visible,
+      };
+      this.publicMessages.push(visible);
+      if (this.publicMessages.length > HISTORY_LIMIT) this.publicMessages.shift();
+      for (const subscriber of this.publicSubscribers) subscriber(publicEvent);
+    }
     return visible;
   }
 
   subscribe(listener: (event: ChatAppend) => void): () => void {
     this.subscribers.add(listener);
     return () => this.subscribers.delete(listener);
+  }
+
+  subscribePublic(listener: (event: ChatAppend) => void): () => void {
+    this.publicSubscribers.add(listener);
+    return () => this.publicSubscribers.delete(listener);
   }
 }
 

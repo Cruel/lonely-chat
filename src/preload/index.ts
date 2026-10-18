@@ -91,7 +91,8 @@ const api: DesktopAPI = {
     ipcRenderer.on('session:change', receive);
     return () => ipcRenderer.removeListener('session:change', receive);
   },
-  startSession: (manualContext, mode) => invoke('session:start', manualContext, mode),
+  startSession: (manualContext, mode, options) =>
+    invoke('session:start', manualContext, mode, options),
   stopSession: () => invoke('session:stop'),
   onMediaStop: (listener) => {
     const receive = () => listener();
@@ -135,6 +136,8 @@ const api: DesktopAPI = {
   activateModel: (role, id) => invoke('models:activate', role, id),
   removeModel: (id) => invoke('models:remove', id),
   chooseModelDirectory: () => invoke('models:choose-directory'),
+  getVideoClock: () => invoke('video:clock'),
+  reportRecordedVideoError: (message) => invoke('session:media-error', message),
   listDisplaySources: () => invoke('video:list-displays'),
   selectVideoSource: (sourceId) => invoke('video:select', sourceId),
   submitVideoFrame: (frame) => invoke('video:frame', frame),

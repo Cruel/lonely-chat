@@ -21,7 +21,12 @@ export interface ChatAppend {
 
 export type ChatEvent = ChatSnapshot | ChatAppend;
 
-import type { InferenceMode, SessionPreferences, SessionSnapshot } from './session-contract';
+import type {
+  InferenceMode,
+  SessionPreferences,
+  SessionSnapshot,
+  SimulationInputOptions,
+} from './session-contract';
 import type { FloatingChatSettings, FloatingChatSnapshot } from './floating-chat-contract';
 import type { WindowStatus } from './window-status-contract';
 import type { AudienceSnapshot } from './audience-contract';
@@ -78,6 +83,8 @@ export interface DesktopInvocations {
   'models:remove': ModelManagerSnapshot;
   'models:choose-directory': ModelManagerSnapshot;
   'video:list-displays': VideoSource[];
+  'video:clock': number;
+  'session:media-error': SessionSnapshot;
   'video:select': number;
   'video:frame': void;
   'audio:configuration:get': AudioInputConfiguration[];
@@ -119,7 +126,7 @@ export interface DesktopArguments {
   'window:get': [];
   'window:set-close-to-tray': [enabled: boolean];
   'session:snapshot': [];
-  'session:start': [manualContext: string, mode?: InferenceMode];
+  'session:start': [manualContext: string, mode?: InferenceMode, options?: SimulationInputOptions];
   'session:stop': [];
   'session:retry': [];
   'native:status': [];
@@ -135,6 +142,8 @@ export interface DesktopArguments {
   'models:remove': [id: string];
   'models:choose-directory': [];
   'video:list-displays': [];
+  'video:clock': [];
+  'session:media-error': [message: string];
   'video:select': [sourceId: string | null];
   'video:frame': [frame: VideoFrame];
   'audio:configuration:get': [];
@@ -182,7 +191,11 @@ export interface DesktopAPI {
   setCloseToTray(enabled: boolean): Promise<WindowStatus>;
   getSessionSnapshot(): Promise<SessionSnapshot>;
   onSessionChange(listener: (status: SessionSnapshot) => void): () => void;
-  startSession(manualContext: string, mode?: InferenceMode): Promise<SessionSnapshot>;
+  startSession(
+    manualContext: string,
+    mode?: InferenceMode,
+    options?: SimulationInputOptions,
+  ): Promise<SessionSnapshot>;
   stopSession(): Promise<SessionSnapshot>;
   onMediaStop(listener: () => void): () => void;
   retrySession(): Promise<SessionSnapshot>;
@@ -201,6 +214,8 @@ export interface DesktopAPI {
   activateModel(role: ModelRole, id: string | null): Promise<ModelManagerSnapshot>;
   removeModel(id: string): Promise<ModelManagerSnapshot>;
   chooseModelDirectory(): Promise<ModelManagerSnapshot>;
+  getVideoClock(): Promise<number>;
+  reportRecordedVideoError(message: string): Promise<SessionSnapshot>;
   listDisplaySources(): Promise<VideoSource[]>;
   /** Returns main-process observation time for aligning renderer capture timestamps. */
   selectVideoSource(sourceId: string | null): Promise<number>;

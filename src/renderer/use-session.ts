@@ -3,6 +3,7 @@ import type {
   InferenceMode,
   SessionPreferences,
   SessionSnapshot,
+  SimulationInputOptions,
 } from '../shared/session-contract';
 import { DEFAULT_PREFERENCES } from '../shared/session-contract';
 
@@ -64,8 +65,10 @@ export function useSession() {
         latest.current = next;
         setStatus(next);
       }
+      return true;
     } catch (error) {
       setActionError(error instanceof Error ? error.message : 'Unable to update session.');
+      return false;
     } finally {
       setBusy(false);
     }
@@ -90,8 +93,8 @@ export function useSession() {
     ready,
     busy,
     actionError,
-    start: (context: string, mode: InferenceMode = 'fake') =>
-      perform(() => window.lonelyChat!.startSession(context, mode)),
+    start: (context: string, mode: InferenceMode = 'fake', options?: SimulationInputOptions) =>
+      perform(() => window.lonelyChat!.startSession(context, mode, options)),
     stop: () => perform(() => window.lonelyChat!.stopSession()),
     retry: () => perform(() => window.lonelyChat!.retrySession()),
     updatePreferences,

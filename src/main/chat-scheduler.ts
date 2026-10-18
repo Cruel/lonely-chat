@@ -42,6 +42,7 @@ export class ChatScheduler {
     private readonly chat: ChatService,
     private readonly clock: TimerClock = systemClock,
     private readonly onChange: () => void = () => {},
+    private readonly shouldPublishExternally: () => boolean = () => true,
   ) {}
 
   get pendingCount(): number {
@@ -85,7 +86,7 @@ export class ChatScheduler {
     const now = this.clock.now();
     while (this.active && this.queue.length && this.queue[0].due <= now) {
       const next = this.queue.shift()!;
-      this.chat.publish(next.message, this.clock.wallNow());
+      this.chat.publish(next.message, this.clock.wallNow(), this.shouldPublishExternally());
     }
     this.onChange();
     if (this.queue.length) {

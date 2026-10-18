@@ -18,6 +18,7 @@ import {
   type LabeledTranscript,
   type SessionPreferences,
   type SessionSnapshot,
+  type SimulationInputOptions,
 } from '../shared/session-contract';
 
 const MAX_ATTEMPTS = 3;
@@ -55,6 +56,7 @@ export class SessionController {
   private activeInference: InferenceProvider;
   private shutdownPromise: Promise<void> = Promise.resolve();
   private chatStartSequence = 0;
+  private recordedChatPublication = true;
   private smoothedMs: number | null = null;
   private measuredResources: ResourceMeasurements | null = null;
   private switchAbort: AbortController | null = null;
@@ -78,7 +80,12 @@ export class SessionController {
     this.preferences = validatePreferences(initialPreferences);
     this.history = new InferenceHistory(this.preferences);
     this.video = new VideoFrameBuffer(this.preferences);
-    this.scheduler = new ChatScheduler(chat, clock, () => this.updatePending());
+    this.scheduler = new ChatScheduler(
+      chat,
+      clock,
+      () => this.updatePending(),
+      () => this.recordedChatPublication,
+    );
   }
 
   snapshot(): SessionSnapshot {
@@ -150,6 +157,7 @@ export class SessionController {
     rawContext: unknown,
     mode: InferenceMode = 'fake',
     modelId: string | null = null,
+    options: SimulationInputOptions = { inputMode: 'live', publishToOverlay: true },
   ): SessionSnapshot {
     if (this.switchBusy) throw new Error('Wait for model switching to finish before restarting.');
     if (
@@ -159,9 +167,18 @@ export class SessionController {
     ) {
       throw new Error('The simulation is already running.');
     }
+    if (
+      !options ||
+      !['live', 'recorded'].includes(options.inputMode) ||
+      typeof options.publishToOverlay !== 'boolean' ||
+      (options.hasVideoFile !== undefined && typeof options.hasVideoFile !== 'boolean')
+    )
+      throw new Error('Invalid simulation media options.');
     const context =
       rawContext === '' && mode === 'native' && this.video.active
-        ? 'React to the live video input.'
+        ? options.inputMode === 'recorded'
+          ? 'React to the recorded video input.'
+          : 'React to the live video input.'
         : validateContext(rawContext);
     if (mode !== 'fake' && mode !== 'native') throw new Error('Unknown inference mode.');
     if (mode === 'native' && !this.nativeInference) {
@@ -172,12 +189,14 @@ export class SessionController {
     this.epoch++;
     this.history.reset(this.clock.wallNow());
     this.chatStartSequence = this.chat.snapshot().sequence;
+    this.recordedChatPublication = options.inputMode === 'live' || options.publishToOverlay;
     this.smoothedMs = null;
     this.measuredResources = null;
     this.scheduler.start();
     this.setState({
       phase: mode === 'native' ? 'starting' : 'running',
       mode,
+      inputMode: options.inputMode,
       modelId: mode === 'native' ? modelId : null,
       events: [],
       cycle: 0,
@@ -221,6 +240,22 @@ export class SessionController {
     this.scheduler.stop();
     this.context = '';
     this.setState({ phase: 'stopped', error: null, warning: null, retryAttempt: 0 });
+    return this.snapshot();
+  }
+
+  /** A failing recorded decoder is fatal, not a silent switch to empty video. */
+  failRecordedVideo(message: string): SessionSnapshot {
+    if (
+      this.state.inputMode !== 'recorded' ||
+      !['starting', 'running', 'switching'].includes(this.state.phase)
+    ) {
+      throw new Error('No recorded simulation is running.');
+    }
+    if (typeof message !== 'string' || !message.trim() || message.length > 500) {
+      throw new Error('Invalid recorded video decoder error.');
+    }
+    this.stop();
+    this.setState({ phase: 'error', error: `Recorded video failed: ${message}`, warning: null });
     return this.snapshot();
   }
 
@@ -291,6 +326,11 @@ export class SessionController {
   /** Restart inference after retry exhaustion without discarding validated history or chat. */
   retry(): SessionSnapshot {
     if (this.state.phase !== 'error') throw new Error('There is no failed inference to retry.');
+    if (this.state.error?.startsWith('Recorded video failed:')) {
+      throw new Error(
+        'The recorded decoder failed. Select a supported file and start a new simulation.',
+      );
+    }
     const epoch = ++this.epoch;
     this.setState({
       phase: this.state.mode === 'native' ? 'starting' : 'running',

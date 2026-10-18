@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Activity,
   ExternalLink,
@@ -31,6 +31,7 @@ import {
 import { ModelManager } from '@/components/model-manager';
 import { NumericSettingCombobox } from '@/components/numeric-setting-combobox';
 import { VideoInput } from '@/components/video-input';
+import { RecordedVideoInput, type RecordedVideoHandle } from '@/components/recorded-video-input';
 import { DiagnosticCaptureControls } from '@/components/diagnostic-capture-controls';
 import { OperationalLogs } from '@/components/operational-logs';
 import { FreeformPlayground } from '@/components/freeform-playground';
@@ -108,6 +109,12 @@ export function DesktopPage() {
   const [overlayBusy, setOverlayBusy] = useState(false);
   const [manualContext, setManualContext] = useState('');
   const [inferenceMode, setInferenceMode] = useState<InferenceMode>('fake');
+  const [inputMode, setInputMode] = useState<'live' | 'recorded'>('live');
+  const [publishRecorded, setPublishRecorded] = useState(false);
+  const [recordedSelection, setRecordedSelection] = useState({ hasFile: false, ready: true });
+  const [mediaError, setMediaError] = useState<string | null>(null);
+  const recordedPlayer = useRef<RecordedVideoHandle>(null);
+  const updateRecordedSelection = useCallback(setRecordedSelection, []);
   const [sampleBusy, setSampleBusy] = useState(false);
   const [audioStatus, setAudioStatus] = useState<AudioStatus | null>(null);
   const [nativeStatus, setNativeStatus] = useState<NativeServiceStatus | null>(null);
@@ -176,9 +183,35 @@ export function DesktopPage() {
   };
 
   const running = ['running', 'starting', 'switching'].includes(session.status.phase);
+  const mediaActive =
+    running ||
+    (session.status.phase === 'error' &&
+      !session.status.error?.startsWith('Recorded video failed:'));
   const current = DESKTOP_SECTIONS.find((item) => item.id === section)!;
   const update = (changes: Partial<SessionPreferences>) =>
     void session.updatePreferences({ ...session.preferences, ...changes });
+
+  const startSimulation = async () => {
+    setMediaError(null);
+    const started = await session.start(manualContext, inferenceMode, {
+      inputMode,
+      publishToOverlay: inputMode === 'live' || publishRecorded,
+      hasVideoFile: inputMode === 'recorded' && recordedSelection.hasFile,
+    });
+    if (!started || inputMode !== 'recorded' || !recordedSelection.hasFile) return;
+    try {
+      await recordedPlayer.current?.begin(session.preferences.videoCaptureIntervalMs);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setMediaError(message);
+      await window.lonelyChat?.reportRecordedVideoError(message).catch(() => {});
+    }
+  };
+
+  const stopSimulation = () => {
+    recordedPlayer.current?.stop();
+    void session.stop();
+  };
 
   return (
     <div className="min-h-dvh bg-background text-foreground sm:flex">
@@ -237,7 +270,7 @@ export function DesktopPage() {
               <SpeechPlayground simulationActive={running || session.busy || audience.busy} />
             )}
           </div>
-          {section === 'simulation' && (
+          <div hidden={section !== 'simulation'}>
             <section aria-label="Simulation">
               <SectionHeading
                 title="Simulation"
@@ -245,12 +278,40 @@ export function DesktopPage() {
               />
               <Panel>
                 <h3 className="flex items-center gap-2 font-medium text-violet-300">
-                  <Sparkles size={18} aria-hidden="true" /> Manual-context inference
+                  <Sparkles size={18} aria-hidden="true" /> Continuous inference
                 </h3>
                 <p className="mt-3 text-sm leading-6 text-zinc-300">
                   Describe what is happening on your stream. Use deterministic fixture replies or
                   generate chat using an active, installed GGUF model via local llama.cpp.
                 </p>
+                <Label htmlFor="simulation-input-mode" className="mt-4 text-sm text-zinc-200">
+                  Media input mode
+                </Label>
+                <Select
+                  items={[
+                    { value: 'live', label: 'Live devices and screens' },
+                    { value: 'recorded', label: 'Recorded video (1×)' },
+                  ]}
+                  value={inputMode}
+                  onValueChange={(value) => {
+                    if (value === 'live' || value === 'recorded') {
+                      setInputMode(value);
+                      setRecordedSelection({ hasFile: false, ready: true });
+                    }
+                  }}
+                >
+                  <SelectTrigger
+                    id="simulation-input-mode"
+                    disabled={mediaActive}
+                    className="mt-2 w-full text-sm"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="live">Live devices and screens</SelectItem>
+                    <SelectItem value="recorded">Recorded video (1×)</SelectItem>
+                  </SelectContent>
+                </Select>
                 <Label htmlFor="inference-mode" className="mt-4 text-sm text-zinc-200">
                   Inference provider
                 </Label>
@@ -288,31 +349,54 @@ export function DesktopPage() {
                   onChange={(event) => setManualContext(event.target.value)}
                   placeholder="For example: I'm exploring a haunted castle in a fantasy game…"
                 />
+                {inputMode === 'recorded' && (
+                  <>
+                    <RecordedVideoInput
+                      ref={recordedPlayer}
+                      running={mediaActive}
+                      onSelectionChange={updateRecordedSelection}
+                    />
+                    <label className="mt-4 flex items-center gap-2 text-sm text-zinc-300">
+                      <input
+                        type="checkbox"
+                        checked={publishRecorded}
+                        disabled={running}
+                        onChange={(event) => setPublishRecorded(event.target.checked)}
+                      />
+                      Publish recorded chat to overlay and floating window
+                    </label>
+                    <p className="mt-2 text-xs text-zinc-500">
+                      Otherwise recorded chat appears only in the desktop Chat preview.
+                    </p>
+                  </>
+                )}
                 <div className="mt-4 flex flex-wrap items-center gap-3">
                   {running ? (
-                    <Button
-                      disabled={!session.ready || session.busy}
-                      onClick={() => void session.stop()}
-                    >
+                    <Button disabled={!session.ready || session.busy} onClick={stopSimulation}>
                       <Square size={15} /> Stop simulation
                     </Button>
                   ) : (
                     <Button
-                      disabled={!session.ready || session.busy}
-                      onClick={() => void session.start(manualContext, inferenceMode)}
+                      disabled={
+                        !session.ready ||
+                        session.busy ||
+                        (inputMode === 'recorded' && !recordedSelection.ready)
+                      }
+                      onClick={() => void startSimulation()}
                     >
                       <Play size={15} /> Start simulation
                     </Button>
                   )}
-                  {session.status.phase === 'error' && (
-                    <Button
-                      variant="secondary"
-                      disabled={!session.ready || session.busy}
-                      onClick={() => void session.retry()}
-                    >
-                      Retry inference
-                    </Button>
-                  )}
+                  {session.status.phase === 'error' &&
+                    !session.status.error?.startsWith('Recorded video failed:') && (
+                      <Button
+                        variant="secondary"
+                        disabled={!session.ready || session.busy}
+                        onClick={() => void session.retry()}
+                      >
+                        Retry inference
+                      </Button>
+                    )}
                   <span role="status" aria-live="polite" className="text-sm text-zinc-400">
                     {running
                       ? session.status.phase === 'switching'
@@ -330,9 +414,9 @@ export function DesktopPage() {
                     {session.status.warning}
                   </p>
                 )}
-                {(session.actionError || session.status.error) && (
+                {(mediaError || session.actionError || session.status.error) && (
                   <p role="alert" className="mt-3 text-sm text-rose-300">
-                    {session.actionError || session.status.error}
+                    {mediaError || session.actionError || session.status.error}
                   </p>
                 )}
                 {session.status.events.length > 0 && (
@@ -363,7 +447,7 @@ export function DesktopPage() {
                 </div>
               </Panel>
             </section>
-          )}
+          </div>
 
           {section === 'models' && (
             <section aria-label="Models">

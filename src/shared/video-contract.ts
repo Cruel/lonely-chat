@@ -11,4 +11,6 @@ export interface VideoFrame {
   readonly width: number;
   readonly height: number;
   readonly dataUrl: string;
+  /** Original media presentation position for recorded video; observation time remains authoritative. */
+  readonly mediaTimeMs?: number;
 }
