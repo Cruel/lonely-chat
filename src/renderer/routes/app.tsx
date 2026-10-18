@@ -33,6 +33,7 @@ import { NumericSettingCombobox } from '@/components/numeric-setting-combobox';
 import { VideoInput } from '@/components/video-input';
 import { DiagnosticCaptureControls } from '@/components/diagnostic-capture-controls';
 import { OperationalLogs } from '@/components/operational-logs';
+import { FreeformPlayground } from '@/components/freeform-playground';
 import { AudioInput } from '@/components/audio-input';
 import type { AudioStatus } from '../../shared/audio-contract';
 import type { NativeServiceStatus } from '../../shared/native-service-contract';
@@ -213,6 +214,9 @@ export function DesktopPage() {
           </div>
         </header>
         <main id="desktop-content" className="mx-auto w-full max-w-5xl p-5 sm:p-7">
+          <div hidden={section !== 'playground'}>
+            <FreeformPlayground simulationActive={running || session.busy || audience.busy} />
+          </div>
           {section === 'simulation' && (
             <section aria-label="Simulation">
               <SectionHeading

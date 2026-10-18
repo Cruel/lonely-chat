@@ -38,6 +38,22 @@ const server = createServer(async (request, response) => {
     response.end(JSON.stringify({choices:[{finish_reason:'stop', message:{content:JSON.stringify({names:['TestFox','TestCat']})}}]}));
     return;
   }
+  if (!parsed.response_format) {
+    if (
+      parsed.messages[0]?.content !== 'You are a poet' ||
+      parsed.messages[1]?.content !== 'Write a haiku' ||
+      parsed.temperature !== 0.35 || parsed.top_p !== 0.75 ||
+      parsed.top_k !== 22 || parsed.max_tokens !== 96 || parsed.seed !== 12345 ||
+      parsed.stream !== false
+    ) {
+      response.writeHead(422);
+      response.end(JSON.stringify({error:'incorrect Freeform fields'}));
+      return;
+    }
+    response.end(JSON.stringify({choices:[{finish_reason:'stop', message:{content:'An original haiku'}}],
+      usage:{prompt_tokens:10,completion_tokens:6,total_tokens:16}}));
+    return;
+  }
   if (parsed.response_format?.type !== 'json_object' || parsed.messages[1].content.indexOf('campfire') < 0) {
     response.writeHead(400);
     response.end(JSON.stringify({error:'invalid structured request'}));
@@ -172,6 +188,49 @@ describe('native llama.cpp adapter', () => {
         roster,
       ),
     ).toThrow(/outside the configured roster/);
+  });
+
+  it('runs genuine freeform chat completions with seed, sampling and usage via authenticated native HTTP', async () => {
+    const provider = new NativeInference({
+      executable: process.execPath,
+      resolveModel: async () => ({ modelPath: '/managed/other.gguf', projectorPath: null }),
+      launch: (_binary, args, options) => {
+        const port = args[args.indexOf('--port') + 1];
+        const key = args[args.indexOf('--api-key') + 1];
+        return spawn(
+          process.execPath,
+          ['--input-type=module', '-e', childScript, port, key],
+          options,
+        );
+      },
+    });
+    providers.push(provider);
+    const request = {
+      modelId: 'other',
+      systemPrompt: 'You are a poet',
+      userPrompt: 'Write a haiku',
+      temperature: 0.35,
+      topP: 0.75,
+      topK: 22,
+      maxTokens: 96,
+      seed: 12345,
+    };
+    const result = await provider.completeFreeform(request, new AbortController().signal);
+    expect(result).toMatchObject({
+      effectiveSeed: 12345,
+      content: 'An original haiku',
+      finishReason: 'stop',
+      usage: { promptTokens: 10, completionTokens: 6, totalTokens: 16 },
+    });
+    expect(result.durationMs).toBeGreaterThanOrEqual(0);
+    // Server checks exact fields. A rejected HTTP request remains a visible error
+    // and does not permanently poison the worker; a second request can succeed.
+    await expect(
+      provider.completeFreeform({ ...request, topK: 30 }, new AbortController().signal),
+    ).rejects.toThrow(/HTTP 422/);
+    expect((await provider.completeFreeform(request, new AbortController().signal)).content).toBe(
+      'An original haiku',
+    );
   });
 
   it('starts a private server, awaits health, authorizes completion and stops the process', async () => {

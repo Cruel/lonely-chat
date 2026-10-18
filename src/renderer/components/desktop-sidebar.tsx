@@ -3,6 +3,7 @@ import {
   AudioLines,
   BookUser,
   Boxes,
+  FlaskConical,
   MessageSquareText,
   ScrollText,
   Settings2,
@@ -13,6 +14,7 @@ import { cn } from '@/lib/utils';
 
 export const DESKTOP_SECTIONS = [
   { id: 'simulation', title: 'Simulation', icon: Activity, group: 'workspace' },
+  { id: 'playground', title: 'Playground', icon: FlaskConical, group: 'workspace' },
   { id: 'audience', title: 'Audience', icon: BookUser, group: 'workspace' },
   { id: 'inputs', title: 'Inputs', icon: AudioLines, group: 'workspace' },
   { id: 'models', title: 'Models', icon: Boxes, group: 'workspace' },

@@ -30,6 +30,7 @@ import type { VideoFrame, VideoSource } from './video-contract';
 import type { AudioInputConfiguration, AudioSegment, AudioStatus } from './audio-contract';
 import type { DiagnosticStatus } from './diagnostic-contract';
 import type { LogEntry, LogRetention, LogSnapshot } from './log-contract';
+import type { FreeformRequest, FreeformResult, PlaygroundStatus } from './playground-contract';
 import type { OverlayStatus } from './overlay-contract';
 import type { ModelDiscoveryResult, ModelRole } from './model-contract';
 import type { ModelInstallRequest, ModelManagerSnapshot } from './model-install-contract';
@@ -41,6 +42,8 @@ export interface DesktopInvocations {
   'diagnostics:export': boolean;
   'logs:get': LogSnapshot;
   'logs:configure': LogRetention;
+  'playground:status': PlaygroundStatus;
+  'playground:run': FreeformResult;
   'chat:snapshot': ChatSnapshot;
   'chat:sample': void;
   'overlay:url': string | null;
@@ -91,6 +94,8 @@ export interface DesktopArguments {
   'diagnostics:export': [];
   'logs:get': [];
   'logs:configure': [retention: LogRetention];
+  'playground:status': [];
+  'playground:run': [request: FreeformRequest];
   'chat:snapshot': [];
   'chat:sample': [];
   'overlay:url': [];
@@ -138,6 +143,9 @@ export interface DesktopAPI {
   getDiagnosticCapture(): Promise<DiagnosticStatus>;
   configureDiagnosticCapture(enabled: boolean): Promise<DiagnosticStatus>;
   exportDiagnosticCapture(): Promise<boolean>;
+  getPlaygroundStatus(): Promise<PlaygroundStatus>;
+  runFreeform(request: FreeformRequest): Promise<FreeformResult>;
+  onPlaygroundStatus(listener: (status: PlaygroundStatus) => void): () => void;
   getOperationalLogs(): Promise<LogSnapshot>;
   configureOperationalLogs(retention: LogRetention): Promise<LogRetention>;
   onOperationalLog(listener: (entry: LogEntry) => void): () => void;

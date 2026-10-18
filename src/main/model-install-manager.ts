@@ -323,8 +323,17 @@ export class ModelInstallManager {
   async activeVisionFiles(): Promise<{ modelPath: string; projectorPath: string | null }> {
     this.requireReady();
     const active = this.config.active['vision-language'];
-    const entry = this.config.installations.find((item) => item.id === active);
-    if (!entry) throw new Error('Activate an installed vision/language GGUF model first.');
+    if (!active) throw new Error('Activate an installed vision/language GGUF model first.');
+    return this.visionFiles(active);
+  }
+
+  /** A Playground run may select any installed VLM without changing the active Simulation model. */
+  async visionFiles(id: string): Promise<{ modelPath: string; projectorPath: string | null }> {
+    this.requireReady();
+    const entry = this.config.installations.find(
+      (item) => item.id === id && item.role === 'vision-language',
+    );
+    if (!entry) throw new Error('Select an installed vision/language GGUF model.');
     await this.verifyInstallation(entry);
     const root = path.join(this.config.storageDirectory, 'installed', entry.id);
     const base = (value: string) => value.replace(/-\d{5}-of-\d{5}(?=\.gguf$)/i, '');

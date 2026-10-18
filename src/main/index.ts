@@ -2,6 +2,7 @@ import path from 'node:path';
 import { writeFile } from 'node:fs/promises';
 import { DiagnosticCapture } from './diagnostic-capture';
 import { OperationalLogger } from './operational-logger';
+import { PlaygroundService } from './playground-service';
 import { installElectronSmoke } from './electron-smoke';
 import { observationNow } from '../shared/observation-clock';
 import { pathToFileURL } from 'node:url';
@@ -173,6 +174,7 @@ const installs = new ModelInstallManager(app.getPath('userData'), models);
 let session: SessionController;
 let audience: AudienceService;
 let nativeInference: NativeInference;
+let playground: PlaygroundService;
 let audio: AudioService;
 let sessionMedia: SessionMedia | undefined;
 let mainWindow: BrowserWindow | null = null;
@@ -215,6 +217,9 @@ function requireDesktop(event: Electron.IpcMainInvokeEvent): void {
 
 function registerHandlers(): void {
   const actions = {
+    'playground:status': () => playground.snapshot(),
+    'playground:run': (request: import('../shared/playground-contract').FreeformRequest) =>
+      playground.run(request),
     'logs:get': async () => {
       await logReady;
       return logger.snapshot();
@@ -278,6 +283,8 @@ function registerHandlers(): void {
       mode?: import('../shared/session-contract').InferenceMode,
     ) => {
       if (rosterRegenerating) throw new Error('Roster regeneration is in progress.');
+      if (playground.busy)
+        throw new Error('Wait for Playground inference to finish before starting Simulation.');
       return session.start(
         context,
         mode,
@@ -285,7 +292,11 @@ function registerHandlers(): void {
       );
     },
     'session:stop': () => stopSession(),
-    'session:retry': () => session.retry(),
+    'session:retry': () => {
+      if (playground.busy)
+        throw new Error('Wait for Playground inference to finish before retrying Simulation.');
+      return session.retry();
+    },
     'native:status': () => nativeInference.snapshot(),
     'preferences:get': () => session.getPreferences(),
     'preferences:set': async (
@@ -311,6 +322,8 @@ function registerHandlers(): void {
       }
       if (mode !== 'fake' && mode !== 'native') throw new Error('Invalid inference mode.');
       if (rosterRegenerating) throw new Error('Roster regeneration is already in progress.');
+      if (playground.busy)
+        throw new Error('Wait for Playground inference to finish before regenerating the roster.');
       rosterRegenerating = true;
       const provider = mode === 'native' ? nativeInference : new FakeInference();
       const abort = new AbortController();
@@ -335,6 +348,7 @@ function registerHandlers(): void {
     ) => {
       if (
         rosterRegenerating ||
+        playground.busy ||
         speechSwitchBusy ||
         session.switchingModel ||
         session.snapshot().phase === 'switching'
@@ -380,6 +394,7 @@ function registerHandlers(): void {
     'models:remove': async (id: string) => {
       if (
         rosterRegenerating ||
+        playground.busy ||
         speechSwitchBusy ||
         session.switchingModel ||
         session.snapshot().phase === 'switching' ||
@@ -455,6 +470,8 @@ function registerHandlers(): void {
       captureId: string,
     ) => audio.submit(segment, captureId),
     'models:choose-directory': async () => {
+      if (playground.busy)
+        throw new Error('Stop Playground inference before changing model storage.');
       if (!mainWindow) throw new Error('Desktop window is unavailable.');
       const choice = await dialog.showOpenDialog(mainWindow, {
         title: 'Select model storage directory',
@@ -575,26 +592,50 @@ async function boot(): Promise<void> {
     if (mainWindow && !mainWindow.isDestroyed())
       mainWindow.webContents.send('models:change', snapshot);
   });
-  nativeInference = new NativeInference({
-    executable: bundledLlamaServer(app.getAppPath(), app.isPackaged, process.resourcesPath),
-    gpuExecutables: {
-      cuda: bundledAcceleratedLlamaServer(
-        app.getAppPath(),
-        app.isPackaged,
-        process.resourcesPath,
-        'cuda',
-      ),
-      vulkan: bundledAcceleratedLlamaServer(
-        app.getAppPath(),
-        app.isPackaged,
-        process.resourcesPath,
-        'vulkan',
-      ),
-    },
-    resolveModel: () => installs.activeVisionFiles(),
-    reasoningEnabled: () => session.getPreferences().reasoningEnabled,
-    inferenceTimeoutMs: () => session.getPreferences().inferenceTimeoutMs,
-    resourcePreferences: () => session.getPreferences(),
+  const buildNative = (
+    resolveModel: () => Promise<{ modelPath: string; projectorPath: string | null }>,
+  ) =>
+    new NativeInference({
+      executable: bundledLlamaServer(app.getAppPath(), app.isPackaged, process.resourcesPath),
+      gpuExecutables: {
+        cuda: bundledAcceleratedLlamaServer(
+          app.getAppPath(),
+          app.isPackaged,
+          process.resourcesPath,
+          'cuda',
+        ),
+        vulkan: bundledAcceleratedLlamaServer(
+          app.getAppPath(),
+          app.isPackaged,
+          process.resourcesPath,
+          'vulkan',
+        ),
+      },
+      resolveModel,
+      reasoningEnabled: () => session.getPreferences().reasoningEnabled,
+      inferenceTimeoutMs: () => session.getPreferences().inferenceTimeoutMs,
+      resourcePreferences: () => session.getPreferences(),
+    });
+  nativeInference = buildNative(() => installs.activeVisionFiles());
+  playground = new PlaygroundService(
+    () =>
+      !quitting &&
+      !rosterRegenerating &&
+      !speechSwitchBusy &&
+      !session.switchingModel &&
+      ['stopped', 'error'].includes(session.snapshot().phase) &&
+      installs.snapshot().progress.phase === 'idle',
+    // Freeform T04 is text-only. Do not load a projector for a request without images.
+    (id) =>
+      buildNative(async () => {
+        const files = await installs.visionFiles(id);
+        return { modelPath: files.modelPath, projectorPath: null };
+      }),
+    () => session.awaitShutdown(),
+  );
+  playground.subscribe((status) => {
+    if (mainWindow && !mainWindow.isDestroyed())
+      mainWindow.webContents.send('playground:status-change', status);
   });
   let previousNativePhase = '';
   nativeInference.subscribe((status) => {
@@ -728,6 +769,7 @@ const shutdown = new ManagedShutdown(
     () => session?.terminate() ?? Promise.resolve(),
     () => audio?.terminate() ?? Promise.resolve(),
     () => nativeInference?.stop() ?? Promise.resolve(),
+    () => playground?.stop() ?? Promise.resolve(),
     () => overlay.stop(),
     () => flushWindowSave(),
   ],
@@ -754,6 +796,8 @@ app.on('before-quit', (event) => {
   });
 });
 app.on('will-quit', () => {
+  ipcMain.removeHandler('playground:status');
+  ipcMain.removeHandler('playground:run');
   ipcMain.removeHandler('logs:get');
   ipcMain.removeHandler('logs:configure');
   ipcMain.removeHandler('diagnostics:get');

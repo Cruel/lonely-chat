@@ -18,6 +18,11 @@ const emptyModels: ModelManagerSnapshot = {
   progress: { phase: 'idle', file: null, receivedBytes: 0, totalBytes: null },
 };
 const modelsAPI = {
+  getPlaygroundStatus: async () => ({ busy: false }),
+  onPlaygroundStatus: () => () => {},
+  runFreeform: async () => {
+    throw new Error('Not used in this test.');
+  },
   getOperationalLogs: async () => ({ entries: [], retention: { ageDays: 14, maxMiB: 5 } }),
   configureOperationalLogs: async (retention: import('../../shared/log-contract').LogRetention) =>
     retention,
@@ -306,6 +311,7 @@ it('navigates across all categories without losing the session or private draft 
   expect(screen.getByRole('navigation', { name: 'Main navigation' })).toBeTruthy();
   const categories = [
     'Simulation',
+    'Playground',
     'Audience',
     'Inputs',
     'Models',

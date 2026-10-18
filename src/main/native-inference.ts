@@ -10,6 +10,7 @@ import {
 import { DEFAULT_PREFERENCES, type SessionPreferences } from '../shared/session-contract';
 import type { NativeRuntimeResources } from '../shared/native-service-contract';
 import type { NativeServiceStatus } from '../shared/native-service-contract';
+import type { FreeformRequest, FreeformResult, FreeformUsage } from '../shared/playground-contract';
 import { randomBytes } from 'node:crypto';
 import { createServer } from 'node:net';
 import path from 'node:path';
@@ -657,6 +658,67 @@ export class NativeInference implements InferenceProvider {
       throw new Error('llama.cpp generated an invalid username list.');
     }
     return (result as { names: string[] }).names;
+  }
+
+  /** Raw freeform text completion; intentionally bypasses simulation prompts and parsers. */
+  async completeFreeform(
+    request: FreeformRequest,
+    signal: AbortSignal,
+  ): Promise<Omit<FreeformResult, 'modelId' | 'request'>> {
+    const startedAt = new Date().toISOString();
+    const started = performance.now();
+    const messages = [
+      ...(request.systemPrompt ? [{ role: 'system', content: request.systemPrompt }] : []),
+      { role: 'user', content: request.userPrompt },
+    ];
+    const payload = {
+      stream: false,
+      messages,
+      temperature: request.temperature,
+      top_p: request.topP,
+      top_k: request.topK,
+      max_tokens: request.maxTokens,
+      seed: request.seed,
+    };
+    const response = await this.complete(payload, signal);
+    if (!response || typeof response !== 'object' || Array.isArray(response))
+      throw new Error('llama.cpp returned an invalid Playground response.');
+    const body = response as Record<string, unknown>;
+    const choices = body.choices;
+    if (!Array.isArray(choices) || choices.length !== 1) {
+      throw new Error('llama.cpp did not return one Playground completion.');
+    }
+    const choice = choices[0] as {
+      message?: { content?: unknown };
+      finish_reason?: unknown;
+    } | null;
+    if (!choice || typeof choice.message?.content !== 'string') {
+      throw new Error('llama.cpp returned no Playground text.');
+    }
+    const usage = body.usage;
+    const usageData =
+      usage && typeof usage === 'object' && !Array.isArray(usage)
+        ? (usage as Record<string, unknown>)
+        : null;
+    const token = (key: string) => {
+      const n = usageData?.[key];
+      return typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : null;
+    };
+    const tokenUsage: FreeformUsage | null = usageData
+      ? {
+          promptTokens: token('prompt_tokens'),
+          completionTokens: token('completion_tokens'),
+          totalTokens: token('total_tokens'),
+        }
+      : null;
+    return {
+      startedAt,
+      durationMs: Math.round(performance.now() - started),
+      effectiveSeed: request.seed,
+      content: choice.message.content,
+      finishReason: typeof choice.finish_reason === 'string' ? choice.finish_reason : null,
+      usage: tokenUsage,
+    };
   }
 
   async generate(input: InferenceInput, signal: AbortSignal): Promise<unknown> {

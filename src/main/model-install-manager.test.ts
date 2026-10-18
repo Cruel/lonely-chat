@@ -185,6 +185,19 @@ describe('managed model packages via public model-manager service', () => {
     await expect(app.manager.activeVisionFiles()).rejects.toThrow(/verification/);
   });
 
+  it('resolves a selected verified Playground model without activating or replacing the Simulation model', async () => {
+    const app = await fixture();
+    await expect(app.manager.visionFiles('not-installed')).rejects.toThrow(/Select an installed/);
+    const first = (await app.manager.install(selection)).installations[0];
+    expect(app.manager.snapshot().active['vision-language']).toBeNull();
+    const files = await app.manager.visionFiles(first.id);
+    expect(files.modelPath).toContain('vision-Q4_K_M');
+    expect(files.projectorPath).toContain('mmproj-F16');
+    expect(app.manager.snapshot().active['vision-language']).toBeNull();
+    await writeFile(files.modelPath, 'corrupted');
+    await expect(app.manager.visionFiles(first.id)).rejects.toThrow(/verification/);
+  });
+
   it('keeps interrupted bytes private, resumes with HTTP Range and publishes only after verification', async () => {
     const app = await fixture();
     app.setInterrupt(q4);

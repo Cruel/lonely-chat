@@ -14,6 +14,16 @@ function invoke<K extends keyof DesktopInvocations>(
 }
 
 const api: DesktopAPI = {
+  getPlaygroundStatus: () => invoke('playground:status'),
+  runFreeform: (request) => invoke('playground:run', request),
+  onPlaygroundStatus: (listener) => {
+    const receive = (
+      _event: Electron.IpcRendererEvent,
+      status: import('../shared/playground-contract').PlaygroundStatus,
+    ) => listener(status);
+    ipcRenderer.on('playground:status-change', receive);
+    return () => ipcRenderer.removeListener('playground:status-change', receive);
+  },
   getDiagnosticCapture: () => invoke('diagnostics:get'),
   configureDiagnosticCapture: (enabled) => invoke('diagnostics:configure', enabled),
   exportDiagnosticCapture: () => invoke('diagnostics:export'),
