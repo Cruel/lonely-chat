@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import path from 'node:path';
 import type { NativeServiceStatus } from '../shared/native-service-contract';
+import type { OperationalErrorSink } from './operational-logger';
 import { stat } from 'node:fs/promises';
 import {
   MAX_SPEECH_FRAME,
@@ -15,6 +16,7 @@ import {
 
 interface SpeechOptions {
   readonly executable: string;
+  readonly reportError?: OperationalErrorSink;
   readonly resolveModel: () => Promise<string>;
   readonly launch?: (
     command: string,
@@ -244,7 +246,7 @@ export class NativeSpeech {
         }
       })();
       void this.exitTask.catch((error: unknown) =>
-        console.error('Speech worker retirement failed', error),
+        this.options.reportError?.('whisper', 'Speech worker retirement failed', error),
       );
     }
   }

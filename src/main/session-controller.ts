@@ -1,4 +1,5 @@
 import type { DiagnosticCapture } from './diagnostic-capture';
+import type { OperationalErrorSink } from './operational-logger';
 import type { ChatService } from './chat-service';
 import { ChatScheduler, systemClock, type TimerClock } from './chat-scheduler';
 import { FakeInference, parseInferenceResult, type InferenceProvider } from './fake-inference';
@@ -70,6 +71,7 @@ export class SessionController {
     private readonly nativeInference?: InferenceProvider,
     private readonly audience?: AudienceService,
     private readonly diagnostics?: DiagnosticCapture,
+    private readonly reportError?: OperationalErrorSink,
   ) {
     this.chat = chat;
     this.activeInference = inference;
@@ -493,6 +495,10 @@ export class SessionController {
         if (!this.active(epoch) || abort.signal.aborted) return;
         this.abort = null;
         const message = error instanceof Error ? error.message : 'Unknown inference error.';
+        this.reportError?.('session', 'Inference attempt failed', error, {
+          cycle: input.cycle,
+          attempt,
+        });
         this.diagnostics?.record(
           effectiveInput,
           Math.max(0, this.clock.now() - inferenceStarted),
@@ -535,7 +541,7 @@ export class SessionController {
       .then(
         () => {},
         (error: unknown) => {
-          console.error('Unable to stop inference provider', error);
+          this.reportError?.('session', 'Unable to stop inference provider', error);
         },
       );
   }

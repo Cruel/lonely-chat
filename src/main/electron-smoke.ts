@@ -31,6 +31,7 @@ export function installElectronSmoke(
       overlayUrl: string;
       previewReady: boolean;
       apiKeys: string[];
+      logCount: number;
       session: import('../shared/session-contract').SessionSnapshot;
     } = await window.webContents.executeJavaScript(`(async () => {
       for (let attempt = 0; attempt < 100; attempt++) {
@@ -47,18 +48,20 @@ export function installElectronSmoke(
       const initial = await window.lonelyChat.getChatSnapshot();
       await window.lonelyChat.publishSample();
       const later = await window.lonelyChat.getChatSnapshot();
+      const logs = await window.lonelyChat.getOperationalLogs();
       const session = await window.lonelyChat.startSession('smoke test from Electron');
-      return { initial: initial.sequence, later: later.sequence, previewReady, session,
+      return { initial: initial.sequence, later: later.sequence, previewReady, session, logCount: logs.entries.length,
         apiKeys: Object.keys(window.lonelyChat).sort(), overlayUrl: await window.lonelyChat.getOverlayUrl() };
     })()`);
     if (
       result.initial !== 1 ||
+      result.logCount < 2 ||
       result.later !== 2 ||
       result.overlayUrl !== overlay.snapshot().url ||
       !result.previewReady ||
       result.session.phase !== 'running' ||
       result.apiKeys.join(',') !==
-        'activateModel,audioDisconnected,cancelModelDownload,chooseModelDirectory,closeFloatingChat,configureDiagnosticCapture,configureFloatingChat,configureOverlayPort,discoverModels,exportDiagnosticCapture,getAudience,getAudioCapabilities,getAudioConfiguration,getAudioStatus,getChatSnapshot,getDiagnosticCapture,getFloatingChat,getModelsSnapshot,getNativeStatus,getOverlayStatus,getOverlayUrl,getPreferences,getSessionSnapshot,getWindowStatus,installModel,listDisplaySources,onAudienceChange,onAudioChange,onChatEvent,onFloatingChatChange,onMediaStop,onModelsChange,onNativeChange,onOverlayChange,onSessionChange,openFloatingChat,publishSample,regenerateAudience,removeAudioInput,removeModel,retryAudio,retrySession,selectVideoSource,setAudioConfiguration,setAudioLabel,setCloseToTray,setPreferences,startAudio,startSession,stopAudio,stopSession,submitAudioSegment,submitVideoFrame'
+        'activateModel,audioDisconnected,cancelModelDownload,chooseModelDirectory,closeFloatingChat,configureDiagnosticCapture,configureFloatingChat,configureOperationalLogs,configureOverlayPort,discoverModels,exportDiagnosticCapture,getAudience,getAudioCapabilities,getAudioConfiguration,getAudioStatus,getChatSnapshot,getDiagnosticCapture,getFloatingChat,getModelsSnapshot,getNativeStatus,getOperationalLogs,getOverlayStatus,getOverlayUrl,getPreferences,getSessionSnapshot,getWindowStatus,installModel,listDisplaySources,onAudienceChange,onAudioChange,onChatEvent,onFloatingChatChange,onMediaStop,onModelsChange,onNativeChange,onOperationalLog,onOverlayChange,onSessionChange,openFloatingChat,publishSample,regenerateAudience,removeAudioInput,removeModel,retryAudio,retrySession,selectVideoSource,setAudioConfiguration,setAudioLabel,setCloseToTray,setPreferences,startAudio,startSession,stopAudio,stopSession,submitAudioSegment,submitVideoFrame'
     ) {
       throw new Error(`Electron smoke failed: ${JSON.stringify(result)}`);
     }

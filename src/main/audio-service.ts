@@ -2,6 +2,7 @@ import type { AudioSegment, AudioSourceStatus, AudioStatus } from '../shared/aud
 import { validateAudioId, validateAudioLabel } from '../shared/audio-contract';
 import type { LabeledTranscript } from '../shared/session-contract';
 import type { NativeSpeech } from './native-speech';
+import type { OperationalErrorSink } from './operational-logger';
 import { systemClock, type TimerClock } from './chat-scheduler';
 
 const MAX_SEGMENTS = 10;
@@ -32,6 +33,7 @@ export class AudioService {
     private readonly onTranscript: (entry: LabeledTranscript) => void,
     private readonly now = systemClock.wallNow,
     private readonly clock: Pick<TimerClock, 'setTimeout' | 'clearTimeout'> = systemClock,
+    private readonly reportError?: OperationalErrorSink,
   ) {}
 
   snapshot(): AudioStatus {
@@ -184,7 +186,7 @@ export class AudioService {
           try {
             this.onTranscript(entry);
           } catch (error) {
-            console.error('Unable to attach speech transcript', error);
+            this.reportError?.('whisper', 'Unable to attach speech transcript', error);
           }
         },
         (error: unknown) => {
@@ -317,7 +319,7 @@ export class AudioService {
       const retirement = worker.shutdown ? worker.shutdown() : (worker.stop(), Promise.resolve());
       source.retiring = Promise.all([previous.catch(() => {}), retirement]).then(() => {});
       void source.retiring.catch((error: unknown) => {
-        console.error('Unable to retire speech worker', error);
+        this.reportError?.('whisper', 'Unable to retire speech worker', error);
       });
     }
     source.status = { ...source.status, pendingSegments: 0 };

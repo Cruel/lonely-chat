@@ -4,6 +4,7 @@ import {
   type OverlayStatus,
 } from '../shared/overlay-contract';
 import type { OverlayPortStore } from './overlay-port-store';
+import type { OperationalErrorSink } from './operational-logger';
 
 interface OverlayListener {
   start(port: number): Promise<string>;
@@ -20,6 +21,7 @@ export class OverlayController {
   constructor(
     private readonly create: () => OverlayListener,
     private readonly store: OverlayPortStore,
+    private readonly reportError?: OperationalErrorSink,
   ) {}
 
   snapshot(): OverlayStatus {
@@ -64,13 +66,13 @@ export class OverlayController {
     try {
       port = await this.store.read();
     } catch (error) {
-      console.error('Unable to load overlay port setting; using default', error);
+      this.reportError?.('overlay', 'Unable to load overlay port setting; using default', error);
     }
     if (override !== undefined) {
       try {
         port = validateOverlayPort(Number(override));
       } catch {
-        console.error('Invalid LONELY_CHAT_OVERLAY_PORT; using saved port');
+        this.reportError?.('overlay', 'Invalid LONELY_CHAT_OVERLAY_PORT; using saved port');
       }
     }
     this.status = { port, url: null, error: null };

@@ -29,6 +29,7 @@ import type { NativeServiceStatus } from './native-service-contract';
 import type { VideoFrame, VideoSource } from './video-contract';
 import type { AudioInputConfiguration, AudioSegment, AudioStatus } from './audio-contract';
 import type { DiagnosticStatus } from './diagnostic-contract';
+import type { LogEntry, LogRetention, LogSnapshot } from './log-contract';
 import type { OverlayStatus } from './overlay-contract';
 import type { ModelDiscoveryResult, ModelRole } from './model-contract';
 import type { ModelInstallRequest, ModelManagerSnapshot } from './model-install-contract';
@@ -38,6 +39,8 @@ export interface DesktopInvocations {
   'diagnostics:get': DiagnosticStatus;
   'diagnostics:configure': DiagnosticStatus;
   'diagnostics:export': boolean;
+  'logs:get': LogSnapshot;
+  'logs:configure': LogRetention;
   'chat:snapshot': ChatSnapshot;
   'chat:sample': void;
   'overlay:url': string | null;
@@ -86,6 +89,8 @@ export interface DesktopArguments {
   'diagnostics:get': [];
   'diagnostics:configure': [enabled: boolean];
   'diagnostics:export': [];
+  'logs:get': [];
+  'logs:configure': [retention: LogRetention];
   'chat:snapshot': [];
   'chat:sample': [];
   'overlay:url': [];
@@ -133,6 +138,9 @@ export interface DesktopAPI {
   getDiagnosticCapture(): Promise<DiagnosticStatus>;
   configureDiagnosticCapture(enabled: boolean): Promise<DiagnosticStatus>;
   exportDiagnosticCapture(): Promise<boolean>;
+  getOperationalLogs(): Promise<LogSnapshot>;
+  configureOperationalLogs(retention: LogRetention): Promise<LogRetention>;
+  onOperationalLog(listener: (entry: LogEntry) => void): () => void;
   getChatSnapshot(): Promise<ChatSnapshot>;
   onChatEvent(listener: (event: ChatEvent) => void): () => void;
   publishSample(): Promise<void>;

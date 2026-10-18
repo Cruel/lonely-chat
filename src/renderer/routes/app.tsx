@@ -32,6 +32,7 @@ import { ModelManager } from '@/components/model-manager';
 import { NumericSettingCombobox } from '@/components/numeric-setting-combobox';
 import { VideoInput } from '@/components/video-input';
 import { DiagnosticCaptureControls } from '@/components/diagnostic-capture-controls';
+import { OperationalLogs } from '@/components/operational-logs';
 import { AudioInput } from '@/components/audio-input';
 import type { AudioStatus } from '../../shared/audio-contract';
 import type { NativeServiceStatus } from '../../shared/native-service-contract';
@@ -557,6 +558,7 @@ export function DesktopPage() {
           {section === 'logs' && (
             <section aria-label="Logs">
               <SectionHeading title="Logs" description="Runtime status and diagnostics." />
+              <OperationalLogs />
               <DiagnosticCaptureControls />
               <Panel>
                 <h3 className="font-medium">Session diagnostics</h3>

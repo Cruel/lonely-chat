@@ -18,6 +18,10 @@ const emptyModels: ModelManagerSnapshot = {
   progress: { phase: 'idle', file: null, receivedBytes: 0, totalBytes: null },
 };
 const modelsAPI = {
+  getOperationalLogs: async () => ({ entries: [], retention: { ageDays: 14, maxMiB: 5 } }),
+  configureOperationalLogs: async (retention: import('../../shared/log-contract').LogRetention) =>
+    retention,
+  onOperationalLog: () => () => {},
   onMediaStop: () => () => {},
   getDiagnosticCapture: async () => ({ enabled: false, samples: 0, bytes: 0, dropped: 0 }),
   configureDiagnosticCapture: async (enabled: boolean) => ({

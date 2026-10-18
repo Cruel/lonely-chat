@@ -17,6 +17,16 @@ const api: DesktopAPI = {
   getDiagnosticCapture: () => invoke('diagnostics:get'),
   configureDiagnosticCapture: (enabled) => invoke('diagnostics:configure', enabled),
   exportDiagnosticCapture: () => invoke('diagnostics:export'),
+  getOperationalLogs: () => invoke('logs:get'),
+  configureOperationalLogs: (retention) => invoke('logs:configure', retention),
+  onOperationalLog: (listener) => {
+    const receive = (
+      _event: Electron.IpcRendererEvent,
+      entry: import('../shared/log-contract').LogEntry,
+    ) => listener(entry);
+    ipcRenderer.on('logs:entry', receive);
+    return () => ipcRenderer.removeListener('logs:entry', receive);
+  },
   getChatSnapshot: () => invoke('chat:snapshot'),
   onChatEvent: (listener) => {
     const receive = (_event: Electron.IpcRendererEvent, data: ChatEvent) => listener(data);

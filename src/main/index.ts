@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { writeFile } from 'node:fs/promises';
 import { DiagnosticCapture } from './diagnostic-capture';
+import { OperationalLogger } from './operational-logger';
 import { installElectronSmoke } from './electron-smoke';
 import { observationNow } from '../shared/observation-clock';
 import { pathToFileURL } from 'node:url';
@@ -49,11 +50,28 @@ import type { ChatEvent, DesktopInvocations, DesktopArguments } from '../shared/
 const rendererDirectory = path.join(__dirname, '../renderer');
 const preloadPath = path.join(__dirname, '../preload/preload.cjs');
 const devOrigin = process.env.LONELY_CHAT_RENDERER_URL;
+// Initialized before services and before app.whenReady(), to retain early boot errors.
+const logger = new OperationalLogger(app.getPath('userData'));
+logger.info('application', 'Lonely Chat process starting');
+const logReady = logger.open();
+process.on('uncaughtExceptionMonitor', (error) =>
+  logger.error('process', 'Uncaught exception', error),
+);
+process.on('unhandledRejection', (reason) =>
+  logger.error('process', 'Unhandled promise rejection', reason),
+);
 const chat = new ChatService();
 const diagnostics = new DiagnosticCapture();
+const reportError = (
+  source: string,
+  text: string,
+  error?: unknown,
+  context?: Record<string, unknown>,
+) => logger.error(source, text, error, context);
 const overlay = new OverlayController(
   () => new OverlayServer(chat, rendererDirectory, devOrigin),
   new OverlayPortStore(app.getPath('userData')),
+  reportError,
 );
 const floating = new FloatingChatWindowController(
   (options) => {
@@ -100,7 +118,7 @@ function scheduleWindowSave(): void {
     pendingWindowSave = null;
     void windowStore
       .write(windowPrefs)
-      .catch((error: unknown) => console.error('Unable to save window settings', error));
+      .catch((error: unknown) => logger.error('window', 'Unable to save window settings', error));
   }, 250);
 }
 
@@ -144,7 +162,7 @@ const lifecycle = new DesktopLifecycle(
   () => {
     if (!mainWindow && !quitting) openMainWindow();
   },
-  (error) => console.warn('System tray unavailable, main window will close normally:', error),
+  (error) => logger.warn('tray', 'System tray unavailable; window will close normally', error),
 );
 
 function windowStatus() {
@@ -197,6 +215,12 @@ function requireDesktop(event: Electron.IpcMainInvokeEvent): void {
 
 function registerHandlers(): void {
   const actions = {
+    'logs:get': async () => {
+      await logReady;
+      return logger.snapshot();
+    },
+    'logs:configure': (retention: import('../shared/log-contract').LogRetention) =>
+      logger.configure(retention),
     'diagnostics:get': () => diagnostics.status(),
     'diagnostics:configure': (enabled: boolean) => diagnostics.configure(enabled),
     'diagnostics:export': async () => {
@@ -496,6 +520,17 @@ function openMainWindow(): void {
     callback(selectedDisplaySource ? { video: selectedDisplaySource } : null);
   });
   window.webContents.setBackgroundThrottling(false);
+  window.webContents.on('render-process-gone', (_event, details) => {
+    logger.error('renderer', 'Desktop renderer exited unexpectedly', new Error(details.reason), {
+      code: details.exitCode,
+      reason: details.reason,
+    });
+  });
+  window.webContents.on('did-fail-load', (_event, code, description, url, isMainFrame) => {
+    if (isMainFrame && code !== -3)
+      logger.error('renderer', 'Desktop page failed to load', new Error(description), { code });
+  });
+  logger.info('window', 'Desktop window created');
   window.on('closed', () => {
     if (mainWindow === window) mainWindow = null;
   });
@@ -518,7 +553,7 @@ async function boot(): Promise<void> {
   try {
     windowPrefs = await windowStore.read();
   } catch (error) {
-    console.error('Invalid window preferences; using safe defaults', error);
+    logger.error('preferences', 'Invalid window preferences; using safe defaults', error);
     windowPrefs = DEFAULT_WINDOW_PREFERENCES;
   }
   floating.configure(windowPrefs.floating);
@@ -527,7 +562,7 @@ async function boot(): Promise<void> {
   try {
     preferences = await preferenceStore.read();
   } catch (error) {
-    console.error('Invalid local preferences; using safe defaults', error);
+    logger.error('preferences', 'Invalid local preferences; using safe defaults', error);
   }
   await installs.open();
   audience = new AudienceService(app.getPath('userData'), preferences.audienceCount);
@@ -561,7 +596,14 @@ async function boot(): Promise<void> {
     inferenceTimeoutMs: () => session.getPreferences().inferenceTimeoutMs,
     resourcePreferences: () => session.getPreferences(),
   });
+  let previousNativePhase = '';
   nativeInference.subscribe((status) => {
+    if (status.phase !== previousNativePhase) {
+      previousNativePhase = status.phase;
+      if (status.phase === 'failed' && status.error)
+        logger.error('llama.cpp', 'Inference worker failed', new Error(status.error));
+      else logger.info('llama.cpp', 'Inference worker phase changed', { phase: status.phase });
+    }
     if (mainWindow && !mainWindow.isDestroyed())
       mainWindow.webContents.send('native:change', status);
   });
@@ -573,30 +615,53 @@ async function boot(): Promise<void> {
     nativeInference,
     audience,
     diagnostics,
+    reportError,
   );
   audio = new AudioService(
     () =>
       new NativeSpeech({
         executable: bundledWhisperWorker(app.getAppPath(), app.isPackaged, process.resourcesPath),
         resolveModel: () => installs.activeSpeechFile(),
+        reportError,
       }),
     (entry) => sessionMedia?.recordTranscript(entry),
+    undefined,
+    undefined,
+    reportError,
   );
   sessionMedia = new SessionMedia(session, audio, () => {
     ++videoSelectionGeneration;
     // Keep the display selection armed for the next explicit Start video click.
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('media:stop');
   });
+  let previousAudioPhase = '';
   audio.subscribe((status) => {
+    const phase = status.sources.map((source) => source.phase).join(',');
+    if (phase !== previousAudioPhase) {
+      previousAudioPhase = phase;
+      const failures = status.sources.filter((source) => source.phase === 'error' && source.error);
+      for (const source of failures)
+        logger.error('whisper', 'Speech source failed', new Error(source.error!));
+      logger.info('whisper', 'Audio source state changed', { phase });
+    }
     if (mainWindow && !mainWindow.isDestroyed())
       mainWindow.webContents.send('audio:change', status);
   });
+  let previousSessionPhase = '';
   session.subscribe((status) => {
+    if (status.phase !== previousSessionPhase) {
+      previousSessionPhase = status.phase;
+      if (status.phase === 'error') logger.error('session', 'Simulation entered error state');
+      else logger.info('session', 'Simulation phase changed', { phase: status.phase });
+    }
     if (mainWindow && !mainWindow.isDestroyed())
       mainWindow.webContents.send('session:change', status);
     lifecycle.refreshTray();
   });
   registerHandlers();
+  logger.subscribe((entry) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('logs:entry', entry);
+  });
   floating.subscribe((state) => {
     if (mainWindow && !mainWindow.isDestroyed())
       mainWindow.webContents.send('floating:change', state);
@@ -618,23 +683,31 @@ async function boot(): Promise<void> {
   });
   publishSample(chat);
   overlay.subscribe((status) => {
+    if (status.error)
+      logger.error('overlay', 'Overlay server unavailable', new Error(status.error));
+    else if (status.url) logger.info('overlay', 'Overlay server listening', { port: status.port });
     if (mainWindow && !mainWindow.isDestroyed())
       mainWindow.webContents.send('overlay:change', status);
   });
   const overlayStatus = await overlay.initialize(process.env.LONELY_CHAT_OVERLAY_PORT);
-  if (overlayStatus.url) console.info(`Lonely Chat overlay: ${overlayStatus.url}`);
-  else console.error('Lonely Chat overlay unavailable:', overlayStatus.error);
+  if (!overlayStatus.url) logger.warn('overlay', 'Overlay server did not start');
   openMainWindow();
 }
 
 app
   .whenReady()
-  .then(boot)
+  .then(async () => {
+    await logReady;
+    logger.info('application', 'Electron ready; initializing desktop services');
+    await boot();
+    logger.info('application', 'Desktop startup complete');
+  })
   .catch((error: unknown) => {
-    console.error('Unable to start Lonely Chat', error);
+    logger.error('application', 'Unable to start Lonely Chat', error);
     app.quit();
   });
 app.on('activate', () => {
+  logger.info('application', 'Application activated');
   if (!quitting) lifecycle.show();
 });
 app.on('window-all-closed', () => {
@@ -658,7 +731,7 @@ const shutdown = new ManagedShutdown(
     () => overlay.stop(),
     () => flushWindowSave(),
   ],
-  (error) => console.error('Managed shutdown failed', error),
+  (error) => logger.error('application', 'Managed shutdown failed', error),
 );
 
 app.on('before-quit', (event) => {
@@ -666,13 +739,23 @@ app.on('before-quit', (event) => {
   event.preventDefault();
   if (quitting) return; // repeated Quit must not bypass async worker teardown
   quitting = true;
+  logger.info('application', 'Application shutdown requested');
   lifecycle.beginShutdown();
-  void shutdown.stop().then(() => {
+  void shutdown.stop().then(async () => {
+    // ManagedShutdown runs services concurrently. Close logs afterward so late
+    // worker/shutdown failures cannot be dropped by an already-closed logger.
+    try {
+      await logger.close();
+    } catch (error) {
+      process.stderr.write('Unable to finalize operational logs: ' + String(error) + '\n');
+    }
     teardownComplete = true;
     app.quit();
   });
 });
 app.on('will-quit', () => {
+  ipcMain.removeHandler('logs:get');
+  ipcMain.removeHandler('logs:configure');
   ipcMain.removeHandler('diagnostics:get');
   ipcMain.removeHandler('diagnostics:configure');
   ipcMain.removeHandler('diagnostics:export');
