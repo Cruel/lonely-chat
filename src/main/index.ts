@@ -225,6 +225,12 @@ function registerHandlers(): void {
     'playground:status': () => playground.snapshot(),
     'playground:run': (request: import('../shared/playground-contract').FreeformRequest) =>
       playground.run(request),
+    'playground:simulation:preview': (
+      request: import('../shared/playground-contract').SimulationExperimentRequest,
+    ) => playground.previewSimulation(request),
+    'playground:simulation:run': (
+      request: import('../shared/playground-contract').SimulationExperimentRequest,
+    ) => playground.runSimulation(request),
     'speech-test:status': () => speechTest.snapshot(),
     'speech-test:start': (config: import('../shared/speech-playground-contract').SpeechTestStart) =>
       speechTest.start(config),
@@ -705,6 +711,7 @@ async function boot(): Promise<void> {
         return { modelPath: files.modelPath, projectorPath: null };
       }),
     () => session.awaitShutdown(),
+    () => session.getPreferences(),
   );
   speechTest = new SpeechPlaygroundService(
     () =>
@@ -900,6 +907,8 @@ app.on('before-quit', (event) => {
 app.on('will-quit', () => {
   ipcMain.removeHandler('playground:status');
   ipcMain.removeHandler('playground:run');
+  ipcMain.removeHandler('playground:simulation:preview');
+  ipcMain.removeHandler('playground:simulation:run');
   ipcMain.removeHandler('speech-test:status');
   ipcMain.removeHandler('speech-test:start');
   ipcMain.removeHandler('speech-test:pcm');

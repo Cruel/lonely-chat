@@ -36,7 +36,13 @@ import type { AudioInputConfiguration, AudioSegment, AudioStatus } from './audio
 import type { DiagnosticStatus } from './diagnostic-contract';
 import type { LogEntry, LogRetention, LogSnapshot } from './log-contract';
 import type { RendererFailure } from './renderer-log-contract';
-import type { FreeformRequest, FreeformResult, PlaygroundStatus } from './playground-contract';
+import type {
+  FreeformRequest,
+  FreeformResult,
+  PlaygroundStatus,
+  SimulationExperimentRequest,
+  SimulationExperimentResult,
+} from './playground-contract';
 import type { SpeechTestStart, SpeechTestSnapshot } from './speech-playground-contract';
 import type { OverlayStatus } from './overlay-contract';
 import type { ModelDiscoveryResult, ModelRole } from './model-contract';
@@ -53,6 +59,8 @@ export interface DesktopInvocations {
   'renderer:report-failure': void;
   'playground:status': PlaygroundStatus;
   'playground:run': FreeformResult;
+  'playground:simulation:preview': { constructedRequest: unknown; submittedRequest: unknown };
+  'playground:simulation:run': SimulationExperimentResult;
   'speech-test:status': SpeechTestSnapshot;
   'speech-test:start': SpeechTestSnapshot;
   'speech-test:pcm': SpeechTestSnapshot;
@@ -114,6 +122,8 @@ export interface DesktopArguments {
   'renderer:report-failure': [failure: RendererFailure];
   'playground:status': [];
   'playground:run': [request: FreeformRequest];
+  'playground:simulation:preview': [request: SimulationExperimentRequest];
+  'playground:simulation:run': [request: SimulationExperimentRequest];
   'speech-test:status': [];
   'speech-test:start': [config: SpeechTestStart];
   'speech-test:pcm': [samples: Float32Array, backpressure?: boolean];
@@ -170,6 +180,12 @@ export interface DesktopAPI {
   exportDiagnosticCapture(): Promise<boolean>;
   getPlaygroundStatus(): Promise<PlaygroundStatus>;
   runFreeform(request: FreeformRequest): Promise<FreeformResult>;
+  previewSimulation(
+    request: SimulationExperimentRequest,
+  ): Promise<{ constructedRequest: unknown; submittedRequest: unknown }>;
+  runSimulationExperiment(
+    request: SimulationExperimentRequest,
+  ): Promise<SimulationExperimentResult>;
   getSpeechTestStatus(): Promise<SpeechTestSnapshot>;
   startSpeechTest(config: SpeechTestStart): Promise<SpeechTestSnapshot>;
   submitSpeechTestPcm(samples: Float32Array, backpressure?: boolean): Promise<SpeechTestSnapshot>;

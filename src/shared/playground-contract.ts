@@ -1,4 +1,7 @@
-/** Desktop-only, transient Freeform inference. No chat/overlay serialization. */
+import type { ChatActivity, ChatterIdentity } from './audience-contract';
+import type { InferredEvent } from './session-contract';
+
+/** Desktop-only, transient Freeform and Simulation inference. No chat/overlay serialization. */
 export interface FreeformRequest {
   readonly modelId: string;
   readonly systemPrompt: string;
@@ -24,6 +27,55 @@ export interface FreeformResult {
   readonly finishReason: string | null;
   readonly usage: FreeformUsage | null;
 }
+export interface AgedEntry {
+  readonly ageMs: number;
+}
+export interface SimulationExperimentValues {
+  readonly context: string;
+  readonly cycle: number;
+  readonly playbackWindowMs: number;
+  readonly chatActivity: ChatActivity;
+  readonly roster: readonly ChatterIdentity[];
+  readonly events: readonly ({
+    readonly kind: InferredEvent['kind'];
+    readonly summary: string;
+  } & AgedEntry)[];
+  readonly transcripts: readonly ({ readonly source: string; readonly text: string } & AgedEntry)[];
+  readonly observations: readonly ({
+    readonly source: string;
+    readonly description: string;
+    readonly kind: 'visual' | 'audio';
+  } & AgedEntry)[];
+  readonly recentChat: readonly ({ readonly author: string; readonly text: string } & AgedEntry)[];
+}
+export interface SimulationExperimentRequest {
+  readonly modelId: string;
+  readonly values: SimulationExperimentValues;
+  /** Advanced override, submitted without rewriting the production-constructed reference. */
+  readonly rawRequestJson?: string;
+}
+export interface SimulationExperimentResult {
+  readonly modelId: string;
+  readonly startedAt: string;
+  readonly durationMs: number;
+  readonly constructedRequest: unknown;
+  readonly submittedRequest: unknown;
+  readonly rawNativeOutput: unknown | null;
+  readonly normalizedResult: unknown | null;
+  readonly accepted: {
+    readonly events: readonly InferredEvent[];
+    readonly messages: readonly {
+      author: string;
+      text: string;
+      color: string;
+      offsetMs: number;
+    }[];
+  } | null;
+  readonly errorStage: 'transport' | 'normalization' | 'validation' | null;
+  readonly error: string | null;
+  readonly usage: FreeformUsage | null;
+}
+
 export interface PlaygroundStatus {
   readonly busy: boolean;
 }

@@ -743,14 +743,23 @@ export class NativeInference implements InferenceProvider {
     };
   }
 
-  async generate(input: InferenceInput, signal: AbortSignal): Promise<unknown> {
+  /** Preserve the original native completion for Simulation Playground inspection. */
+  async completeSimulationRequest(
+    input: InferenceInput,
+    request: unknown,
+    signal: AbortSignal,
+  ): Promise<unknown> {
     await this.prepare(signal);
     if (input.frames?.length && !this.visionReady) {
       throw new Error(
         'Live video requires a model/projector pair verified as vision-capable by the pinned llama.cpp runtime. Install a matching projector or stop video for text-only inference.',
       );
     }
-    const response = await this.complete(nativeChatRequest(input), signal);
+    return this.complete(request, signal);
+  }
+
+  async generate(input: InferenceInput, signal: AbortSignal): Promise<unknown> {
+    const response = await this.completeSimulationRequest(input, nativeChatRequest(input), signal);
     return extractNativeChat(response, input.roster ?? AUDIENCE);
   }
 

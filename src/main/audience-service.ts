@@ -51,6 +51,33 @@ function validMembers(value: unknown): value is ChatterIdentity[] {
   });
 }
 
+/** Pure audience normalization shared by Session and one-shot Simulation experiments. */
+export function resolveChatAuthors(
+  roster: readonly ChatterIdentity[],
+  messages: readonly ScheduledChat[],
+  recentChat: readonly { author: string }[],
+): ScheduledChat[] {
+  const byName = new Map(roster.map((item) => [item.author, item]));
+  const uses = new Map<string, number>();
+  for (const item of recentChat) uses.set(item.author, (uses.get(item.author) ?? 0) + 1);
+  return messages.map((message) => {
+    let author = message.author;
+    if (author === AUTHOR_PLACEHOLDER) {
+      const candidate = roster.reduce<ChatterIdentity | null>(
+        (best, item) =>
+          !best || (uses.get(item.author) ?? 0) < (uses.get(best.author) ?? 0) ? item : best,
+        null,
+      );
+      if (!candidate) throw new Error('No eligible audience members for placeholder.');
+      author = candidate.author;
+    }
+    const member = byName.get(author);
+    if (!member) throw new Error(`Inference referenced a chatter outside the roster: ${author}`);
+    uses.set(author, (uses.get(author) ?? 0) + 1);
+    return { ...message, author, color: member.color };
+  });
+}
+
 /** Stable desktop-owned roster, completely separate from published historical chat. */
 export class AudienceService {
   private state: AudienceSnapshot;
@@ -190,25 +217,7 @@ export class AudienceService {
     messages: readonly ScheduledChat[],
     recentChat: readonly { author: string }[],
   ): ScheduledChat[] {
-    const byName = new Map(this.state.members.map((item) => [item.author, item]));
-    const uses = new Map<string, number>();
-    for (const item of recentChat) uses.set(item.author, (uses.get(item.author) ?? 0) + 1);
-    return messages.map((message) => {
-      let author = message.author;
-      if (author === AUTHOR_PLACEHOLDER) {
-        const candidate = this.state.members.reduce<ChatterIdentity | null>(
-          (best, item) =>
-            !best || (uses.get(item.author) ?? 0) < (uses.get(best.author) ?? 0) ? item : best,
-          null,
-        );
-        if (!candidate) throw new Error('No eligible audience members for placeholder.');
-        author = candidate.author;
-      }
-      const member = byName.get(author);
-      if (!member) throw new Error(`Inference referenced a chatter outside the roster: ${author}`);
-      uses.set(author, (uses.get(author) ?? 0) + 1);
-      return { ...message, author, color: member.color };
-    });
+    return resolveChatAuthors(this.state.members, messages, recentChat);
   }
 
   private async save(members: readonly ChatterIdentity[]): Promise<void> {

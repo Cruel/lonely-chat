@@ -53,6 +53,12 @@ const modelsAPI = {
   runFreeform: async () => {
     throw new Error('Not used in this test.');
   },
+  previewSimulation: async () => {
+    throw new Error('Not used in this test.');
+  },
+  runSimulationExperiment: async () => {
+    throw new Error('Not used in this test.');
+  },
   getOperationalLogs: async () => ({ entries: [], retention: { ageDays: 14, maxMiB: 5 } }),
   configureOperationalLogs: async (retention: import('../../shared/log-contract').LogRetention) =>
     retention,

@@ -2,13 +2,13 @@ import type { DiagnosticCapture } from './diagnostic-capture';
 import type { OperationalErrorSink } from './operational-logger';
 import type { ChatService } from './chat-service';
 import { ChatScheduler, systemClock, type TimerClock } from './chat-scheduler';
-import { FakeInference, parseInferenceResult, type InferenceProvider } from './fake-inference';
+import { FakeInference, type InferenceProvider } from './fake-inference';
+import { validateSimulationCycle } from './simulation-cycle';
 import { InferenceHistory, type CycleInput } from './inference-history';
 import { VideoFrameBuffer } from './video-frame-buffer';
 import { PrivateInferenceError } from './private-inference-error';
 import { chooseWorkload, type ResourceMeasurements } from './resource-policy';
 import type { AudienceService } from './audience-service';
-import { CHAT_ACTIVITY_LIMITS } from '../shared/audience-contract';
 import type { VideoFrame } from '../shared/video-contract';
 import {
   DEFAULT_PREFERENCES,
@@ -449,26 +449,12 @@ export class SessionController {
       })
       .then((raw) => {
         if (!this.active(epoch) || abort.signal.aborted) return;
-        // Older supplied history and baseline preview frames are valid evidence too.
-        const evidenceStart = Math.min(
-          input.boundary.fromMs,
-          ...(input.frames ?? []).map((entry) => entry.observedAt),
-          ...(input.recentEvents ?? []).map((entry) => entry.observedAt),
-          ...(input.recentTranscripts ?? []).map((entry) => entry.observedAt),
-          ...(input.observations ?? []).map((entry) => entry.observedAt),
+        const { parsed: result, accepted } = validateSimulationCycle(
+          effectiveInput,
+          raw,
+          Boolean(this.audience),
         );
-        const result = parseInferenceResult(raw, input.boundary.throughMs, evidenceStart);
-        if (
-          this.audience &&
-          result.messages.length > CHAT_ACTIVITY_LIMITS[effectiveInput.chatActivity ?? 'normal']
-        ) {
-          throw new Error(
-            'Inference generated more messages than the configured chat activity allows.',
-          );
-        }
-        const resolved = this.audience
-          ? this.audience.resolve(result.messages, effectiveInput.recentChat ?? [])
-          : result.messages;
+        const resolved = accepted.messages;
         // All validation precedes every state change, history acknowledgement and playback.
         const duration = Math.max(0, this.clock.now() - inferenceStarted);
         this.smoothedMs =

@@ -37,6 +37,7 @@ import { OperationalLogs } from '@/components/operational-logs';
 import { useUnreadLogErrors } from '../use-unread-log-errors';
 import { reportRendererFailure } from '../renderer-error-reporting';
 import { FreeformPlayground } from '@/components/freeform-playground';
+import { SimulationPlayground } from '@/components/simulation-playground';
 import { SpeechPlayground } from '@/components/speech-playground';
 import { AudioInput } from '@/components/audio-input';
 import type { AudioStatus } from '../../shared/audio-contract';
@@ -111,7 +112,9 @@ export function DesktopPage() {
     setLogFocus({ source, nonce: Date.now() });
     setSection('logs');
   };
-  const [playgroundTab, setPlaygroundTab] = useState<'freeform' | 'speech'>('freeform');
+  const [playgroundTab, setPlaygroundTab] = useState<'freeform' | 'simulation' | 'speech'>(
+    'freeform',
+  );
   const [overlayStatus, setOverlayStatus] = useState<OverlayStatus>({
     port: DEFAULT_OVERLAY_PORT,
     url: null,
@@ -273,6 +276,12 @@ export function DesktopPage() {
                 Freeform inference
               </Button>
               <Button
+                variant={playgroundTab === 'simulation' ? 'default' : 'secondary'}
+                onClick={() => setPlaygroundTab('simulation')}
+              >
+                Simulation one-shot
+              </Button>
+              <Button
                 variant={playgroundTab === 'speech' ? 'default' : 'secondary'}
                 onClick={() => setPlaygroundTab('speech')}
               >
@@ -285,6 +294,12 @@ export function DesktopPage() {
                 onViewLogs={() => openLogs('llama.cpp')}
               />
             </div>
+            {playgroundTab === 'simulation' && (
+              <SimulationPlayground
+                simulationActive={running || session.busy || audience.busy}
+                onViewLogs={() => openLogs('llama.cpp')}
+              />
+            )}
             {playgroundTab === 'speech' && (
               <SpeechPlayground
                 simulationActive={running || session.busy || audience.busy}
