@@ -5,6 +5,7 @@ import { OperationalLogger } from './operational-logger';
 import { serializeOperationalLogs } from './operational-log-export';
 import { validateRendererFailure } from '../shared/renderer-log-contract';
 import { PlaygroundService } from './playground-service';
+import { PromptPresetStore } from './prompt-preset-store';
 import { SpeechPlaygroundService } from './speech-playground-service';
 import { installElectronSmoke } from './electron-smoke';
 import { observationNow } from '../shared/observation-clock';
@@ -116,6 +117,7 @@ const floating = new FloatingChatWindowController(
   reportError,
 );
 const preferenceStore = new PreferencesStore(app.getPath('userData'));
+const promptPresets = new PromptPresetStore(app.getPath('userData'));
 const audioConfig = new AudioConfigStore(app.getPath('userData'));
 const windowStore = new WindowPreferencesStore(app.getPath('userData'));
 let windowPrefs: WindowPreferences = DEFAULT_WINDOW_PREFERENCES;
@@ -233,6 +235,14 @@ function requireRecordedAudio(): void {
 function registerHandlers(): void {
   const actions = {
     'playground:status': () => playground.snapshot(),
+    'presets:list': () => promptPresets.list(),
+    'presets:revisions': (id: string) => promptPresets.revisions(id),
+    'presets:save': (input: {
+      id?: string;
+      name: string;
+      values: import('../shared/playground-contract').SimulationExperimentValues;
+    }) => promptPresets.save(input),
+    'presets:delete': (id: string) => promptPresets.delete(id),
     'playground:run': (request: import('../shared/playground-contract').FreeformRequest) =>
       playground.run(request),
     'playground:simulation:preview': (
@@ -339,7 +349,7 @@ function registerHandlers(): void {
       return windowStatus();
     },
     'session:snapshot': () => session.snapshot(),
-    'session:start': (
+    'session:start': async (
       context: string,
       mode?: import('../shared/session-contract').InferenceMode,
       options?: import('../shared/session-contract').SimulationInputOptions,
@@ -356,11 +366,29 @@ function registerHandlers(): void {
       } else {
         throw new Error('Unknown simulation media mode.');
       }
+      const preset = options?.presetId
+        ? (await promptPresets.revisions(options.presetId))
+            .slice()
+            .reverse()
+            .find(
+              (item) =>
+                options.presetRevision === undefined || item.revision === options.presetRevision,
+            )
+        : undefined;
+      if (options?.presetId && !preset) throw new Error('Selected prompt preset was not found.');
       return session.start(
-        context,
+        preset ? preset.values.context : context,
         mode,
         mode === 'native' ? installs.snapshot().active['vision-language'] : null,
         options,
+        preset
+          ? {
+              id: preset.id,
+              name: preset.name,
+              revision: preset.revision,
+              chatActivity: preset.values.chatActivity,
+            }
+          : undefined,
       );
     },
     'session:stop': () => stopSession(),
@@ -728,9 +756,9 @@ async function boot(): Promise<void> {
         ),
       },
       resolveModel,
-      reasoningEnabled: () => session.getPreferences().reasoningEnabled,
-      inferenceTimeoutMs: () => session.getPreferences().inferenceTimeoutMs,
-      resourcePreferences: () => session.getPreferences(),
+      reasoningEnabled: () => session.getRunPreferences().reasoningEnabled,
+      inferenceTimeoutMs: () => session.getRunPreferences().inferenceTimeoutMs,
+      resourcePreferences: () => session.getRunPreferences(),
       log: logger,
       privateWorkerLine: (worker, stream, line) =>
         diagnostics.recordWorkerLine(worker, stream, line),

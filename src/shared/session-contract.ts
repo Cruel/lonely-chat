@@ -8,6 +8,9 @@ export interface SimulationInputOptions {
   readonly hasAudioFiles?: boolean;
   /** Optional user-selected seed; otherwise generate a new effective seed at Start. */
   readonly seed?: number;
+  /** Revision resolved atomically by main at Start; never follow subsequent edits. */
+  readonly presetId?: string;
+  readonly presetRevision?: number;
 }
 export type VideoSamplingStrategy = 'uniform' | 'recent-weighted';
 export type ComputeBackend = 'auto' | 'cpu' | 'cuda' | 'vulkan' | 'metal';
@@ -46,6 +49,11 @@ export interface SessionSnapshot {
   readonly retryAttempt: number;
   /** Base seed for this session (whether user-supplied or generated). */
   readonly sessionSeed?: number | null;
+  readonly promptPreset?: {
+    readonly id: string;
+    readonly name: string;
+    readonly revision: number;
+  } | null;
   /** Most recent actually submitted inference attempt seed. */
   readonly effectiveSeed?: number | null;
   /** Bounded, chronological record of submitted inference seeds. */

@@ -15,6 +15,10 @@ function invoke<K extends keyof DesktopInvocations>(
 
 const api: DesktopAPI = {
   getPlaygroundStatus: () => invoke('playground:status'),
+  listPromptPresets: () => invoke('presets:list'),
+  listPromptPresetRevisions: (id) => invoke('presets:revisions', id),
+  savePromptPreset: (input) => invoke('presets:save', input),
+  deletePromptPreset: (id) => invoke('presets:delete', id),
   runFreeform: (request) => invoke('playground:run', request),
   previewSimulation: (request) => invoke('playground:simulation:preview', request),
   runSimulationExperiment: (request) => invoke('playground:simulation:run', request),

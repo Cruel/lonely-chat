@@ -49,6 +49,12 @@ const modelsAPI = {
   }),
   onSpeechTestChange: () => () => {},
   getPlaygroundStatus: async () => ({ busy: false }),
+  listPromptPresets: async () => [],
+  listPromptPresetRevisions: async () => [],
+  savePromptPreset: async () => {
+    throw new Error('Not used');
+  },
+  deletePromptPreset: async () => {},
   onPlaygroundStatus: () => () => {},
   runFreeform: async () => {
     throw new Error('Not used in this test.');

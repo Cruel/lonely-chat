@@ -20,9 +20,10 @@ import type {
 } from '../../shared/playground-contract';
 import type { ModelManagerSnapshot } from '../../shared/model-install-contract';
 import type { ChatterIdentity } from '../../shared/audience-contract';
+import type { PromptPreset } from '../../shared/prompt-preset-contract';
 
 type Preview = { constructedRequest: unknown; submittedRequest: unknown };
-type HistoryItem = { id: string; result: SimulationExperimentResult };
+type HistoryItem = { id: string; result: SimulationExperimentResult; sourceRevision: string };
 const defaultRoster: ChatterIdentity[] = [
   { author: 'pixelpilot', color: '#bba5ff' },
   { author: 'lunar_fox', color: '#62d9b4' },
@@ -57,6 +58,11 @@ export function SimulationPlayground({
   const [errorLogSource, setErrorLogSource] = useState<'ipc' | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [presets, setPresets] = useState<PromptPreset[]>([]);
+  const [presetId, setPresetId] = useState('');
+  const [presetName, setPresetName] = useState('');
+  const [loadedRevision, setLoadedRevision] = useState<number | null>(null);
+  const [revisions, setRevisions] = useState<PromptPreset[]>([]);
 
   const installed = models?.installations.filter((entry) => entry.role === 'vision-language') ?? [];
   const active = models?.active['vision-language'];
@@ -72,6 +78,12 @@ export function SimulationPlayground({
     const api = window.lonelyChat;
     let mounted = true;
     let observedStatus = false;
+    void api
+      ?.listPromptPresets()
+      .then((value) => {
+        if (mounted) setPresets(value);
+      })
+      .catch(() => {});
     const stopModels = api?.onModelsChange((value) => {
       if (mounted) setModels(value);
     });
@@ -143,6 +155,78 @@ export function SimulationPlayground({
     };
   }
 
+  function loadPreset(id: string) {
+    const preset = presets.find((item) => item.id === id);
+    if (!preset) return;
+    void window.lonelyChat
+      ?.listPromptPresetRevisions(id)
+      .then(setRevisions)
+      .catch(() => {});
+    loadRevision(preset);
+  }
+
+  function loadRevision(preset: PromptPreset) {
+    setPresetId(preset.id);
+    setPresetName(preset.name);
+    setLoadedRevision(preset.revision);
+    const v = preset.values;
+    setContext(v.context);
+    setCycle(String(v.cycle));
+    setWindowMs(String(v.playbackWindowMs));
+    setActivity(v.chatActivity);
+    setRoster(JSON.stringify(v.roster, null, 2));
+    setEvents(JSON.stringify(v.events, null, 2));
+    setTranscripts(JSON.stringify(v.transcripts, null, 2));
+    setObservations(JSON.stringify(v.observations, null, 2));
+    setRecentChat(JSON.stringify(v.recentChat, null, 2));
+    setUseRaw(false);
+    setRawJson('');
+    setFrames([]);
+    setPreview(null);
+  }
+
+  async function savePreset() {
+    try {
+      if (!window.lonelyChat) return;
+      const validated = selectedModelId
+        ? await window.lonelyChat.previewSimulation({
+            ...request(),
+            rawRequestJson: undefined,
+            frames: undefined,
+          })
+        : null;
+      // Only persist structured values. Selected media and raw overrides are ephemeral.
+      const preset = await window.lonelyChat.savePromptPreset({
+        ...(presetId ? { id: presetId } : {}),
+        name: presetName,
+        values: request().values,
+      });
+      setPresets(await window.lonelyChat.listPromptPresets());
+      setRevisions(await window.lonelyChat.listPromptPresetRevisions(preset.id));
+      setPresetId(preset.id);
+      setLoadedRevision(preset.revision);
+      setPreview(validated);
+      setError(null);
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : String(failure));
+    }
+  }
+
+  async function deletePreset() {
+    if (!presetId || !window.lonelyChat) return;
+    try {
+      await window.lonelyChat.deletePromptPreset(presetId);
+      setPresets(await window.lonelyChat.listPromptPresets());
+      setRevisions([]);
+      setPresetId('');
+      setLoadedRevision(null);
+      setPresetName('');
+      setError(null);
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : String(failure));
+    }
+  }
+
   const construct = async () => {
     if (!window.lonelyChat) return;
     setError(null);
@@ -170,7 +254,11 @@ export function SimulationPlayground({
       submittedToMain = true;
       const result = await window.lonelyChat.runSimulationExperiment(payload);
       const id = crypto.randomUUID();
-      setHistory((prior) => [{ id, result }, ...prior].slice(0, 10));
+      const sourceRevision =
+        presetId && loadedRevision
+          ? `${presetName} · based on revision ${loadedRevision} (independent draft)`
+          : 'Independent draft (no saved revision)';
+      setHistory((prior) => [{ id, result, sourceRevision }, ...prior].slice(0, 10));
       setSelectedId(id);
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : String(failure));
@@ -191,6 +279,99 @@ export function SimulationPlayground({
         </p>
       </div>
       <div className="space-y-4 rounded-xl border border-border bg-card p-5">
+        <Label htmlFor="simulation-preset">Named prompt preset</Label>
+        <Select
+          value={presetId || '__new'}
+          onValueChange={(value) => {
+            if (value === '__new') {
+              setPresetId('');
+              setPresetName('');
+              setLoadedRevision(null);
+              setRevisions([]);
+            } else if (value) loadPreset(value);
+          }}
+          items={[
+            { value: '__new', label: 'New preset / independent experiment' },
+            ...presets.map((p) => ({ value: p.id, label: `${p.name} · revision ${p.revision}` })),
+          ]}
+        >
+          <SelectTrigger id="simulation-preset" className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__new">New preset / independent experiment</SelectItem>
+            {presets.map((p) => (
+              <SelectItem key={p.id} value={p.id}>
+                {p.name} · revision {p.revision}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {presetId && revisions.length > 0 && (
+          <>
+            <Label htmlFor="playground-preset-revision">Load revision</Label>
+            <Select
+              value={String(loadedRevision ?? '')}
+              onValueChange={(value) => {
+                const revision = revisions.find((item) => String(item.revision) === value);
+                if (revision) loadRevision(revision);
+              }}
+              items={revisions.map((item) => ({
+                value: String(item.revision),
+                label: `Revision ${item.revision}`,
+              }))}
+            >
+              <SelectTrigger id="playground-preset-revision" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {revisions.map((item) => (
+                  <SelectItem key={item.revision} value={String(item.revision)}>
+                    Revision {item.revision}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </>
+        )}
+        <Label htmlFor="preset-name">Preset name</Label>
+        <Input
+          id="preset-name"
+          maxLength={80}
+          value={presetName}
+          onChange={(event) => setPresetName(event.target.value)}
+        />
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="secondary"
+            onClick={() => void savePreset()}
+            disabled={!presetName.trim()}
+          >
+            {' '}
+            {presetId ? 'Save new revision' : 'Create preset'}{' '}
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => {
+              setPresetId('');
+              setLoadedRevision(null);
+              setRevisions([]);
+              setPresetName(presetName ? presetName + ' copy' : '');
+            }}
+          >
+            Branch as new preset
+          </Button>
+          {presetId && (
+            <Button variant="outline" onClick={() => void deletePreset()}>
+              Delete preset
+            </Button>
+          )}
+        </div>
+        <p className="text-xs text-zinc-400">
+          {loadedRevision
+            ? `Loaded revision ${loadedRevision}. Edits are independent until saved; experiments never update the preset.`
+            : 'Unsaved independent experiment.'}
+        </p>
         <Label htmlFor="simulation-model">Installed model</Label>
         <Select
           items={installed.map((item) => ({
@@ -393,6 +574,7 @@ export function SimulationPlayground({
           <p className="text-sm text-zinc-400">No simulation experiments yet.</p>
         ) : (
           <div className="space-y-4">
+            <p className="text-xs text-zinc-400">{selected.sourceRevision}</p>
             <p className="text-xs text-zinc-400">
               {selected.result.modelId} · {selected.result.durationMs} ms ·{' '}
               {selected.result.errorStage ?? 'Validated'}

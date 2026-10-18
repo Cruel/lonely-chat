@@ -43,6 +43,7 @@ import { SpeechPlayground } from '@/components/speech-playground';
 import { AudioInput } from '@/components/audio-input';
 import type { AudioStatus } from '../../shared/audio-contract';
 import type { NativeServiceStatus } from '../../shared/native-service-contract';
+import type { PromptPreset } from '../../shared/prompt-preset-contract';
 import { DEFAULT_OVERLAY_PORT, type OverlayStatus } from '../../shared/overlay-contract';
 import { useChat } from '../use-chat';
 import { useSession } from '../use-session';
@@ -125,6 +126,10 @@ export function DesktopPage() {
   const [overlayPort, setOverlayPort] = useState(String(DEFAULT_OVERLAY_PORT));
   const [overlayBusy, setOverlayBusy] = useState(false);
   const [manualContext, setManualContext] = useState('');
+  const [promptPresets, setPromptPresets] = useState<PromptPreset[]>([]);
+  const [selectedPresetId, setSelectedPresetId] = useState('');
+  const [presetRevisions, setPresetRevisions] = useState<PromptPreset[]>([]);
+  const [selectedPresetRevision, setSelectedPresetRevision] = useState<number | null>(null);
   const [sessionSeedText, setSessionSeedText] = useState('');
   const [inferenceMode, setInferenceMode] = useState<InferenceMode>('fake');
   const [inputMode, setInputMode] = useState<'live' | 'recorded'>('live');
@@ -140,6 +145,20 @@ export function DesktopPage() {
   const [sampleBusy, setSampleBusy] = useState(false);
   const [audioStatus, setAudioStatus] = useState<AudioStatus | null>(null);
   const [nativeStatus, setNativeStatus] = useState<NativeServiceStatus | null>(null);
+  useEffect(() => {
+    if (section !== 'simulation') return;
+    let active = true;
+    void window.lonelyChat
+      ?.listPromptPresets()
+      .then((items) => {
+        if (active) setPromptPresets(items);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [section]);
+
   useEffect(() => {
     let live = true;
     const unsubscribe = window.lonelyChat?.onAudioChange((next) => {
@@ -225,6 +244,10 @@ export function DesktopPage() {
       hasVideoFile: inputMode === 'recorded' && recordedSelection.hasFile,
       hasAudioFiles: inputMode === 'recorded' && recordedAudioSelection.count > 0,
       ...(configuredSeed === undefined ? {} : { seed: configuredSeed }),
+      ...(selectedPresetId ? { presetId: selectedPresetId } : {}),
+      ...(selectedPresetId && selectedPresetRevision
+        ? { presetRevision: selectedPresetRevision }
+        : {}),
     });
     if (!started || inputMode !== 'recorded') return;
     try {
@@ -402,6 +425,84 @@ export function DesktopPage() {
                     <SelectItem value="native">Local llama.cpp (active GGUF)</SelectItem>
                   </SelectContent>
                 </Select>
+                <Label htmlFor="session-preset" className="mt-4 text-sm text-zinc-200">
+                  Prompt preset
+                </Label>
+                <Select
+                  value={selectedPresetId || '__manual'}
+                  onValueChange={(value) => {
+                    setSelectedPresetId(value === '__manual' ? '' : (value ?? ''));
+                    const chosen = promptPresets.find((p) => p.id === value);
+                    setPresetRevisions([]);
+                    setSelectedPresetRevision(chosen?.revision ?? null);
+                    if (chosen) {
+                      setManualContext(chosen.values.context);
+                      void window.lonelyChat
+                        ?.listPromptPresetRevisions(chosen.id)
+                        .then(setPresetRevisions)
+                        .catch(() => {});
+                    }
+                  }}
+                  items={[
+                    { value: '__manual', label: 'Manual context' },
+                    ...promptPresets.map((p) => ({
+                      value: p.id,
+                      label: `${p.name} · revision ${p.revision}`,
+                    })),
+                  ]}
+                >
+                  <SelectTrigger id="session-preset" disabled={running} className="mt-2 w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__manual">Manual context</SelectItem>
+                    {promptPresets.map((p) => (
+                      <SelectItem value={p.id} key={p.id}>
+                        {p.name} · revision {p.revision}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {selectedPresetId && (
+                  <>
+                    <Label htmlFor="session-preset-revision" className="mt-4 text-sm text-zinc-200">
+                      Preset revision
+                    </Label>
+                    <Select
+                      value={String(selectedPresetRevision ?? '')}
+                      onValueChange={(value) => {
+                        const chosen = presetRevisions.find((p) => String(p.revision) === value);
+                        if (chosen) {
+                          setSelectedPresetRevision(chosen.revision);
+                          setManualContext(chosen.values.context);
+                        }
+                      }}
+                      items={presetRevisions.map((p) => ({
+                        value: String(p.revision),
+                        label: `Revision ${p.revision}`,
+                      }))}
+                    >
+                      <SelectTrigger
+                        id="session-preset-revision"
+                        disabled={running}
+                        className="mt-2 w-full"
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {presetRevisions.map((p) => (
+                          <SelectItem key={p.revision} value={String(p.revision)}>
+                            Revision {p.revision}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </>
+                )}
+                <p className="mt-2 text-xs text-zinc-500">
+                  The selected preset’s context and chat activity are captured at Start. Sample
+                  history stays Playground-only.
+                </p>
                 <Label htmlFor="simulation-context" className="mt-4 text-sm text-zinc-200">
                   Stream context
                 </Label>
@@ -410,7 +511,7 @@ export function DesktopPage() {
                   className="mt-2 min-h-24 resize-y text-sm"
                   maxLength={2000}
                   value={manualContext}
-                  disabled={running}
+                  disabled={running || Boolean(selectedPresetId)}
                   onChange={(event) => setManualContext(event.target.value)}
                   placeholder="For example: I'm exploring a haunted castle in a fantasy game…"
                 />
@@ -838,6 +939,14 @@ export function DesktopPage() {
                   <div>
                     <dt className="text-zinc-400">Retry attempts</dt>
                     <dd className="mt-1">{session.status.retryAttempt}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-zinc-400">Frozen prompt preset</dt>
+                    <dd className="mt-1">
+                      {session.status.promptPreset
+                        ? `${session.status.promptPreset.name} · revision ${session.status.promptPreset.revision}`
+                        : 'Manual context'}
+                    </dd>
                   </div>
                   <div>
                     <dt className="text-zinc-400">Session seed</dt>

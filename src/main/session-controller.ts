@@ -57,6 +57,7 @@ export class SessionController {
   private abort: AbortController | null = null;
   private inferenceTimer: unknown = null;
   private preferences: SessionPreferences;
+  private runPreferences: SessionPreferences;
   private context = '';
   private activeInference: InferenceProvider;
   private shutdownPromise: Promise<void> = Promise.resolve();
@@ -83,6 +84,7 @@ export class SessionController {
     this.chat = chat;
     this.activeInference = inference;
     this.preferences = validatePreferences(initialPreferences);
+    this.runPreferences = { ...this.preferences };
     this.history = new InferenceHistory(this.preferences);
     this.video = new VideoFrameBuffer(this.preferences);
     this.scheduler = new ChatScheduler(
@@ -101,6 +103,11 @@ export class SessionController {
     return { ...this.preferences };
   }
 
+  /** The inference worker and each cycle read the start-of-run revision. */
+  getRunPreferences(): SessionPreferences {
+    return { ...this.runPreferences };
+  }
+
   setPreferences(value: unknown): SessionPreferences {
     const next = validatePreferences(value);
     if (
@@ -112,8 +119,10 @@ export class SessionController {
       throw new Error('Stop the simulation before resizing the audience.');
     }
     this.preferences = next;
-    this.history.configure(this.preferences, this.clock.wallNow());
-    this.video.configure(this.preferences, this.clock.wallNow());
+    if (!['starting', 'running', 'switching'].includes(this.state.phase)) {
+      this.history.configure(this.preferences, this.clock.wallNow());
+      this.video.configure(this.preferences, this.clock.wallNow());
+    }
     this.setState({
       events: this.history.recentEvents(this.clock.wallNow()),
       droppedObservations: this.history.droppedObservations,
@@ -163,6 +172,12 @@ export class SessionController {
     mode: InferenceMode = 'fake',
     modelId: string | null = null,
     options: SimulationInputOptions = { inputMode: 'live', publishToOverlay: true },
+    preset?: {
+      id: string;
+      name: string;
+      revision: number;
+      chatActivity: SessionPreferences['chatActivity'];
+    },
   ): SessionSnapshot {
     if (this.switchBusy) throw new Error('Wait for model switching to finish before restarting.');
     if (
@@ -178,7 +193,13 @@ export class SessionController {
       typeof options.publishToOverlay !== 'boolean' ||
       (options.hasVideoFile !== undefined && typeof options.hasVideoFile !== 'boolean') ||
       (options.hasAudioFiles !== undefined && typeof options.hasAudioFiles !== 'boolean') ||
-      (options.seed !== undefined && !validInferenceSeed(options.seed))
+      (options.seed !== undefined && !validInferenceSeed(options.seed)) ||
+      (options.presetId !== undefined &&
+        (typeof options.presetId !== 'string' || options.presetId.length > 100)) ||
+      (options.presetRevision !== undefined &&
+        (!Number.isSafeInteger(options.presetRevision) ||
+          options.presetRevision < 1 ||
+          !options.presetId))
     )
       throw new Error('Invalid simulation media options.');
     const context =
@@ -196,6 +217,12 @@ export class SessionController {
     const sessionSeed = options.seed ?? randomInferenceSeed();
     this.activeInference = mode === 'native' ? this.nativeInference! : this.inference;
     this.context = context;
+    this.runPreferences = {
+      ...this.preferences,
+      ...(preset ? { chatActivity: preset.chatActivity } : {}),
+    };
+    this.history.configure(this.runPreferences, this.clock.wallNow());
+    this.video.configure(this.runPreferences, this.clock.wallNow());
     this.epoch++;
     this.history.reset(this.clock.wallNow());
     this.chatStartSequence = this.chat.snapshot().sequence;
@@ -212,13 +239,14 @@ export class SessionController {
       cycle: 0,
       retryAttempt: 0,
       sessionSeed,
+      promptPreset: preset ? { id: preset.id, name: preset.name, revision: preset.revision } : null,
       effectiveSeed: null,
       recentAttemptSeeds: [],
       error: null,
       warning: null,
       latestInferenceMs: null,
       smoothedInferenceMs: null,
-      playbackWindowMs: this.preferences.cycleIntervalMs,
+      playbackWindowMs: this.runPreferences.cycleIntervalMs,
       droppedObservations: 0,
       estimatedNextInferenceMs: null,
       adaptiveFrameLimit: null,
@@ -228,11 +256,11 @@ export class SessionController {
       recentErrors: [],
     });
     const epoch = this.epoch;
-    if (this.preferences.baselineMs > 0) {
+    if (this.runPreferences.baselineMs > 0) {
       this.inferenceTimer = this.clock.setTimeout(() => {
         this.inferenceTimer = null;
         this.runCycle(epoch);
-      }, this.preferences.baselineMs);
+      }, this.runPreferences.baselineMs);
     } else {
       this.runCycle(epoch);
     }
@@ -376,8 +404,8 @@ export class SessionController {
     return Math.min(
       MAX_PLAYBACK_WINDOW_MS,
       Math.max(
-        this.preferences.cycleIntervalMs,
-        Math.round(this.smoothedMs ?? this.preferences.cycleIntervalMs),
+        this.runPreferences.cycleIntervalMs,
+        Math.round(this.smoothedMs ?? this.runPreferences.cycleIntervalMs),
       ),
     );
   }
@@ -400,7 +428,7 @@ export class SessionController {
       this.audience?.snapshot().members,
     );
     const plan = chooseWorkload(
-      this.preferences,
+      this.runPreferences,
       this.state.mode === 'native' ? this.smoothedMs : null,
       this.state.mode === 'native' ? this.measuredResources : null,
     );
@@ -408,11 +436,11 @@ export class SessionController {
       snapshot.boundary.fromMs,
       now,
       cycle === 1,
-      this.state.mode === 'native' ? plan.frameLimit : this.preferences.videoMaxFrames,
+      this.state.mode === 'native' ? plan.frameLimit : this.runPreferences.videoMaxFrames,
     );
     const input: CycleInput = {
       ...snapshot,
-      chatActivity: this.preferences.chatActivity,
+      chatActivity: this.runPreferences.chatActivity,
       frames: media.frames,
       videoWindow: { fromMs: media.fromMs, throughMs: media.throughMs, truncated: media.truncated },
     };
@@ -423,7 +451,7 @@ export class SessionController {
       warning: null,
       adaptiveFrameLimit: this.state.mode === 'native' ? plan.frameLimit : null,
       effectiveCycleMs:
-        this.state.mode === 'native' ? plan.minimumIntervalMs : this.preferences.cycleIntervalMs,
+        this.state.mode === 'native' ? plan.minimumIntervalMs : this.runPreferences.cycleIntervalMs,
       adaptationReason: this.state.mode === 'native' ? plan.reason : null,
     });
     const cycleStarted = this.clock.now();
@@ -497,7 +525,7 @@ export class SessionController {
         this.diagnostics?.record(effectiveInput, duration, result, diagnosticToken);
         const windowMs = this.playbackWindow();
         const nextPlan = chooseWorkload(
-          this.preferences,
+          this.runPreferences,
           this.state.mode === 'native' ? this.smoothedMs : null,
           this.state.mode === 'native' ? this.measuredResources : null,
         );
@@ -543,7 +571,7 @@ export class SessionController {
           0,
           (this.state.mode === 'native'
             ? nextPlan.minimumIntervalMs
-            : this.preferences.cycleIntervalMs) -
+            : this.runPreferences.cycleIntervalMs) -
             (this.clock.now() - cycleStarted),
         );
         this.inferenceTimer = this.clock.setTimeout(() => {

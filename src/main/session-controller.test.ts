@@ -8,6 +8,38 @@ import { FakeClock, flushMicrotasks as flush } from './test-support/fake-clock';
 import type { InferenceProvider } from './fake-inference';
 
 describe('session lifecycle with deterministic clock', () => {
+  it('captures a preset revision and runtime settings until Stop, including subsequent cycles', async () => {
+    const clock = new FakeClock();
+    const session = new SessionController(new ChatService(), undefined, clock, {
+      cycleIntervalMs: 1500,
+    });
+    const started = session.start(
+      'saved context',
+      'fake',
+      null,
+      { inputMode: 'recorded', publishToOverlay: false },
+      { id: 'preset-1', name: 'Saved', revision: 3, chatActivity: 'busy' },
+    );
+    expect(started.promptPreset).toEqual({ id: 'preset-1', name: 'Saved', revision: 3 });
+    expect(session.getRunPreferences().chatActivity).toBe('busy');
+    session.setPreferences({
+      ...session.getPreferences(),
+      cycleIntervalMs: 5000,
+      chatActivity: 'quiet',
+    });
+    expect(session.getPreferences().cycleIntervalMs).toBe(5000);
+    expect(session.getRunPreferences().cycleIntervalMs).toBe(1500);
+    expect(session.getRunPreferences().chatActivity).toBe('busy');
+    await flush();
+    clock.advance(1500);
+    await flush();
+    expect(session.snapshot().cycle).toBe(2);
+    expect(session.snapshot().promptPreset?.revision).toBe(3);
+    session.stop();
+    expect(session.start('new context').promptPreset).toBeNull();
+    expect(session.getRunPreferences().cycleIntervalMs).toBe(5000);
+    session.stop();
+  });
   it('classifies fatal recorded decoder failures independently of user-facing text', async () => {
     const session = new SessionController(new ChatService());
     session.start('recording', 'fake', null, { inputMode: 'recorded', publishToOverlay: false });

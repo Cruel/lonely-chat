@@ -71,6 +71,12 @@ function setup() {
     onModelsChange: () => () => {},
     onPlaygroundStatus: () => () => {},
     getPlaygroundStatus: async () => ({ busy: false }),
+    listPromptPresets: async () => [],
+    listPromptPresetRevisions: async () => [],
+    savePromptPreset: async () => {
+      throw new Error('Not used');
+    },
+    deletePromptPreset: async () => {},
     previewSimulation,
     runSimulationExperiment,
   } as unknown as DesktopAPI;

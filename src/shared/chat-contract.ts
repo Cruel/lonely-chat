@@ -48,6 +48,8 @@ import type {
   SimulationExperimentRequest,
   SimulationExperimentResult,
 } from './playground-contract';
+import type { PromptPreset } from './prompt-preset-contract';
+import type { SimulationExperimentValues } from './playground-contract';
 import type { SpeechTestStart, SpeechTestSnapshot } from './speech-playground-contract';
 import type { OverlayStatus } from './overlay-contract';
 import type { ModelDiscoveryResult, ModelRole } from './model-contract';
@@ -64,6 +66,10 @@ export interface DesktopInvocations {
   'logs:export': boolean;
   'renderer:report-failure': void;
   'playground:status': PlaygroundStatus;
+  'presets:list': PromptPreset[];
+  'presets:revisions': PromptPreset[];
+  'presets:save': PromptPreset;
+  'presets:delete': void;
   'playground:run': FreeformResult;
   'playground:simulation:preview': { constructedRequest: unknown; submittedRequest: unknown };
   'playground:simulation:run': SimulationExperimentResult;
@@ -133,6 +139,10 @@ export interface DesktopArguments {
   'logs:export': [ids: readonly string[]];
   'renderer:report-failure': [failure: RendererFailure];
   'playground:status': [];
+  'presets:list': [];
+  'presets:revisions': [id: string];
+  'presets:save': [input: { id?: string; name: string; values: SimulationExperimentValues }];
+  'presets:delete': [id: string];
   'playground:run': [request: FreeformRequest];
   'playground:simulation:preview': [request: SimulationExperimentRequest];
   'playground:simulation:run': [request: SimulationExperimentRequest];
@@ -197,6 +207,14 @@ export interface DesktopAPI {
   exportDiagnosticCapture(): Promise<boolean>;
   getPrivateWorkerLines(): Promise<readonly PrivateWorkerLine[]>;
   getPlaygroundStatus(): Promise<PlaygroundStatus>;
+  listPromptPresets(): Promise<PromptPreset[]>;
+  listPromptPresetRevisions(id: string): Promise<PromptPreset[]>;
+  savePromptPreset(input: {
+    id?: string;
+    name: string;
+    values: SimulationExperimentValues;
+  }): Promise<PromptPreset>;
+  deletePromptPreset(id: string): Promise<void>;
   runFreeform(request: FreeformRequest): Promise<FreeformResult>;
   previewSimulation(
     request: SimulationExperimentRequest,
