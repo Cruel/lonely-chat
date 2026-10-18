@@ -140,7 +140,14 @@ export class SessionController {
   }
 
   recordTranscript(transcript: LabeledTranscript): void {
-    this.requireActive();
+    if (
+      !(
+        this.state.phase === 'error' &&
+        this.state.inputMode === 'recorded' &&
+        !this.state.error?.startsWith('Recorded video failed:')
+      )
+    )
+      this.requireActive();
     this.history.recordTranscript(transcript, this.clock.wallNow());
     this.refreshDropped();
   }
@@ -174,15 +181,18 @@ export class SessionController {
       !['live', 'recorded'].includes(options.inputMode) ||
       typeof options.publishToOverlay !== 'boolean' ||
       (options.hasVideoFile !== undefined && typeof options.hasVideoFile !== 'boolean') ||
+      (options.hasAudioFiles !== undefined && typeof options.hasAudioFiles !== 'boolean') ||
       (options.seed !== undefined && !validInferenceSeed(options.seed))
     )
       throw new Error('Invalid simulation media options.');
     const context =
-      rawContext === '' && mode === 'native' && this.video.active
-        ? options.inputMode === 'recorded'
-          ? 'React to the recorded video input.'
-          : 'React to the live video input.'
-        : validateContext(rawContext);
+      rawContext === '' && options.inputMode === 'recorded' && options.hasAudioFiles
+        ? 'React to the recorded audio inputs.'
+        : rawContext === '' && mode === 'native' && this.video.active
+          ? options.inputMode === 'recorded'
+            ? 'React to the recorded video input.'
+            : 'React to the live video input.'
+          : validateContext(rawContext);
     if (mode !== 'fake' && mode !== 'native') throw new Error('Unknown inference mode.');
     if (mode === 'native' && !this.nativeInference) {
       throw new Error('The native inference runtime is not configured.');

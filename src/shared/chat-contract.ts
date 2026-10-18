@@ -32,7 +32,12 @@ import type { WindowStatus } from './window-status-contract';
 import type { AudienceSnapshot } from './audience-contract';
 import type { NativeServiceStatus } from './native-service-contract';
 import type { VideoFrame, VideoSource } from './video-contract';
-import type { AudioInputConfiguration, AudioSegment, AudioStatus } from './audio-contract';
+import type {
+  AudioInputConfiguration,
+  AudioSegment,
+  AudioStatus,
+  RecordedAudioStart,
+} from './audio-contract';
 import type { DiagnosticStatus } from './diagnostic-contract';
 import type { LogEntry, LogRetention, LogSnapshot } from './log-contract';
 import type { RendererFailure } from './renderer-log-contract';
@@ -109,6 +114,10 @@ export interface DesktopInvocations {
   'audio:remove': AudioStatus;
   'audio:stop': AudioStatus;
   'audio:segment': void;
+  'audio:recorded:start': AudioStatus;
+  'audio:recorded:arm': void;
+  'audio:recorded:pcm': void;
+  'audio:recorded:finish': void;
 }
 
 /** Method arguments are also a shared contract, not renderer-defined strings. */
@@ -172,6 +181,10 @@ export interface DesktopArguments {
   'audio:remove': [id: string];
   'audio:stop': [captureId: string];
   'audio:segment': [segment: AudioSegment, captureId: string];
+  'audio:recorded:start': [source: RecordedAudioStart];
+  'audio:recorded:arm': [captureId: string, originMs: number, mediaStartMs: number];
+  'audio:recorded:pcm': [samples: Float32Array, captureId: string];
+  'audio:recorded:finish': [captureId: string];
 }
 
 export interface DesktopAPI {
@@ -255,4 +268,8 @@ export interface DesktopAPI {
   retryAudio(id: string): Promise<AudioStatus>;
   stopAudio(captureId: string): Promise<AudioStatus>;
   submitAudioSegment(segment: AudioSegment, captureId: string): Promise<void>;
+  startRecordedAudio(source: RecordedAudioStart): Promise<AudioStatus>;
+  armRecordedAudio(captureId: string, originMs: number, mediaStartMs: number): Promise<void>;
+  submitRecordedAudioPcm(samples: Float32Array, captureId: string): Promise<void>;
+  finishRecordedAudio(captureId: string): Promise<void>;
 }

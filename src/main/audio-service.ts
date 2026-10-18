@@ -1,9 +1,15 @@
-import type { AudioSegment, AudioSourceStatus, AudioStatus } from '../shared/audio-contract';
+import type {
+  AudioSegment,
+  AudioSourceStatus,
+  AudioStatus,
+  RecordedAudioStart,
+} from '../shared/audio-contract';
 import { validateAudioId, validateAudioLabel } from '../shared/audio-contract';
 import type { LabeledTranscript } from '../shared/session-contract';
 import type { NativeSpeech } from './native-speech';
 import type { OperationalErrorSink } from './operational-logger';
 import { systemClock, type TimerClock } from './chat-scheduler';
+import { MonoResampler, SpeechSegmenter } from './audio-segmentation';
 
 const MAX_SEGMENTS = 10;
 const PCM_LIMIT = 16000 * 30;
@@ -19,6 +25,14 @@ interface Source {
   restartTimer: unknown;
   unsubscribeWorker: (() => void) | null;
   retiring: Promise<void>;
+  recorded: {
+    resampler: MonoResampler;
+    segmenter: SpeechSegmenter;
+    offsetMs: number;
+    seekMs: number;
+    originMs: number | null;
+    finished: boolean;
+  } | null;
 }
 
 /** Independently owned source/worker lifecycles; a stopped input cannot affect its peers. */
@@ -89,14 +103,110 @@ export class AudioService {
         restartTimer: null,
         unsubscribeWorker: null,
         retiring: Promise.resolve(),
+        recorded: null,
       };
       this.sources.set(inputId, source);
     }
     source.captureId = token;
+    source.lastObservedAt = -Infinity;
+    source.recorded = null;
     source.restartCount = 0;
     this.patch(source, { label: safeLabel, phase: 'starting', error: null, pendingSegments: 0 });
     await this.launchWorker(source);
     return this.snapshot();
+  }
+
+  /** File PCM shares the same resampler, 16 kHz VAD and per-source Whisper worker as live capture. */
+  async startRecorded(value: RecordedAudioStart): Promise<AudioStatus> {
+    if (!value || typeof value !== 'object') throw new Error('Invalid recorded audio source.');
+    const id = validateAudioId(value.id);
+    if (
+      !Number.isInteger(value.sampleRate) ||
+      value.sampleRate < 8000 ||
+      value.sampleRate > 192000 ||
+      !Number.isSafeInteger(value.offsetMs) ||
+      Math.abs(value.offsetMs) > 86_400_000 ||
+      !Number.isSafeInteger(value.seekMs) ||
+      value.seekMs < 0 ||
+      value.seekMs > 86_400_000 ||
+      value.seekMs + value.offsetMs < 0
+    )
+      throw new Error('Invalid recorded audio rate or timeline alignment.');
+    const result = await this.start(id, `recorded:${id}`, value.label, value.captureId);
+    const source = this.findCapture(value.captureId);
+    if (source && source.status.phase === 'ready') {
+      source.recorded = {
+        resampler: new MonoResampler(value.sampleRate),
+        segmenter: new SpeechSegmenter(),
+        offsetMs: value.offsetMs,
+        seekMs: value.seekMs,
+        originMs: null,
+        finished: false,
+      };
+    }
+    return result;
+  }
+
+  armRecorded(captureId: string, originMs: number, mediaStartMs: number): void {
+    const source = this.findCapture(validateAudioId(captureId));
+    if (
+      !source?.recorded ||
+      source.status.phase !== 'ready' ||
+      source.recorded.originMs !== null ||
+      !Number.isFinite(originMs) ||
+      originMs < 0 ||
+      !Number.isFinite(mediaStartMs) ||
+      mediaStartMs < source.recorded.seekMs ||
+      mediaStartMs + source.recorded.offsetMs < 0
+    )
+      throw new Error('Recorded audio source is not ready for synchronization.');
+    source.recorded.originMs = originMs;
+    source.recorded.seekMs = mediaStartMs;
+  }
+
+  pushRecorded(samples: Float32Array, captureId: string): void {
+    const source = this.findCapture(validateAudioId(captureId));
+    const track = source?.recorded;
+    if (
+      !source ||
+      !track ||
+      source.status.phase !== 'ready' ||
+      track.originMs === null ||
+      track.finished
+    )
+      throw new Error('Recorded audio source is not active.');
+    if (
+      !(samples instanceof Float32Array) ||
+      samples.length === 0 ||
+      samples.length > 96_000 ||
+      !samples.every((sample) => Number.isFinite(sample) && Math.abs(sample) <= 1.01)
+    )
+      throw new Error('Invalid recorded PCM chunk.');
+    for (const slice of track.segmenter.pushDetailed(track.resampler.push(samples))) {
+      this.submit(
+        {
+          samples: slice.samples,
+          observedAt: track.originMs + track.offsetMs + track.seekMs + slice.endSample / 16,
+        },
+        captureId,
+      );
+    }
+  }
+
+  finishRecorded(captureId: string): void {
+    const source = this.findCapture(validateAudioId(captureId));
+    const track = source?.recorded;
+    if (!source || !track || track.originMs === null || track.finished) return;
+    track.finished = true;
+    const slice = track.segmenter.flushDetailed();
+    if (slice && source.status.phase === 'ready')
+      this.submit(
+        {
+          samples: slice.samples,
+          observedAt: track.originMs + track.offsetMs + track.seekMs + slice.endSample / 16,
+        },
+        captureId,
+      );
   }
 
   /** Reconnect a failed worker without changing its capture identity or input label. */
@@ -165,7 +275,14 @@ export class AudioService {
     if (source.status.pendingSegments >= 2) return;
     const epoch = source.epoch;
     const label = source.status.label;
-    const observedAt = Math.max(this.now(), source.lastObservedAt + 1);
+    if (
+      value.observedAt !== undefined &&
+      (!Number.isFinite(value.observedAt) ||
+        value.observedAt < 0 ||
+        value.observedAt > this.now() + 1000)
+    )
+      throw new Error('Invalid recorded audio observation time.');
+    const observedAt = Math.max(value.observedAt ?? this.now(), source.lastObservedAt + 1);
     source.lastObservedAt = observedAt;
     this.patch(source, { pendingSegments: source.status.pendingSegments + 1 });
     void source.worker
@@ -328,6 +445,7 @@ export class AudioService {
   private release(source: Source): void {
     this.retireWorker(source);
     source.captureId = null;
+    source.recorded = null;
     source.restartCount = 0;
   }
 

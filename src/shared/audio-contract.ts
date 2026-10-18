@@ -27,6 +27,19 @@ export interface AudioInputConfiguration {
 export interface AudioSegment {
   /** 16 kHz, mono, finite PCM from one standard audio capture source. */
   readonly samples: Float32Array;
+  /** Recorded media segment end on the shared session clock; live capture omits it. */
+  readonly observedAt?: number;
+}
+
+export interface RecordedAudioStart {
+  readonly id: string;
+  readonly label: string;
+  readonly captureId: string;
+  readonly sampleRate: number;
+  /** File position to start decoding at, including negative-offset trim. */
+  readonly seekMs: number;
+  /** Track starts at this signed offset from the media timeline's zero. */
+  readonly offsetMs: number;
 }
 
 export function validateAudioLabel(value: unknown): string {

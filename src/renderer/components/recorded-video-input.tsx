@@ -3,7 +3,10 @@ import { Label } from '@/components/ui/label';
 import { RecordedVideoTimeline } from '../recorded-video-timeline';
 
 export interface RecordedVideoHandle {
-  begin(captureIntervalMs: number): Promise<void>;
+  begin(
+    captureIntervalMs: number,
+    origin?: { observedAt: number; monotonicMs: number },
+  ): Promise<void>;
   stop(): void;
 }
 
@@ -35,7 +38,7 @@ export const RecordedVideoInput = forwardRef<
     ref,
     () => ({
       stop,
-      async begin(captureIntervalMs: number) {
+      async begin(captureIntervalMs: number, origin) {
         if (!url) return;
         const element = video.current;
         if (!element || !ready || element.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
@@ -46,11 +49,13 @@ export const RecordedVideoInput = forwardRef<
         stop();
         const generation = epoch.current;
         element.pause();
-        element.currentTime = 0;
+        element.currentTime = origin
+          ? Math.max(0, (performance.now() - origin.monotonicMs) / 1000)
+          : 0;
         element.playbackRate = 1;
         element.muted = true; // Embedded audio must not leak into live monitoring or STT.
-        const originObservationMs = await api.getVideoClock();
-        const originMonotonicMs = performance.now();
+        const originObservationMs = origin?.observedAt ?? (await api.getVideoClock());
+        const originMonotonicMs = origin?.monotonicMs ?? performance.now();
         if (generation !== epoch.current) return;
         const timeline = new RecordedVideoTimeline(
           originObservationMs,

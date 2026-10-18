@@ -5,6 +5,7 @@ export interface SimulationInputOptions {
   /** Recorded chat stays in desktop preview unless explicitly published. */
   readonly publishToOverlay: boolean;
   readonly hasVideoFile?: boolean;
+  readonly hasAudioFiles?: boolean;
   /** Optional user-selected seed; otherwise generate a new effective seed at Start. */
   readonly seed?: number;
 }

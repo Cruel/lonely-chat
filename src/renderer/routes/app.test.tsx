@@ -157,6 +157,10 @@ const modelsAPI = {
   startAudio: async () => ({ revision: 1, sources: [], transcripts: [] }),
   stopAudio: async () => ({ revision: 2, sources: [], transcripts: [] }),
   submitAudioSegment: async () => {},
+  startRecordedAudio: async () => ({ revision: 0, sources: [], transcripts: [] }),
+  armRecordedAudio: async () => {},
+  submitRecordedAudioPcm: async () => {},
+  finishRecordedAudio: async () => {},
 };
 
 const emptyStatus: SessionSnapshot = {
@@ -232,6 +236,7 @@ it('starts and stops manual-context simulation, shows status and only saves pref
     inputMode: 'live',
     publishToOverlay: true,
     hasVideoFile: false,
+    hasAudioFiles: false,
     seed: 0,
   });
   fireEvent.click(screen.getByRole('button', { name: /Stop simulation/i }));

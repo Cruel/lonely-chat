@@ -48,8 +48,13 @@ export class SessionMedia {
   }
 
   recordTranscript(entry: LabeledTranscript): void {
-    if (['running', 'starting', 'switching'].includes(this.session.snapshot().phase)) {
+    const state = this.session.snapshot();
+    if (
+      ['running', 'starting', 'switching'].includes(state.phase) ||
+      (state.inputMode === 'recorded' &&
+        state.phase === 'error' &&
+        !state.error?.startsWith('Recorded video failed:'))
+    )
       this.session.recordTranscript(entry);
-    }
   }
 }

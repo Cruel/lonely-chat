@@ -32,6 +32,7 @@ import { ModelManager } from '@/components/model-manager';
 import { NumericSettingCombobox } from '@/components/numeric-setting-combobox';
 import { VideoInput } from '@/components/video-input';
 import { RecordedVideoInput, type RecordedVideoHandle } from '@/components/recorded-video-input';
+import { RecordedAudioInput, type RecordedAudioHandle } from '@/components/recorded-audio-input';
 import { DiagnosticCaptureControls } from '@/components/diagnostic-capture-controls';
 import { OperationalLogs } from '@/components/operational-logs';
 import { useUnreadLogErrors } from '../use-unread-log-errors';
@@ -130,6 +131,10 @@ export function DesktopPage() {
   const [recordedSelection, setRecordedSelection] = useState({ hasFile: false, ready: true });
   const [mediaError, setMediaError] = useState<string | null>(null);
   const recordedPlayer = useRef<RecordedVideoHandle>(null);
+  const recordedAudio = useRef<RecordedAudioHandle>(null);
+  const mediaStartGeneration = useRef(0);
+  const [recordedAudioSelection, setRecordedAudioSelection] = useState({ ready: true, count: 0 });
+  const updateRecordedAudioSelection = useCallback(setRecordedAudioSelection, []);
   const updateRecordedSelection = useCallback(setRecordedSelection, []);
   const [sampleBusy, setSampleBusy] = useState(false);
   const [audioStatus, setAudioStatus] = useState<AudioStatus | null>(null);
@@ -213,17 +218,33 @@ export function DesktopPage() {
     void session.updatePreferences({ ...session.preferences, ...changes });
 
   const startSimulation = async () => {
+    const generation = ++mediaStartGeneration.current;
     setMediaError(null);
     const started = await session.start(manualContext, inferenceMode, {
       inputMode,
       publishToOverlay: inputMode === 'live' || publishRecorded,
       hasVideoFile: inputMode === 'recorded' && recordedSelection.hasFile,
+      hasAudioFiles: inputMode === 'recorded' && recordedAudioSelection.count > 0,
       ...(configuredSeed === undefined ? {} : { seed: configuredSeed }),
     });
-    if (!started || inputMode !== 'recorded' || !recordedSelection.hasFile) return;
+    if (!started || inputMode !== 'recorded') return;
     try {
-      await recordedPlayer.current?.begin(session.preferences.videoCaptureIntervalMs);
+      await recordedAudio.current?.prepare();
+      if (generation !== mediaStartGeneration.current) return;
+      const api = window.lonelyChat;
+      if (!api) throw new Error('Desktop media integration is unavailable.');
+      const observedAt = await api.getVideoClock();
+      if (generation !== mediaStartGeneration.current) return;
+      const origin = { observedAt, monotonicMs: performance.now() };
+      // Both producers use one observation epoch; model processing never drives either clock.
+      await Promise.all([
+        recordedAudio.current?.begin(origin),
+        recordedSelection.hasFile
+          ? recordedPlayer.current?.begin(session.preferences.videoCaptureIntervalMs, origin)
+          : undefined,
+      ]);
     } catch (error) {
+      if (generation !== mediaStartGeneration.current) return;
       const message = error instanceof Error ? error.message : String(error);
       setMediaError(message);
       reportRendererFailure('simulation', 'operation', error);
@@ -232,7 +253,9 @@ export function DesktopPage() {
   };
 
   const stopSimulation = () => {
+    ++mediaStartGeneration.current;
     recordedPlayer.current?.stop();
+    recordedAudio.current?.stop();
     void session.stop();
   };
 
@@ -424,6 +447,11 @@ export function DesktopPage() {
                       running={mediaActive}
                       onSelectionChange={updateRecordedSelection}
                     />
+                    <RecordedAudioInput
+                      ref={recordedAudio}
+                      running={mediaActive}
+                      onSelectionChange={updateRecordedAudioSelection}
+                    />
                     <label className="mt-4 flex items-center gap-2 text-sm text-zinc-300">
                       <input
                         type="checkbox"
@@ -449,7 +477,8 @@ export function DesktopPage() {
                         !session.ready ||
                         session.busy ||
                         !seedValid ||
-                        (inputMode === 'recorded' && !recordedSelection.ready)
+                        (inputMode === 'recorded' &&
+                          (!recordedSelection.ready || !recordedAudioSelection.ready))
                       }
                       onClick={() => void startSimulation()}
                     >

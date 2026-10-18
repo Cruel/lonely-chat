@@ -157,6 +157,11 @@ const api: DesktopAPI = {
   retryAudio: (id) => invoke('audio:retry', id),
   stopAudio: (captureId) => invoke('audio:stop', captureId),
   submitAudioSegment: (segment, captureId) => invoke('audio:segment', segment, captureId),
+  startRecordedAudio: (source) => invoke('audio:recorded:start', source),
+  armRecordedAudio: (captureId, originMs, mediaStartMs) =>
+    invoke('audio:recorded:arm', captureId, originMs, mediaStartMs),
+  submitRecordedAudioPcm: (samples, captureId) => invoke('audio:recorded:pcm', samples, captureId),
+  finishRecordedAudio: (captureId) => invoke('audio:recorded:finish', captureId),
   onAudioChange: (listener) => {
     const receive = (
       _event: Electron.IpcRendererEvent,

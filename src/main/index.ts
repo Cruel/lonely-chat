@@ -220,6 +220,16 @@ function requireDesktop(event: Electron.IpcMainInvokeEvent): void {
   if (!trustedSender(event)) throw new Error('Unauthorized desktop IPC sender');
 }
 
+function requireRecordedAudio(): void {
+  const state = session.snapshot();
+  if (
+    state.inputMode !== 'recorded' ||
+    !['starting', 'running', 'switching', 'error'].includes(state.phase) ||
+    (state.phase === 'error' && state.error?.startsWith('Recorded video failed:'))
+  )
+    throw new Error('Recorded audio requires an active recorded simulation.');
+}
+
 function registerHandlers(): void {
   const actions = {
     'playground:status': () => playground.snapshot(),
@@ -539,6 +549,22 @@ function registerHandlers(): void {
       segment: import('../shared/audio-contract').AudioSegment,
       captureId: string,
     ) => audio.submit(segment, captureId),
+    'audio:recorded:start': (source: import('../shared/audio-contract').RecordedAudioStart) => {
+      requireRecordedAudio();
+      return audio.startRecorded(source);
+    },
+    'audio:recorded:arm': (captureId: string, originMs: number, mediaStartMs: number) => {
+      requireRecordedAudio();
+      audio.armRecorded(captureId, originMs, mediaStartMs);
+    },
+    'audio:recorded:pcm': (samples: Float32Array, captureId: string) => {
+      requireRecordedAudio();
+      audio.pushRecorded(samples, captureId);
+    },
+    'audio:recorded:finish': (captureId: string) => {
+      requireRecordedAudio();
+      audio.finishRecorded(captureId);
+    },
     'models:choose-directory': async () => {
       if (playground.busy || speechTest.busy)
         throw new Error('Stop Playground experiments before changing model storage.');
@@ -973,4 +999,8 @@ app.on('will-quit', () => {
   ipcMain.removeHandler('audio:remove');
   ipcMain.removeHandler('audio:stop');
   ipcMain.removeHandler('audio:segment');
+  ipcMain.removeHandler('audio:recorded:start');
+  ipcMain.removeHandler('audio:recorded:arm');
+  ipcMain.removeHandler('audio:recorded:pcm');
+  ipcMain.removeHandler('audio:recorded:finish');
 });
