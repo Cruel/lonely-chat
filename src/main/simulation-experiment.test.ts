@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PlaygroundService } from './playground-service';
+import { PrivateInferenceError } from './private-inference-error';
 import { AUDIENCE, type InferenceInput, type InferenceProvider } from './fake-inference';
 import { nativeChatRequest, extractNativeChat } from './native-inference';
 import { ChatService } from './chat-service';
@@ -71,6 +72,31 @@ describe('structured Playground and production Session seam', () => {
     expect(result.usage).toMatchObject({ totalTokens: 35 });
     expect(stop).toHaveBeenCalledOnce();
     expect({ session: session.snapshot(), chat: chat.snapshot() }).toEqual(before);
+  });
+
+  it('preserves bounded native HTTP failure metadata in the private Simulation inspector', async () => {
+    const detail = {
+      httpStatus: 422,
+      responseBody: { error: 'invalid schema', requestId: 'test-123' },
+    };
+    const service = new PlaygroundService(
+      () => true,
+      () => ({
+        completeFreeform: vi.fn(),
+        completeSimulationRequest: async () => {
+          throw new PrivateInferenceError('llama.cpp inference failed (HTTP 422)', detail);
+        },
+        stop: async () => {},
+      }),
+    );
+    const result = await service.runSimulation(input);
+    expect(result).toMatchObject({
+      errorStage: 'transport',
+      rawNativeOutput: detail,
+      normalizedResult: null,
+      accepted: null,
+    });
+    expect(result.error).toContain('HTTP 422');
   });
 
   it('reports normalization and validation failures with native content preserved, and does not accept a batch', async () => {

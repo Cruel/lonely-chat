@@ -39,6 +39,8 @@ export interface SessionSnapshot {
   readonly revision: number;
   readonly phase: SessionPhase;
   readonly error: string | null;
+  /** Stable machine-readable failure identity, independent of the displayed message. */
+  readonly failureKind?: 'recorded-video' | 'inference' | null;
   readonly warning: string | null;
   readonly cycle: number;
   readonly retryAttempt: number;
@@ -64,6 +66,18 @@ export interface SessionSnapshot {
   readonly adaptationReason?: string | null;
   readonly workerRamMiB?: number | null;
   readonly recentErrors?: readonly string[];
+}
+
+export function isRecordedVideoFailure(state: SessionSnapshot): boolean {
+  return state.phase === 'error' && state.failureKind === 'recorded-video';
+}
+
+/** Decoder failures are fatal; recoverable inference errors retain recorded media. */
+export function allowsRecordedSessionMedia(state: SessionSnapshot): boolean {
+  return (
+    ['starting', 'running', 'switching'].includes(state.phase) ||
+    (state.phase === 'error' && state.inputMode === 'recorded' && !isRecordedVideoFailure(state))
+  );
 }
 
 export interface SessionPreferences {

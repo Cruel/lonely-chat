@@ -83,9 +83,13 @@ describe('native worker diagnostic streams', () => {
     expect(JSON.parse(capture.export()).workerOutput).toEqual([
       { worker: second.id, stream: 'stdout', line: 'model output: ' + secret },
     ]);
+    expect(capture.privateWorkerLines()).toEqual([
+      { worker: second.id, stream: 'stdout', line: 'model output: ' + secret },
+    ]);
     expect(second.id).not.toBe(worker.id);
     capture.configure(false);
     expect(capture.status().workerLines).toBe(0);
+    expect(() => capture.privateWorkerLines()).toThrow(/Enable private capture/);
   });
 
   it('bounds high-throughput and incomplete lines, reporting discarded output without leaking it', async () => {
@@ -101,6 +105,33 @@ describe('native worker diagnostic streams', () => {
     expect(entries.some((entry) => entry.context?.code === 'OUTPUT_LIMIT')).toBe(true);
     expect(entries.at(-1)?.context).toMatchObject({ signal: 'SIGKILL' });
     expect(JSON.stringify(entries)).not.toContain('PRIVATE_SPEECH_SECRET');
+  });
+
+  it('continues classifying late failures and opt-in text after routine rate suppression', async () => {
+    const { logger } = await setup();
+    const capture = new DiagnosticCapture();
+    const worker = new NativeWorkerLog(
+      'llama.cpp',
+      logger,
+      { backend: 'cuda' },
+      (id, stream, line) => capture.recordWorkerLine(id, stream, line),
+    );
+    worker.start();
+    for (let n = 0; n < 600; n++) worker.write('stderr', Buffer.from('loading model\n'));
+    capture.configure(true);
+    worker.write('stderr', Buffer.from('after quota: PRIVATE_WORKER_LINE\n'));
+    worker.write('stderr', Buffer.from('ggml_cuda: out of memory\n'));
+    worker.finish(12, null, false);
+    expect(
+      logger.snapshot().entries.some((entry) => entry.text.includes('memory allocation failed')),
+    ).toBe(true);
+    expect(logger.snapshot().entries.some((entry) => entry.context?.code === 'OUTPUT_LIMIT')).toBe(
+      true,
+    );
+    expect(JSON.parse(capture.export()).workerOutput).toEqual(
+      expect.arrayContaining([expect.objectContaining({ line: 'ggml_cuda: out of memory' })]),
+    );
+    expect(JSON.stringify(logger.snapshot())).not.toContain('PRIVATE_WORKER_LINE');
   });
 
   it('retains stderr and crash identity after a fake llama worker restart', async () => {

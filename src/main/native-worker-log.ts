@@ -13,7 +13,9 @@ export interface WorkerIdentity {
 
 const MAX_LINE_CHARS = 2048;
 const MAX_CHUNK_BYTES = 64 * 1024;
-const MAX_LINES = 400;
+const WINDOW_MS = 60_000;
+const MAX_ROUTINE_PER_WINDOW = 400;
+const MAX_FAILURE_PER_WINDOW = 80;
 
 /**
  * Native text is untrusted: workers sometimes echo model paths, prompts, HTTP bodies,
@@ -72,7 +74,9 @@ export class NativeWorkerLog {
     stdout: { decoder: new StringDecoder('utf8'), pending: '' },
     stderr: { decoder: new StringDecoder('utf8'), pending: '' },
   };
-  private lines = 0;
+  private windowStart = Date.now();
+  private routineLines = 0;
+  private failureLines = 0;
   private dropped = 0;
   private unclassified = new Set<WorkerStream>();
   private finished = false;
@@ -123,15 +127,33 @@ export class NativeWorkerLog {
     }
   }
 
+  private permit(failure: boolean): boolean {
+    if (Date.now() - this.windowStart >= WINDOW_MS) {
+      this.windowStart = Date.now();
+      this.routineLines = 0;
+      this.failureLines = 0;
+    }
+    const count = failure ? ++this.failureLines : ++this.routineLines;
+    if (count <= (failure ? MAX_FAILURE_PER_WINDOW : MAX_ROUTINE_PER_WINDOW)) return true;
+    this.dropped++;
+    if (count === (failure ? MAX_FAILURE_PER_WINDOW : MAX_ROUTINE_PER_WINDOW) + 1)
+      this.sink?.warn(
+        this.source,
+        'Native worker output rate limited; later failures remain eligible',
+        undefined,
+        this.context({ code: 'OUTPUT_LIMIT' }),
+      );
+    return false;
+  }
+
   private emit(stream: WorkerStream, line: string): void {
     if (!line.trim()) return;
-    if (++this.lines > MAX_LINES) {
-      this.dropped++;
-      return;
-    }
+    // Private capture is a separate bounded ring: it must remain available even
+    // after routine operational output has been suppressed.
     this.privateLine?.(this.id, stream, line);
-    if (!this.sink) return;
     const classified = safeNativeLine(line);
+    if (!this.permit(classified?.level === 'error' || classified?.level === 'warn')) return;
+    if (!this.sink) return;
     if (!classified) {
       if (!this.unclassified.has(stream)) {
         this.unclassified.add(stream);
@@ -158,10 +180,7 @@ export class NativeWorkerLog {
   /** Speech stdout is framed binary IPC. Emit metadata, never decoded transcript bytes. */
   protocolReply(operation: 'ready' | 'transcribed' | 'error'): void {
     if (this.finished) return;
-    if (++this.lines > MAX_LINES) {
-      this.dropped++;
-      return;
-    }
+    if (!this.permit(operation === 'error')) return;
     this.sink?.debug(
       this.source,
       'stdout: Whisper IPC response received',

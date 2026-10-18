@@ -65,6 +65,7 @@ import {
   VIDEO_FRAME_COUNT_OPTIONS,
   type InferenceMode,
   type SessionPreferences,
+  isRecordedVideoFailure,
 } from '../../shared/session-contract';
 
 export function OverlayPage() {
@@ -206,9 +207,7 @@ export function DesktopPage() {
 
   const running = ['running', 'starting', 'switching'].includes(session.status.phase);
   const mediaActive =
-    running ||
-    (session.status.phase === 'error' &&
-      !session.status.error?.startsWith('Recorded video failed:'));
+    running || (session.status.phase === 'error' && !isRecordedVideoFailure(session.status));
   const current = DESKTOP_SECTIONS.find((item) => item.id === section)!;
   const seedValid =
     sessionSeedText === '' ||
@@ -320,13 +319,13 @@ export function DesktopPage() {
             <div hidden={playgroundTab !== 'freeform'}>
               <FreeformPlayground
                 simulationActive={running || session.busy || audience.busy}
-                onViewLogs={() => openLogs('llama.cpp')}
+                onViewLogs={() => openLogs('ipc')}
               />
             </div>
             {playgroundTab === 'simulation' && (
               <SimulationPlayground
                 simulationActive={running || session.busy || audience.busy}
-                onViewLogs={() => openLogs('llama.cpp')}
+                onViewLogs={() => openLogs('playground')}
               />
             )}
             {playgroundTab === 'speech' && (
@@ -485,16 +484,15 @@ export function DesktopPage() {
                       <Play size={15} /> Start simulation
                     </Button>
                   )}
-                  {session.status.phase === 'error' &&
-                    !session.status.error?.startsWith('Recorded video failed:') && (
-                      <Button
-                        variant="secondary"
-                        disabled={!session.ready || session.busy}
-                        onClick={() => void session.retry()}
-                      >
-                        Retry inference
-                      </Button>
-                    )}
+                  {session.status.phase === 'error' && !isRecordedVideoFailure(session.status) && (
+                    <Button
+                      variant="secondary"
+                      disabled={!session.ready || session.busy}
+                      onClick={() => void session.retry()}
+                    >
+                      Retry inference
+                    </Button>
+                  )}
                   <span role="status" aria-live="polite" className="text-sm text-zinc-400">
                     {running
                       ? session.status.phase === 'switching'

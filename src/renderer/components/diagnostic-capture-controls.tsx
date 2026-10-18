@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
-import type { DiagnosticStatus } from '../../shared/diagnostic-contract';
+import type { DiagnosticStatus, PrivateWorkerLine } from '../../shared/diagnostic-contract';
 
 export function DiagnosticCaptureControls() {
   const [status, setStatus] = useState<DiagnosticStatus>({
@@ -12,6 +12,36 @@ export function DiagnosticCaptureControls() {
   });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [lines, setLines] = useState<readonly PrivateWorkerLine[]>([]);
+  useEffect(() => {
+    if (!status.enabled) {
+      setLines([]);
+      return;
+    }
+    let active = true;
+    const refresh = () => {
+      void window.lonelyChat
+        ?.getPrivateWorkerLines?.()
+        .then((value) => {
+          if (active) setLines(value);
+        })
+        .catch((reason: unknown) => {
+          if (active) setError(String(reason));
+        });
+    };
+    refresh();
+    const timer = setInterval(refresh, 2000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [status.enabled]);
+  const groups = new Map<string, PrivateWorkerLine[]>();
+  for (const line of lines) {
+    const group = groups.get(line.worker) ?? [];
+    group.push(line);
+    groups.set(line.worker, group);
+  }
   useEffect(() => {
     let active = true;
     const refresh = () => {
@@ -80,6 +110,30 @@ export function DiagnosticCaptureControls() {
           Export private samples
         </Button>
       </div>
+      {status.enabled && (
+        <div className="mt-4" aria-label="Private native worker details">
+          <h4 className="text-sm font-medium">
+            Private worker stdout/stderr (expand for multiline details)
+          </h4>
+          <p className="mt-1 text-xs text-amber-300">
+            Visible only while private capture is enabled. May contain transcripts, paths and
+            credentials. Never included in ordinary logs.
+          </p>
+          {[...groups.entries()].map(([worker, captured]) => (
+            <details key={worker} className="mt-2 rounded-md border border-border px-3 py-2">
+              <summary className="cursor-pointer break-all text-xs">
+                Worker {worker} · {captured.length} lines
+              </summary>
+              <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words text-xs">
+                {captured.map((entry) => `${entry.stream}: ${entry.line}`).join('\n')}
+              </pre>
+            </details>
+          ))}
+          {lines.length === 0 && (
+            <p className="mt-2 text-xs text-zinc-400">No private worker text captured yet.</p>
+          )}
+        </div>
+      )}
       {error && (
         <p role="alert" className="mt-2 text-sm text-amber-300">
           {error}

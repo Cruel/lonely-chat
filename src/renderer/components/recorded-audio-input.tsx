@@ -3,6 +3,13 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { recordedAudioPosition } from '../recorded-audio-timeline';
+import {
+  alignRecordedMedia,
+  startRecordedMedia,
+  resumeRecordedContext,
+  AUDIO_DRIFT_TOLERANCE_MS,
+  AUDIO_STALL_TIMEOUT_MS,
+} from '../recorded-audio-sync';
 import { recordedAudioWorkletSource } from '../recorded-audio-worklet';
 
 interface AudioFileTrack {
@@ -24,9 +31,16 @@ interface AudioRuntime {
   node: AudioWorkletNode;
   sink: GainNode;
   timeout: ReturnType<typeof setTimeout> | null;
+  stallTimer: ReturnType<typeof setTimeout> | null;
+  driftTimer: ReturnType<typeof setInterval> | null;
   active: boolean;
+  started: boolean;
+  recovering: boolean;
+  stalled: boolean;
   queue: Promise<void>;
   flushResolver: (() => void) | null;
+  pauseResolver: (() => void) | null;
+  pauseToken: number;
   generation: number;
 }
 
@@ -65,12 +79,22 @@ export const RecordedAudioInput = forwardRef<
 
   const close = (runtime: AudioRuntime) => {
     runtime.active = false;
+    runtime.started = false;
     if (runtime.timeout !== null) clearTimeout(runtime.timeout);
+    if (runtime.stallTimer !== null) clearTimeout(runtime.stallTimer);
+    if (runtime.driftTimer !== null) clearInterval(runtime.driftTimer);
+    runtime.node.port.postMessage('pause');
     runtime.audio.pause();
     runtime.flushResolver?.();
     runtime.flushResolver = null;
+    runtime.pauseResolver?.();
+    runtime.pauseResolver = null;
     runtime.audio.onended = null;
     runtime.audio.onerror = null;
+    runtime.audio.onwaiting = null;
+    runtime.audio.onstalled = null;
+    runtime.audio.onplaying = null;
+    runtime.audio.onpause = null;
     runtime.node.port.close();
     runtime.node.disconnect();
     runtime.source.disconnect();
@@ -132,9 +156,16 @@ export const RecordedAudioInput = forwardRef<
               node,
               sink,
               timeout: null,
+              stallTimer: null,
+              driftTimer: null,
               active: false,
+              started: false,
+              recovering: false,
+              stalled: false,
               queue: Promise.resolve(),
               flushResolver: null,
+              pauseResolver: null,
+              pauseToken: 0,
               generation: currentGeneration,
             };
             const current = runtime;
@@ -166,92 +197,248 @@ export const RecordedAudioInput = forwardRef<
     async begin(origin) {
       const api = window.lonelyChat;
       if (!api) return;
-      const pending: Promise<void>[] = [];
-      for (const track of tracksRef.current) {
-        const runtime = runtimes.current.get(track.id);
-        if (!runtime || !track.enabled || track.durationMs === null) continue;
-        pending.push(
-          (async () => {
-            const captureGeneration = runtime.generation;
-            const failed = (error: unknown) => {
-              if (generation.current !== captureGeneration) return;
-              status(track.id, `Audio error: ${errorText(error)}`);
-              runtime.active = false;
-              close(runtime);
-              runtimes.current.delete(track.id);
-            };
+      await Promise.all(
+        tracksRef.current.map(async (track) => {
+          const runtime = runtimes.current.get(track.id);
+          if (!runtime || !track.enabled || track.durationMs === null) return;
+          const captureGeneration = runtime.generation;
+          const current = () =>
+            generation.current === captureGeneration && runtimes.current.get(track.id) === runtime;
+          const failed = (error: unknown) => {
+            if (!current()) return;
+            status(track.id, 'Audio error: ' + errorText(error));
+            close(runtime);
+            runtimes.current.delete(track.id);
+          };
+          const clearStall = () => {
+            if (runtime.stallTimer !== null) clearTimeout(runtime.stallTimer);
+            runtime.stallTimer = null;
+          };
+          const pauseForBuffering = () => {
+            if (!current() || !runtime.started || runtime.recovering || runtime.stalled) return;
+            runtime.active = false;
+            runtime.stalled = true;
+            runtime.node.port.postMessage('pause');
+            status(track.id, 'Waiting for audio playback');
+            runtime.stallTimer = setTimeout(
+              () => failed(new Error('Recorded audio buffering stalled.')),
+              AUDIO_STALL_TIMEOUT_MS,
+            );
+          };
+          const finish = async () => {
+            if (!current()) return;
+            runtime.active = false;
+            runtime.started = false;
+            runtime.pauseResolver?.();
+            runtime.pauseResolver = null;
+            clearStall();
+            if (runtime.driftTimer !== null) clearInterval(runtime.driftTimer);
+            runtime.driftTimer = null;
+            await new Promise<void>((resolve) => {
+              runtime.flushResolver = resolve;
+              const old = runtime.node.port.onmessage;
+              runtime.node.port.onmessage = (
+                event: MessageEvent<Float32Array | { type: string }>,
+              ) => {
+                if (event.data instanceof Float32Array) {
+                  if (event.data.length > 0) {
+                    runtime.queue = runtime.queue.then(() =>
+                      api.submitRecordedAudioPcm(event.data as Float32Array, runtime.captureId),
+                    );
+                  }
+                } else if (event.data?.type === 'flushed') {
+                  runtime.node.port.onmessage = old;
+                  runtime.flushResolver = null;
+                  resolve();
+                }
+              };
+              runtime.node.port.postMessage('flush');
+            });
+            await runtime.queue;
+            if (!current()) return;
+            await api.finishRecordedAudio(runtime.captureId);
+            status(track.id, 'End of audio');
+          };
+          const synchronize = async (first: boolean) => {
+            if (!current() || runtime.recovering) return;
+            runtime.recovering = true;
+            runtime.active = false;
             try {
-              if (captureGeneration !== generation.current) return;
-              const finish = async () => {
-                runtime.active = false;
-                await new Promise<void>((resolve) => {
-                  runtime.flushResolver = resolve;
-                  const old = runtime.node.port.onmessage;
-                  runtime.node.port.onmessage = (
-                    event: MessageEvent<Float32Array | { type: string }>,
-                  ) => {
-                    if (event.data instanceof Float32Array) {
-                      if (event.data.length > 0) {
-                        runtime.queue = runtime.queue.then(() =>
-                          api.submitRecordedAudioPcm(event.data as Float32Array, runtime.captureId),
-                        );
-                      }
-                    } else if (event.data?.type === 'flushed') {
-                      runtime.node.port.onmessage = old;
-                      runtime.flushResolver = null;
-                      resolve();
-                    }
-                  };
-                  runtime.node.port.postMessage('flush');
-                });
-                await runtime.queue;
-                if (captureGeneration !== generation.current) return;
+              // The worklet confirms that pre-seek PCM has been discarded.
+              // Its FIFO acknowledgement follows any earlier posted audio batches.
+              const paused = new Promise<void>((resolve, reject) => {
+                const token = ++runtime.pauseToken;
+                const deadline = setTimeout(() => {
+                  if (runtime.pauseToken !== token) return;
+                  runtime.pauseResolver = null;
+                  reject(new Error('Recorded audio worklet did not acknowledge its pause.'));
+                }, AUDIO_STALL_TIMEOUT_MS);
+                runtime.pauseResolver = () => {
+                  clearTimeout(deadline);
+                  resolve();
+                };
+                runtime.node.port.postMessage({ type: 'pause', token });
+              });
+              await paused;
+              if (!current()) return;
+              await runtime.queue;
+              if (!current()) return;
+              const mediaMs = await alignRecordedMedia(
+                runtime.audio,
+                track.offsetMs,
+                track.durationMs!,
+                origin.monotonicMs,
+              );
+              if (!current()) return;
+              if (mediaMs === null) {
                 await api.finishRecordedAudio(runtime.captureId);
                 status(track.id, 'End of audio');
-              };
-              runtime.node.port.onmessage = (event: MessageEvent<Float32Array>) => {
-                if (!runtime.active || !(event.data instanceof Float32Array)) return;
-                runtime.queue = runtime.queue
-                  .then(() => api.submitRecordedAudioPcm(event.data, runtime.captureId))
-                  .catch(failed);
-              };
-              runtime.audio.onended = () => {
-                void finish().catch(failed);
-              };
-              runtime.audio.onerror = () =>
-                failed(new Error('Unable to decode or play this audio file.'));
-              const playAtPosition = async () => {
-                if (captureGeneration !== generation.current) return;
-                const elapsed = performance.now() - origin.monotonicMs;
-                const position = recordedAudioPosition(track.offsetMs, elapsed, track.durationMs!);
-                if (!position) {
-                  await api.finishRecordedAudio(runtime.captureId);
-                  status(track.id, 'End of audio (offset beyond file)');
-                  return;
+                runtime.started = false;
+                clearStall();
+                return;
+              }
+              let anchoredMs = mediaMs;
+              let synchronized = false;
+              for (let attempt = 0; attempt < 3; attempt++) {
+                if (first && attempt === 0)
+                  await api.armRecordedAudio(runtime.captureId, origin.observedAt, anchoredMs);
+                else
+                  await api.resyncRecordedAudio(runtime.captureId, origin.observedAt, anchoredMs);
+                if (!current()) return;
+                // Main-process IPC can itself be delayed while playback advances.
+                // Refresh the decoder seek and anchor again before accepting PCM.
+                const freshMs = await alignRecordedMedia(
+                  runtime.audio,
+                  track.offsetMs,
+                  track.durationMs!,
+                  origin.monotonicMs,
+                );
+                if (!current()) return;
+                if (freshMs === null) break;
+                if (Math.abs(freshMs - anchoredMs) <= AUDIO_DRIFT_TOLERANCE_MS) {
+                  synchronized = true;
+                  break;
                 }
-                if (position.delayMs > 0) {
-                  runtime.timeout = setTimeout(() => {
-                    void playAtPosition().catch(failed);
-                  }, position.delayMs);
-                  return;
-                }
-                runtime.audio.currentTime = position.mediaMs / 1000;
-                await api.armRecordedAudio(runtime.captureId, origin.observedAt, position.mediaMs);
-                await runtime.context.resume();
-                if (captureGeneration !== generation.current) return;
-                runtime.active = true;
-                runtime.node.port.postMessage('start');
-                await runtime.audio.play();
-                status(track.id, 'Playing at 1×');
-              };
-              await playAtPosition();
-            } catch (error) {
-              failed(error);
+                anchoredMs = freshMs;
+              }
+              if (!synchronized)
+                throw new Error(
+                  'Recorded audio startup could not catch up with the shared timeline.',
+                );
+              runtime.started = true;
+              runtime.stalled = false;
+              clearStall();
+              runtime.node.port.postMessage('start');
+              runtime.active = true;
+              status(track.id, 'Playing at 1× (synchronized)');
+              if (runtime.driftTimer === null) {
+                runtime.driftTimer = setInterval(() => {
+                  if (!current() || !runtime.started || runtime.recovering || !runtime.active)
+                    return;
+                  if (
+                    runtime.audio.paused ||
+                    runtime.audio.seeking ||
+                    runtime.audio.readyState < HTMLMediaElement.HAVE_CURRENT_DATA
+                  ) {
+                    pauseForBuffering();
+                    return;
+                  }
+                  const position = recordedAudioPosition(
+                    track.offsetMs,
+                    performance.now() - origin.monotonicMs,
+                    track.durationMs!,
+                  );
+                  if (
+                    position &&
+                    Math.abs(runtime.audio.currentTime * 1000 - position.mediaMs) >
+                      AUDIO_DRIFT_TOLERANCE_MS
+                  ) {
+                    // No silent PCM can be timestamped across this seek.
+                    runtime.active = false;
+                    runtime.node.port.postMessage('pause');
+                    void synchronize(false).catch(failed);
+                  }
+                }, 350);
+              }
+            } finally {
+              runtime.recovering = false;
             }
-          })(),
-        );
-      }
-      await Promise.all(pending);
+          };
+          runtime.node.port.onmessage = (
+            event: MessageEvent<Float32Array | { type: string; token?: number }>,
+          ) => {
+            if (!current()) return;
+            if (!(event.data instanceof Float32Array)) {
+              if (event.data?.type === 'paused' && event.data.token === runtime.pauseToken) {
+                runtime.pauseResolver?.();
+                runtime.pauseResolver = null;
+              }
+              return;
+            }
+            if (!runtime.active) return;
+            if (
+              runtime.audio.paused ||
+              runtime.audio.seeking ||
+              runtime.audio.readyState < HTMLMediaElement.HAVE_CURRENT_DATA
+            ) {
+              pauseForBuffering();
+              return;
+            }
+            runtime.queue = runtime.queue
+              .then(() => api.submitRecordedAudioPcm(event.data as Float32Array, runtime.captureId))
+              .catch(failed);
+          };
+          runtime.audio.onended = () => {
+            void finish().catch(failed);
+          };
+          runtime.audio.onerror = () =>
+            failed(new Error('Unable to decode or play this audio file.'));
+          runtime.audio.onwaiting = pauseForBuffering;
+          runtime.audio.onstalled = pauseForBuffering;
+          runtime.audio.onpause = pauseForBuffering;
+          runtime.audio.onplaying = () => {
+            if (runtime.stalled && !runtime.recovering) void synchronize(false).catch(failed);
+          };
+          const playAtPosition = async () => {
+            if (!current()) return;
+            const position = recordedAudioPosition(
+              track.offsetMs,
+              performance.now() - origin.monotonicMs,
+              track.durationMs!,
+            );
+            if (!position) {
+              await api.finishRecordedAudio(runtime.captureId);
+              status(track.id, 'End of audio (offset beyond file)');
+              return;
+            }
+            if (position.delayMs > 0) {
+              runtime.timeout = setTimeout(() => {
+                runtime.timeout = null;
+                void playAtPosition().catch(failed);
+              }, position.delayMs);
+              return;
+            }
+            await alignRecordedMedia(
+              runtime.audio,
+              track.offsetMs,
+              track.durationMs!,
+              origin.monotonicMs,
+            );
+            await resumeRecordedContext(runtime.context);
+            if (!current()) return;
+            await startRecordedMedia(runtime.audio);
+            if (!current()) return;
+            // Playback startup may have taken seconds: seek again and only then
+            // arm Whisper. Other tracks are free to start meanwhile.
+            await synchronize(true);
+          };
+          try {
+            await playAtPosition();
+          } catch (error) {
+            failed(error);
+          }
+        }),
+      );
     },
   }));
 

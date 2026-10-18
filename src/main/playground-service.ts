@@ -17,6 +17,7 @@ import {
 } from './simulation-experiment';
 import type { InferenceInput } from './fake-inference';
 import { DEFAULT_PREFERENCES, type SessionPreferences } from '../shared/session-contract';
+import { PrivateInferenceError } from './private-inference-error';
 
 export interface PlaygroundProvider {
   completeFreeform(
@@ -45,6 +46,24 @@ function nativeUsage(response: unknown): FreeformUsage | null {
     completionTokens: token('completion_tokens'),
     totalTokens: token('total_tokens'),
   };
+}
+
+/** Private, desktop-only inspector content; never enter the persistent operational log. */
+function boundedTransportDetails(error: unknown): unknown | null {
+  if (!(error instanceof PrivateInferenceError)) return null;
+  try {
+    const json = JSON.stringify(error.diagnosticDetails);
+    if (!json) return null;
+    if (json.length > 64 * 1024)
+      return {
+        truncated: true,
+        preview: json.slice(0, 64 * 1024),
+        totalCharacters: json.length,
+      };
+    return JSON.parse(json) as unknown;
+  } catch {
+    return { truncated: true, reason: 'Native diagnostic details could not be serialized.' };
+  }
 }
 
 function errorMessage(error: unknown): string {
@@ -201,7 +220,11 @@ export class PlaygroundService {
             signal,
           );
         } catch (error) {
-          return finish({ errorStage: 'transport', error: errorMessage(error) });
+          return finish({
+            errorStage: 'transport',
+            error: errorMessage(error),
+            rawNativeOutput: boundedTransportDetails(error),
+          });
         }
         const usage = nativeUsage(rawNativeOutput);
         let normalizedResult: unknown;

@@ -1,10 +1,67 @@
 import { describe, expect, it } from 'vitest';
 import { ChatService } from './chat-service';
 import { SessionController } from './session-controller';
+import { AudienceService } from './audience-service';
+import { deriveInferenceSeed } from './inference-seeds';
+import { allowsRecordedSessionMedia, isRecordedVideoFailure } from '../shared/session-contract';
 import { FakeClock, flushMicrotasks as flush } from './test-support/fake-clock';
 import type { InferenceProvider } from './fake-inference';
 
 describe('session lifecycle with deterministic clock', () => {
+  it('classifies fatal recorded decoder failures independently of user-facing text', async () => {
+    const session = new SessionController(new ChatService());
+    session.start('recording', 'fake', null, { inputMode: 'recorded', publishToOverlay: false });
+    const failed = session.failRecordedVideo('unsupported codec');
+    expect(failed.failureKind).toBe('recorded-video');
+    expect(isRecordedVideoFailure({ ...failed, error: 'changed UI wording' })).toBe(true);
+    expect(allowsRecordedSessionMedia({ ...failed, error: 'changed UI wording' })).toBe(false);
+    expect(() => session.retry()).toThrow(/recorded decoder failed/);
+    const next = session.start('next', 'fake');
+    expect(next.failureKind).toBeNull();
+    session.stop();
+  });
+
+  it('uses a distinct roster sampling seed for each outer startup retry', async () => {
+    const clock = new FakeClock();
+    const audience = new AudienceService(null, 2);
+    await audience.open();
+    const rosterSeeds: number[] = [];
+    const native: InferenceProvider = {
+      generate: async () => ({ messages: [] }),
+      generateRoster: async (_count, _seen, _signal, seed) => {
+        rosterSeeds.push(seed!);
+        throw new Error('Invalid deterministic roster output');
+      },
+    };
+    const session = new SessionController(
+      new ChatService(),
+      undefined,
+      clock,
+      undefined,
+      native,
+      audience,
+    );
+    session.start('stream', 'native', 'test', {
+      inputMode: 'live',
+      publishToOverlay: true,
+      seed: 42,
+    });
+    await flush();
+    clock.advance(500);
+    await flush();
+    clock.advance(1000);
+    await flush();
+    expect(session.snapshot().phase).toBe('error');
+    expect(rosterSeeds).toHaveLength(3);
+    expect(new Set(rosterSeeds).size).toBe(3);
+    expect(rosterSeeds).toEqual(
+      [1, 2, 3].map((attempt) =>
+        deriveInferenceSeed(deriveInferenceSeed(42, 'roster', 0, attempt), 'roster', 0, 1),
+      ),
+    );
+    expect(audience.snapshot().members).toEqual([]);
+    session.stop();
+  });
   it('schedules offset messages once, merges overlapping batches in deadline order, and retains chat after stop', async () => {
     const clock = new FakeClock();
     const chat = new ChatService();

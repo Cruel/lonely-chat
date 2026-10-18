@@ -12,6 +12,52 @@ const block = (rate: number, talking: boolean) =>
   new Float32Array(rate / 10).fill(talking ? 0.2 : 0);
 
 describe('recorded multi-track audio', () => {
+  it('reanchors recorded PCM after a discontinuity and keeps segment timestamps on the media timeline', async () => {
+    const clock = new FakeClock();
+    const emitted: Array<{ observedAt: number; text: string }> = [];
+    let sequence = 0;
+    const service = new AudioService(
+      () =>
+        ({
+          start: async () => {},
+          stop: () => {},
+          transcribe: async () => 'segment-' + ++sequence,
+        }) as unknown as NativeSpeech,
+      (entry) => emitted.push({ observedAt: entry.observedAt, text: entry.text }),
+      clock.wallNow,
+      clock,
+    );
+    await service.startRecorded({
+      id: 'discord',
+      label: 'Discord',
+      captureId: 'capture-discord',
+      sampleRate: 16000,
+      offsetMs: 0,
+      seekMs: 0,
+    });
+    const origin = clock.wallNow();
+    service.armRecorded('capture-discord', origin, 0);
+    for (let n = 0; n < 8; n++) {
+      clock.advance(100);
+      service.pushRecorded(block(16000, true), 'capture-discord');
+    }
+    clock.advance(1700);
+    service.resyncRecorded('capture-discord', origin, 2500);
+    expect(() => service.resyncRecorded('capture-discord', origin, 2300)).toThrow(
+      /cannot resynchronize/,
+    );
+    for (let n = 0; n < 10; n++) {
+      clock.advance(100);
+      service.pushRecorded(block(16000, true), 'capture-discord');
+    }
+    service.finishRecorded('capture-discord');
+    await flushMicrotasks();
+    expect(emitted).toHaveLength(2);
+    expect(emitted[0].observedAt).toBeLessThan(origin + 900);
+    expect(emitted[1].observedAt).toBeGreaterThanOrEqual(origin + 2500);
+    expect(emitted[1].observedAt).toBeLessThanOrEqual(origin + 3600);
+    await service.terminate();
+  });
   it('aligns positive/negative offsets from independent rate sources, flushes on EOF and reaches production inference', async () => {
     const clock = new FakeClock();
     const inputs: InferenceInput[] = [];

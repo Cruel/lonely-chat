@@ -1,4 +1,4 @@
-import type { DiagnosticStatus } from '../shared/diagnostic-contract';
+import type { DiagnosticStatus, PrivateWorkerLine } from '../shared/diagnostic-contract';
 import type { InferenceInput } from './fake-inference';
 
 /** Explicit opt-in, bounded memory capture. Only Export writes anything to disk. */
@@ -76,6 +76,12 @@ export class DiagnosticCapture {
     }
     this.workerOutput.push(sample);
     this.bytes += size;
+  }
+
+  /** Explicitly enabled, bounded, desktop-only details for expandable multiline inspection. */
+  privateWorkerLines(): readonly PrivateWorkerLine[] {
+    if (!this.enabled) throw new Error('Enable private capture before viewing worker text.');
+    return this.workerOutput.map((line) => JSON.parse(line) as PrivateWorkerLine);
   }
 
   export(): string {

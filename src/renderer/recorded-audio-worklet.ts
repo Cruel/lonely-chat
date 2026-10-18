@@ -10,6 +10,13 @@ class RecordedAudioProcessor extends AudioWorkletProcessor {
       if (event.data === 'start') {
         this.length = 0;
         this.active = true;
+      } else if (event.data === 'pause' || event.data?.type === 'pause') {
+        // A seek/buffering discontinuity must not emit leftover pre-seek samples
+        // under a new media timestamp.
+        this.active = false;
+        this.length = 0;
+        if (event.data?.type === 'pause')
+          this.port.postMessage({ type: 'paused', token: event.data.token });
       } else if (event.data === 'flush') {
         this.active = false;
         this.emit();

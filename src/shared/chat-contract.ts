@@ -38,7 +38,7 @@ import type {
   AudioStatus,
   RecordedAudioStart,
 } from './audio-contract';
-import type { DiagnosticStatus } from './diagnostic-contract';
+import type { DiagnosticStatus, PrivateWorkerLine } from './diagnostic-contract';
 import type { LogEntry, LogRetention, LogSnapshot } from './log-contract';
 import type { RendererFailure } from './renderer-log-contract';
 import type {
@@ -58,6 +58,7 @@ export interface DesktopInvocations {
   'diagnostics:get': DiagnosticStatus;
   'diagnostics:configure': DiagnosticStatus;
   'diagnostics:export': boolean;
+  'diagnostics:worker-lines': readonly PrivateWorkerLine[];
   'logs:get': LogSnapshot;
   'logs:configure': LogRetention;
   'logs:export': boolean;
@@ -116,6 +117,7 @@ export interface DesktopInvocations {
   'audio:segment': void;
   'audio:recorded:start': AudioStatus;
   'audio:recorded:arm': void;
+  'audio:recorded:resync': void;
   'audio:recorded:pcm': void;
   'audio:recorded:finish': void;
 }
@@ -125,6 +127,7 @@ export interface DesktopArguments {
   'diagnostics:get': [];
   'diagnostics:configure': [enabled: boolean];
   'diagnostics:export': [];
+  'diagnostics:worker-lines': [];
   'logs:get': [];
   'logs:configure': [retention: LogRetention];
   'logs:export': [ids: readonly string[]];
@@ -183,6 +186,7 @@ export interface DesktopArguments {
   'audio:segment': [segment: AudioSegment, captureId: string];
   'audio:recorded:start': [source: RecordedAudioStart];
   'audio:recorded:arm': [captureId: string, originMs: number, mediaStartMs: number];
+  'audio:recorded:resync': [captureId: string, originMs: number, mediaStartMs: number];
   'audio:recorded:pcm': [samples: Float32Array, captureId: string];
   'audio:recorded:finish': [captureId: string];
 }
@@ -191,6 +195,7 @@ export interface DesktopAPI {
   getDiagnosticCapture(): Promise<DiagnosticStatus>;
   configureDiagnosticCapture(enabled: boolean): Promise<DiagnosticStatus>;
   exportDiagnosticCapture(): Promise<boolean>;
+  getPrivateWorkerLines(): Promise<readonly PrivateWorkerLine[]>;
   getPlaygroundStatus(): Promise<PlaygroundStatus>;
   runFreeform(request: FreeformRequest): Promise<FreeformResult>;
   previewSimulation(
@@ -270,6 +275,7 @@ export interface DesktopAPI {
   submitAudioSegment(segment: AudioSegment, captureId: string): Promise<void>;
   startRecordedAudio(source: RecordedAudioStart): Promise<AudioStatus>;
   armRecordedAudio(captureId: string, originMs: number, mediaStartMs: number): Promise<void>;
+  resyncRecordedAudio(captureId: string, originMs: number, mediaStartMs: number): Promise<void>;
   submitRecordedAudioPcm(samples: Float32Array, captureId: string): Promise<void>;
   finishRecordedAudio(captureId: string): Promise<void>;
 }

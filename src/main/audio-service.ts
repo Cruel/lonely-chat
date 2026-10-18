@@ -26,6 +26,7 @@ interface Source {
   unsubscribeWorker: (() => void) | null;
   retiring: Promise<void>;
   recorded: {
+    sampleRate: number;
     resampler: MonoResampler;
     segmenter: SpeechSegmenter;
     offsetMs: number;
@@ -136,6 +137,7 @@ export class AudioService {
     const source = this.findCapture(value.captureId);
     if (source && source.status.phase === 'ready') {
       source.recorded = {
+        sampleRate: value.sampleRate,
         resampler: new MonoResampler(value.sampleRate),
         segmenter: new SpeechSegmenter(),
         offsetMs: value.offsetMs,
@@ -162,6 +164,41 @@ export class AudioService {
       throw new Error('Recorded audio source is not ready for synchronization.');
     source.recorded.originMs = originMs;
     source.recorded.seekMs = mediaStartMs;
+  }
+
+  /** Discontinuity barrier after a seek/stall: finish any prior partial speech,
+   * then reset resampling/VAD and anchor subsequent PCM to the actual media position.
+   * Playback must stop posting PCM until the renderer awaits this acknowledgement.
+   */
+  resyncRecorded(captureId: string, originMs: number, mediaStartMs: number): void {
+    const source = this.findCapture(validateAudioId(captureId));
+    const track = source?.recorded;
+    if (
+      !source ||
+      !track ||
+      source.status.phase !== 'ready' ||
+      track.originMs === null ||
+      track.finished ||
+      track.originMs !== originMs ||
+      !Number.isFinite(mediaStartMs) ||
+      mediaStartMs < track.seekMs ||
+      !Number.isFinite(mediaStartMs + track.offsetMs) ||
+      mediaStartMs + track.offsetMs < 0
+    )
+      throw new Error('Recorded audio cannot resynchronize at this position.');
+    const partial = track.segmenter.flushDetailed();
+    if (partial && partial.samples.length >= 1600) {
+      this.submit(
+        {
+          samples: partial.samples,
+          observedAt: track.originMs + track.offsetMs + track.seekMs + partial.endSample / 16,
+        },
+        captureId,
+      );
+    }
+    track.seekMs = mediaStartMs;
+    track.resampler = new MonoResampler(track.sampleRate);
+    track.segmenter = new SpeechSegmenter();
   }
 
   pushRecorded(samples: Float32Array, captureId: string): void {

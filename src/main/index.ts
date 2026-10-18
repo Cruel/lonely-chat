@@ -24,7 +24,11 @@ import { ChatService, publishSample } from './chat-service';
 import { SessionController } from './session-controller';
 import { SessionMedia } from './session-media';
 import { PreferencesStore } from './preferences-store';
-import { DEFAULT_PREFERENCES, validatePreferences } from '../shared/session-contract';
+import {
+  DEFAULT_PREFERENCES,
+  validatePreferences,
+  allowsRecordedSessionMedia,
+} from '../shared/session-contract';
 import { AudienceService } from './audience-service';
 import { FakeInference } from './fake-inference';
 import { OverlayServer } from './overlay-server';
@@ -222,11 +226,7 @@ function requireDesktop(event: Electron.IpcMainInvokeEvent): void {
 
 function requireRecordedAudio(): void {
   const state = session.snapshot();
-  if (
-    state.inputMode !== 'recorded' ||
-    !['starting', 'running', 'switching', 'error'].includes(state.phase) ||
-    (state.phase === 'error' && state.error?.startsWith('Recorded video failed:'))
-  )
+  if (state.inputMode !== 'recorded' || !allowsRecordedSessionMedia(state))
     throw new Error('Recorded audio requires an active recorded simulation.');
 }
 
@@ -238,9 +238,16 @@ function registerHandlers(): void {
     'playground:simulation:preview': (
       request: import('../shared/playground-contract').SimulationExperimentRequest,
     ) => playground.previewSimulation(request),
-    'playground:simulation:run': (
+    'playground:simulation:run': async (
       request: import('../shared/playground-contract').SimulationExperimentRequest,
-    ) => playground.runSimulation(request),
+    ) => {
+      const result = await playground.runSimulation(request);
+      if (result.errorStage)
+        logger.error('playground', 'Structured Simulation experiment failed', undefined, {
+          phase: result.errorStage,
+        });
+      return result;
+    },
     'speech-test:status': () => speechTest.snapshot(),
     'speech-test:start': (config: import('../shared/speech-playground-contract').SpeechTestStart) =>
       speechTest.start(config),
@@ -280,6 +287,7 @@ function registerHandlers(): void {
       });
     },
     'diagnostics:get': () => diagnostics.status(),
+    'diagnostics:worker-lines': () => diagnostics.privateWorkerLines(),
     'diagnostics:configure': (enabled: boolean) => diagnostics.configure(enabled),
     'diagnostics:export': async () => {
       if (!mainWindow) throw new Error('Desktop window is unavailable.');
@@ -556,6 +564,10 @@ function registerHandlers(): void {
     'audio:recorded:arm': (captureId: string, originMs: number, mediaStartMs: number) => {
       requireRecordedAudio();
       audio.armRecorded(captureId, originMs, mediaStartMs);
+    },
+    'audio:recorded:resync': (captureId: string, originMs: number, mediaStartMs: number) => {
+      requireRecordedAudio();
+      audio.resyncRecorded(captureId, originMs, mediaStartMs);
     },
     'audio:recorded:pcm': (samples: Float32Array, captureId: string) => {
       requireRecordedAudio();
@@ -954,6 +966,7 @@ app.on('will-quit', () => {
   ipcMain.removeHandler('logs:export');
   ipcMain.removeHandler('renderer:report-failure');
   ipcMain.removeHandler('diagnostics:get');
+  ipcMain.removeHandler('diagnostics:worker-lines');
   ipcMain.removeHandler('diagnostics:configure');
   ipcMain.removeHandler('diagnostics:export');
   ipcMain.removeHandler('chat:snapshot');
@@ -1001,6 +1014,7 @@ app.on('will-quit', () => {
   ipcMain.removeHandler('audio:segment');
   ipcMain.removeHandler('audio:recorded:start');
   ipcMain.removeHandler('audio:recorded:arm');
+  ipcMain.removeHandler('audio:recorded:resync');
   ipcMain.removeHandler('audio:recorded:pcm');
   ipcMain.removeHandler('audio:recorded:finish');
 });

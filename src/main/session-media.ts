@@ -1,6 +1,10 @@
 import type { SessionController } from './session-controller';
 import type { AudioService } from './audio-service';
-import type { LabeledTranscript } from '../shared/session-contract';
+import {
+  allowsRecordedSessionMedia,
+  isRecordedVideoFailure,
+  type LabeledTranscript,
+} from '../shared/session-contract';
 import type { VideoFrame } from '../shared/video-contract';
 
 /** Desktop/tray integration seam: session Stop owns all producers, whereas
@@ -38,7 +42,7 @@ export class SessionMedia {
       // A recoverable inference error does not stop the media clock; Retry
       // consumes frames captured while the worker was unavailable.
       if (frame.sourceId !== 'recorded:video') return;
-      if (state.phase === 'error' && state.error?.startsWith('Recorded video failed:')) {
+      if (isRecordedVideoFailure(state)) {
         throw new Error('Recorded video decoder has failed.');
       }
     } else if (frame.sourceId === 'recorded:video') {
@@ -49,12 +53,6 @@ export class SessionMedia {
 
   recordTranscript(entry: LabeledTranscript): void {
     const state = this.session.snapshot();
-    if (
-      ['running', 'starting', 'switching'].includes(state.phase) ||
-      (state.inputMode === 'recorded' &&
-        state.phase === 'error' &&
-        !state.error?.startsWith('Recorded video failed:'))
-    )
-      this.session.recordTranscript(entry);
+    if (allowsRecordedSessionMedia(state)) this.session.recordTranscript(entry);
   }
 }

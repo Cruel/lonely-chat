@@ -42,6 +42,7 @@ const api: DesktopAPI = {
   getDiagnosticCapture: () => invoke('diagnostics:get'),
   configureDiagnosticCapture: (enabled) => invoke('diagnostics:configure', enabled),
   exportDiagnosticCapture: () => invoke('diagnostics:export'),
+  getPrivateWorkerLines: () => invoke('diagnostics:worker-lines'),
   getOperationalLogs: () => invoke('logs:get'),
   configureOperationalLogs: (retention) => invoke('logs:configure', retention),
   exportOperationalLogs: (ids) => invoke('logs:export', ids),
@@ -160,6 +161,8 @@ const api: DesktopAPI = {
   startRecordedAudio: (source) => invoke('audio:recorded:start', source),
   armRecordedAudio: (captureId, originMs, mediaStartMs) =>
     invoke('audio:recorded:arm', captureId, originMs, mediaStartMs),
+  resyncRecordedAudio: (captureId, originMs, mediaStartMs) =>
+    invoke('audio:recorded:resync', captureId, originMs, mediaStartMs),
   submitRecordedAudioPcm: (samples, captureId) => invoke('audio:recorded:pcm', samples, captureId),
   finishRecordedAudio: (captureId) => invoke('audio:recorded:finish', captureId),
   onAudioChange: (listener) => {

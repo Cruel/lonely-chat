@@ -13,6 +13,8 @@ import type { AudienceService } from './audience-service';
 import type { VideoFrame } from '../shared/video-contract';
 import {
   DEFAULT_PREFERENCES,
+  isRecordedVideoFailure,
+  allowsRecordedSessionMedia,
   validateContext,
   validatePreferences,
   type CapturedObservation,
@@ -34,6 +36,7 @@ export class SessionController {
     revision: 0,
     phase: 'stopped',
     error: null,
+    failureKind: null,
     warning: null,
     cycle: 0,
     retryAttempt: 0,
@@ -140,14 +143,7 @@ export class SessionController {
   }
 
   recordTranscript(transcript: LabeledTranscript): void {
-    if (
-      !(
-        this.state.phase === 'error' &&
-        this.state.inputMode === 'recorded' &&
-        !this.state.error?.startsWith('Recorded video failed:')
-      )
-    )
-      this.requireActive();
+    if (!allowsRecordedSessionMedia(this.state)) this.requireActive();
     this.history.recordTranscript(transcript, this.clock.wallNow());
     this.refreshDropped();
   }
@@ -272,7 +268,12 @@ export class SessionController {
       throw new Error('Invalid recorded video decoder error.');
     }
     this.stop();
-    this.setState({ phase: 'error', error: `Recorded video failed: ${message}`, warning: null });
+    this.setState({
+      phase: 'error',
+      failureKind: 'recorded-video',
+      error: `Recorded video failed: ${message}`,
+      warning: null,
+    });
     return this.snapshot();
   }
 
@@ -343,7 +344,7 @@ export class SessionController {
   /** Restart inference after retry exhaustion without discarding validated history or chat. */
   retry(): SessionSnapshot {
     if (this.state.phase !== 'error') throw new Error('There is no failed inference to retry.');
-    if (this.state.error?.startsWith('Recorded video failed:')) {
+    if (isRecordedVideoFailure(this.state)) {
       throw new Error(
         'The recorded decoder failed. Select a supported file and start a new simulation.',
       );
@@ -456,7 +457,7 @@ export class SessionController {
             provider,
             abort.signal,
             false,
-            deriveInferenceSeed(sessionSeed, 'roster', 0, 1),
+            deriveInferenceSeed(sessionSeed, 'roster', 0, attempt),
           );
           effectiveInput = { ...effectiveInput, roster: this.audience.snapshot().members };
         }
@@ -620,7 +621,13 @@ export class SessionController {
   }
 
   private setState(patch: Partial<Omit<SessionSnapshot, 'revision'>>): void {
-    this.state = { ...this.state, ...patch, revision: this.state.revision + 1 };
+    this.state = {
+      ...this.state,
+      // A fresh lifecycle phase always replaces the prior failure classification.
+      ...(patch.phase ? { failureKind: patch.phase === 'error' ? 'inference' : null } : {}),
+      ...patch,
+      revision: this.state.revision + 1,
+    };
     for (const listener of this.subscribers) listener(this.snapshot());
   }
 }

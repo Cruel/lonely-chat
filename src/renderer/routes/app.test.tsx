@@ -81,6 +81,7 @@ const modelsAPI = {
     dropped: 0,
   }),
   exportDiagnosticCapture: async () => true,
+  getPrivateWorkerLines: async () => [],
   getOverlayStatus: async () => ({
     port: 18080,
     url: 'http://127.0.0.1:18080/overlay',
@@ -159,6 +160,7 @@ const modelsAPI = {
   submitAudioSegment: async () => {},
   startRecordedAudio: async () => ({ revision: 0, sources: [], transcripts: [] }),
   armRecordedAudio: async () => {},
+  resyncRecordedAudio: async () => {},
   submitRecordedAudioPcm: async () => {},
   finishRecordedAudio: async () => {},
 };
@@ -492,6 +494,77 @@ it('preserves Freeform drafts, completed responses and in-flight results across 
   fireEvent.click(screen.getByRole('button', { name: 'Speech testing' }));
   fireEvent.click(screen.getByRole('button', { name: 'Freeform inference' }));
   expect(screen.getByText('Completed while Speech was open')).toBeTruthy();
+});
+
+it('navigates from failed Freeform requests to the IPC error rather than worker startup logs', async () => {
+  window.lonelyChat = {
+    ...modelsAPI,
+    getModelsSnapshot: async () => ({
+      ...emptyModels,
+      installations: [
+        {
+          id: 'model-a',
+          repo: 'test/model',
+          revision: '1',
+          candidateId: 'model.gguf',
+          projectorId: null,
+          role: 'vision-language' as const,
+          files: [],
+          installedAt: 0,
+        },
+      ],
+      active: { 'vision-language': 'model-a', 'speech-to-text': null },
+    }),
+    runFreeform: async () => {
+      throw new Error('HTTP 503');
+    },
+    getOperationalLogs: async () => ({
+      entries: [
+        {
+          id: 'worker-start',
+          timestamp: '2026-10-18T00:00:00Z',
+          level: 'info' as const,
+          source: 'llama.cpp',
+          text: 'Worker starting',
+        },
+        {
+          id: 'http-failure',
+          timestamp: '2026-10-18T00:00:01Z',
+          level: 'error' as const,
+          source: 'ipc',
+          text: 'Desktop operation failed',
+          context: { operation: 'playground:run' },
+        },
+      ],
+      retention: { ageDays: 14, maxMiB: 5 },
+    }),
+    getChatSnapshot: async () => ({ type: 'snapshot', sequence: 0, messages: [] }),
+    onChatEvent: () => () => {},
+    publishSample: async () => {},
+    getOverlayUrl: async () => null,
+    getSessionSnapshot: async () => ({ ...emptyStatus }),
+    onSessionChange: () => () => {},
+    startSession: async () => ({ ...emptyStatus }),
+    stopSession: async () => ({ ...emptyStatus }),
+    getPreferences: async () => DEFAULT_PREFERENCES,
+    setPreferences: async (value) => value,
+    discoverModels: async () => {
+      throw new Error('Unused');
+    },
+  } satisfies DesktopAPI;
+  render(<DesktopPage />);
+  fireEvent.click(screen.getByRole('button', { name: 'Playground' }));
+  await waitFor(() =>
+    expect(screen.getByRole('combobox', { name: 'Installed model' }).textContent).toContain(
+      'test/model',
+    ),
+  );
+  fireEvent.change(screen.getByLabelText('User prompt'), { target: { value: 'debug failure' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Run freeform' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'View inference errors in Logs' }));
+  expect(screen.getByRole('region', { name: 'Logs' })).toBeTruthy();
+  expect((await screen.findAllByText('Desktop operation failed')).length).toBeGreaterThan(0);
+  expect(screen.queryByText('Worker starting')).toBeNull();
 });
 
 it('shows an unavailable overlay and lets Settings recover with a custom port', async () => {
