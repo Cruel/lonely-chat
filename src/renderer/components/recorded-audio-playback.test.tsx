@@ -2,6 +2,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { createRef } from 'react';
+import userEvent from '@testing-library/user-event';
 import type { DesktopAPI } from '../../shared/chat-contract';
 import { RecordedAudioInput, type RecordedAudioHandle } from './recorded-audio-input';
 
@@ -20,6 +21,10 @@ class TestAudio extends EventTarget {
   ended = false;
   playbackRate = 1;
   preload = '';
+  audioTracks = [
+    { enabled: true, label: 'Commentary' },
+    { enabled: true, label: 'Game audio' },
+  ];
   onended: ((event: Event) => void) | null = null;
   onerror: ((event: Event) => void) | null = null;
   onwaiting: ((event: Event) => void) | null = null;
@@ -93,6 +98,12 @@ class TestWorklet {
 const createObjectURL = vi.fn(() => 'blob:fixture');
 const revokeObjectURL = vi.fn();
 
+async function selectOption(label: string, option: string) {
+  const user = userEvent.setup();
+  await user.click(screen.getByRole('combobox', { name: label }));
+  await user.click(await screen.findByRole('option', { name: option }));
+}
+
 function setup() {
   clock = 1000;
   instances.splice(0);
@@ -103,12 +114,12 @@ function setup() {
   vi.stubGlobal('AudioWorkletNode', TestWorklet);
   Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
   Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectURL });
-  const start = vi.fn(async (value: { id: string }) => ({
+  const start = vi.fn(async (value: { id: string; captureId: string }) => ({
     sources: [{ id: value.id, phase: 'ready' as const }],
   }));
   const arm = vi.fn(async (_captureId: string, _originMs: number, _mediaMs: number) => {});
   const resync = vi.fn(async (_captureId: string, _originMs: number, _mediaMs: number) => {});
-  const pcm = vi.fn(async () => {});
+  const pcm = vi.fn(async (_samples: Float32Array, _captureId: string) => {});
   const finish = vi.fn(async () => {});
   window.lonelyChat = {
     startRecordedAudio: start,
@@ -151,6 +162,137 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   delete window.lonelyChat;
+});
+
+it('uses the ordinary Whisper source identity, signed offset and chosen embedded track for video audio', async () => {
+  const page = setup();
+  const video = { url: 'blob:video', name: 'stream.mp4' };
+  page.rerender(
+    <RecordedAudioInput
+      ref={page.ref}
+      running={false}
+      onSelectionChange={page.selection}
+      video={video}
+    />,
+  );
+  await selectOption('Audio source type', 'Audio from video');
+  fireEvent.click(screen.getByRole('button', { name: 'Add audio from video' }));
+  const tag = document.querySelector('audio')!;
+  Object.defineProperty(tag, 'duration', { configurable: true, value: 10 });
+  Object.defineProperty(tag, 'audioTracks', {
+    configurable: true,
+    value: [
+      { enabled: true, label: 'Commentary' },
+      { enabled: true, label: 'Game audio' },
+    ],
+  });
+  fireEvent.loadedMetadata(tag);
+  await waitFor(() => expect(page.selection).toHaveBeenLastCalledWith({ ready: true, count: 1 }));
+  await selectOption('Embedded audio track', 'Game audio');
+  fireEvent.change(screen.getByLabelText('Source label'), { target: { value: 'Game feed' } });
+  fireEvent.change(screen.getByLabelText('Offset (ms, signed)'), { target: { value: '-1250' } });
+  page.rerender(
+    <RecordedAudioInput
+      ref={page.ref}
+      running={true}
+      onSelectionChange={page.selection}
+      video={video}
+    />,
+  );
+  await page.ref.current!.prepare();
+  expect(page.start).toHaveBeenCalledTimes(1);
+  expect(page.start).toHaveBeenCalledWith(
+    expect.objectContaining({
+      id: expect.stringMatching(/^recorded-audio-/),
+      label: 'Game feed',
+      offsetMs: -1250,
+      seekMs: 1250,
+    }),
+  );
+  expect(instances[0].audioTracks.map((track) => track.enabled)).toEqual([false, true]);
+  const started = page.ref.current!.begin({ observedAt: 100000, monotonicMs: 0 });
+  await waitFor(() => expect(instances[0].play).toHaveBeenCalledOnce());
+  instances[0].startPlayback();
+  await started;
+  expect(page.arm).toHaveBeenCalledOnce();
+  expect(page.arm.mock.calls[0][0]).toBe(page.start.mock.calls[0][0].captureId);
+  ports[0].onmessage?.({ data: new Float32Array(4096) } as MessageEvent);
+  await waitFor(() => expect(page.pcm).toHaveBeenCalledOnce());
+  expect(page.pcm.mock.calls[0][1]).toBe(page.start.mock.calls[0][0].captureId);
+  page.ref.current!.stop();
+});
+
+it('keeps an explicitly disabled video soundtrack out of Whisper startup', async () => {
+  const page = setup();
+  const video = { url: 'blob:video', name: 'stream.mp4' };
+  page.rerender(
+    <RecordedAudioInput
+      ref={page.ref}
+      running={false}
+      onSelectionChange={page.selection}
+      video={video}
+    />,
+  );
+  await selectOption('Audio source type', 'Audio from video');
+  fireEvent.click(screen.getByRole('button', { name: 'Add audio from video' }));
+  const tag = document.querySelector('audio')!;
+  Object.defineProperty(tag, 'duration', { configurable: true, value: 10 });
+  Object.defineProperty(tag, 'audioTracks', {
+    configurable: true,
+    value: [{ enabled: true, label: 'Combined soundtrack' }],
+  });
+  fireEvent.loadedMetadata(tag);
+  fireEvent.click(screen.getByLabelText('Audio from stream.mp4'));
+  await waitFor(() => expect(page.selection).toHaveBeenLastCalledWith({ ready: true, count: 0 }));
+  page.rerender(
+    <RecordedAudioInput
+      ref={page.ref}
+      running={true}
+      onSelectionChange={page.selection}
+      video={video}
+    />,
+  );
+  await page.ref.current!.prepare();
+  await page.ref.current!.begin({ observedAt: 100000, monotonicMs: 0 });
+  expect(page.start).not.toHaveBeenCalled();
+  expect(page.pcm).not.toHaveBeenCalled();
+  page.ref.current!.stop();
+});
+
+it('fails visibly instead of silently mixing audio when the decoder cannot select a requested track', async () => {
+  const page = setup();
+  const video = { url: 'blob:video', name: 'stream.mp4' };
+  page.rerender(
+    <RecordedAudioInput
+      ref={page.ref}
+      running={false}
+      onSelectionChange={page.selection}
+      video={video}
+    />,
+  );
+  await selectOption('Audio source type', 'Audio from video');
+  fireEvent.click(screen.getByRole('button', { name: 'Add audio from video' }));
+  const tag = document.querySelector('audio')!;
+  Object.defineProperty(tag, 'duration', { configurable: true, value: 10 });
+  Object.defineProperty(tag, 'audioTracks', {
+    configurable: true,
+    value: [{ enabled: true }, { enabled: true }, { enabled: true }],
+  });
+  fireEvent.loadedMetadata(tag);
+  await selectOption('Embedded audio track', 'Audio track 3');
+  page.rerender(
+    <RecordedAudioInput
+      ref={page.ref}
+      running={true}
+      onSelectionChange={page.selection}
+      video={video}
+    />,
+  );
+  await page.ref.current!.prepare();
+  expect(page.start).not.toHaveBeenCalled();
+  expect(
+    await screen.findByText(/Audio error: The selected embedded audio track is unavailable/),
+  ).toBeTruthy();
 });
 
 it('anchors each track after its actual asynchronous playback starts, not before', async () => {

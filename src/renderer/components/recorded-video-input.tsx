@@ -9,6 +9,11 @@ import {
 
 const VIDEO_CATCHUP_DRIFT_MS = 450;
 
+export interface RecordedVideoMedia {
+  url: string;
+  name: string;
+}
+
 export interface RecordedVideoHandle {
   begin(
     captureIntervalMs: number,
@@ -22,8 +27,9 @@ export const RecordedVideoInput = forwardRef<
   {
     running: boolean;
     onSelectionChange: (state: { hasFile: boolean; ready: boolean }) => void;
+    onMediaChange?: (media: RecordedVideoMedia | null) => void;
   }
->(function RecordedVideoInput({ running, onSelectionChange }, ref) {
+>(function RecordedVideoInput({ running, onSelectionChange, onMediaChange }, ref) {
   const video = useRef<HTMLVideoElement>(null);
   const [url, setUrl] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
@@ -165,6 +171,10 @@ export const RecordedVideoInput = forwardRef<
     onSelectionChange({ hasFile: url !== null, ready: !url || ready });
   }, [url, ready, onSelectionChange]);
 
+  // The URL is owned by this component. Consumers must discard it on unmount,
+  // including when switching away from Recorded Simulation or the Simulation page.
+  useEffect(() => () => onMediaChange?.(null), [onMediaChange]);
+
   useEffect(() => {
     if (!running) stop();
     return () => {}; // Running while another navigation category is open keeps the producer mounted.
@@ -183,14 +193,17 @@ export const RecordedVideoInput = forwardRef<
     setReady(false);
     setError(null);
     if (!file) {
+      onMediaChange?.(null);
       setUrl(null);
       setFileName(null);
       setReady(true);
       setStatus('No file (video optional)');
       return;
     }
+    const nextUrl = URL.createObjectURL(file);
+    onMediaChange?.({ url: nextUrl, name: file.name });
     setFileName(file.name);
-    setUrl(URL.createObjectURL(file));
+    setUrl(nextUrl);
     setStatus('Checking Chromium video decoder…');
   };
 
@@ -212,7 +225,8 @@ export const RecordedVideoInput = forwardRef<
       <h3 className="font-medium">Recorded video</h3>
       <p className="mt-2 text-sm text-zinc-400">
         Optional local file decoded by Chromium at normal speed, independent of model inference.
-        Embedded audio is muted and discarded. Only sampled JPEG frames enter the session.
+        Embedded audio is muted and ignored unless separately added as an audio input. Only sampled
+        JPEG frames enter the video input.
       </p>
       <Label htmlFor="recorded-video-file" className="mt-4 text-sm text-zinc-200">
         Video file

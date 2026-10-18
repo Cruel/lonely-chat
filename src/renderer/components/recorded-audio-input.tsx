@@ -1,7 +1,14 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { recordedAudioPosition } from '../recorded-audio-timeline';
 import {
   alignRecordedMedia,
@@ -11,8 +18,17 @@ import {
   AUDIO_STALL_TIMEOUT_MS,
 } from '../recorded-audio-sync';
 import { recordedAudioWorkletSource } from '../recorded-audio-worklet';
+import {
+  inspectEmbeddedAudio,
+  selectEmbeddedAudioTrack,
+  type EmbeddedTrackChoice,
+} from '../embedded-audio-tracks';
+import type { RecordedVideoMedia } from './recorded-video-input';
 
-interface AudioFileTrack {
+interface RecordedAudioTrack {
+  kind: 'file' | 'video';
+  embeddedTrackIndex: number | null;
+  embeddedTracks: EmbeddedTrackChoice[] | null;
   id: string;
   url: string;
   name: string;
@@ -59,17 +75,29 @@ export const RecordedAudioInput = forwardRef<
   {
     running: boolean;
     onSelectionChange: (state: { ready: boolean; count: number }) => void;
+    video?: RecordedVideoMedia | null;
   }
->(function RecordedAudioInput({ running, onSelectionChange }, ref) {
-  const [tracks, setTracks] = useState<AudioFileTrack[]>([]);
+>(function RecordedAudioInput({ running, onSelectionChange, video }, ref) {
+  const [tracks, setTracks] = useState<RecordedAudioTrack[]>([]);
+  const [addType, setAddType] = useState<'file' | 'video'>('file');
+  // A soundtrack is attached to one specific video selection, never its replacement.
+  const activeTracks = useMemo(
+    () => tracks.filter((track) => track.kind === 'file' || track.url === video?.url),
+    [tracks, video?.url],
+  );
   const [phases, setPhases] = useState<Record<string, string>>({});
   const tracksRef = useRef(tracks);
-  tracksRef.current = tracks;
+  tracksRef.current = activeTracks;
+  useEffect(() => {
+    setTracks((previous) =>
+      previous.filter((track) => track.kind === 'file' || track.url === video?.url),
+    );
+  }, [video?.url]);
   const runtimes = useRef(new Map<string, AudioRuntime>());
   const urls = useRef(new Set<string>());
   const generation = useRef(0);
 
-  const patch = (id: string, changes: Partial<AudioFileTrack>) => {
+  const patch = (id: string, changes: Partial<RecordedAudioTrack>) => {
     setTracks((previous) =>
       previous.map((track) => (track.id === id ? { ...track, ...changes } : track)),
     );
@@ -140,6 +168,38 @@ export const RecordedAudioInput = forwardRef<
             const audio = new Audio(track.url);
             audio.preload = 'auto';
             audio.playbackRate = 1;
+            if (track.kind === 'video') {
+              if (audio.readyState < HTMLMediaElement.HAVE_METADATA) {
+                await new Promise<void>((resolve, reject) => {
+                  const timer = setTimeout(() => {
+                    audio.removeEventListener('loadedmetadata', loaded);
+                    audio.removeEventListener('error', failed);
+                    reject(new Error('Embedded soundtrack metadata timed out.'));
+                  }, AUDIO_STALL_TIMEOUT_MS);
+                  const cleanup = () => {
+                    clearTimeout(timer);
+                    audio.removeEventListener('loadedmetadata', loaded);
+                    audio.removeEventListener('error', failed);
+                  };
+                  const loaded = () => {
+                    cleanup();
+                    resolve();
+                  };
+                  const failed = () => {
+                    cleanup();
+                    reject(new Error('Unable to decode the embedded soundtrack.'));
+                  };
+                  audio.addEventListener('loadedmetadata', loaded);
+                  audio.addEventListener('error', failed);
+                  audio.load();
+                });
+              }
+              if (currentGeneration !== generation.current) {
+                await context.close();
+                return;
+              }
+              selectEmbeddedAudioTrack(audio, track.embeddedTrackIndex);
+            }
             const source = context.createMediaElementSource(audio);
             const node = new AudioWorkletNode(context, 'lonely-chat-recorded-audio');
             const sink = context.createGain();
@@ -468,14 +528,14 @@ export const RecordedAudioInput = forwardRef<
 
   useEffect(() => {
     onSelectionChange({
-      ready: tracks.every(
+      ready: activeTracks.every(
         (track) =>
           !track.enabled ||
           (track.durationMs !== null && !track.error && track.label.trim().length > 0),
       ),
-      count: tracks.filter((track) => track.enabled).length,
+      count: activeTracks.filter((track) => track.enabled).length,
     });
-  }, [tracks, onSelectionChange]);
+  }, [activeTracks, onSelectionChange]);
 
   useEffect(() => {
     if (!running) stop();
@@ -497,6 +557,9 @@ export const RecordedAudioInput = forwardRef<
       urls.current.add(url);
       const id = `recorded-audio-${++nextTrack}`;
       return {
+        kind: 'file' as const,
+        embeddedTrackIndex: null,
+        embeddedTracks: null,
         id,
         url,
         name: file.name,
@@ -510,32 +573,87 @@ export const RecordedAudioInput = forwardRef<
     setTracks((previous) => [...previous, ...additions]);
   };
 
+  const addVideoAudio = () => {
+    if (!video || running) return;
+    setTracks((previous) => [
+      ...previous,
+      {
+        kind: 'video',
+        embeddedTrackIndex: null,
+        embeddedTracks: null,
+        id: `recorded-audio-${++nextTrack}`,
+        url: video.url,
+        name: `Audio from ${video.name}`,
+        label: 'Video soundtrack',
+        enabled: true,
+        offsetMs: 0,
+        durationMs: null,
+        error: null,
+      },
+    ]);
+  };
+
   return (
     <div className="mt-5 border-t border-border pt-4">
       <h3 className="font-medium">Recorded audio tracks</h3>
       <p className="mt-2 text-sm text-zinc-400">
-        Add independent audio files (microphone, Discord, or any other source). Each file plays at
-        1× on the recorded video timeline, or by itself without video. Audio is not monitored; mono
-        PCM flows through the production resampler, VAD and Whisper worker. Positive offsets delay
-        the track; negative offsets skip its beginning.
+        Add independent audio files or explicitly capture the video soundtrack. Every enabled source
+        plays at 1× on the shared timeline and feeds the production resampler, VAD and Whisper
+        worker. Audio is not monitored. Positive offsets delay a track; negative offsets skip its
+        beginning.
       </p>
-      <Label htmlFor="recorded-audio-files" className="mt-4 text-sm text-zinc-200">
-        Add audio files
+      <Label htmlFor="recorded-audio-type" className="mt-4 text-sm text-zinc-200">
+        Audio source type
       </Label>
-      <input
-        id="recorded-audio-files"
-        type="file"
-        accept="audio/*,.wav,.flac,.mp3,.ogg,.m4a,.aac"
-        multiple
+      <Select
+        items={[
+          { value: 'file', label: 'Audio files' },
+          { value: 'video', label: 'Audio from video' },
+        ]}
+        value={addType}
+        onValueChange={(value) => setAddType(value as 'file' | 'video')}
         disabled={running}
-        onChange={(event) => {
-          addFiles(event.currentTarget.files);
-          event.currentTarget.value = '';
-        }}
-        className="mt-2 block w-full text-sm text-zinc-300 file:mr-3 file:rounded-md file:border-0 file:bg-secondary file:px-3 file:py-2 file:text-secondary-foreground"
-      />
+      >
+        <SelectTrigger id="recorded-audio-type" className="mt-2">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="file">Audio files</SelectItem>
+          <SelectItem value="video">Audio from video</SelectItem>
+        </SelectContent>
+      </Select>
+      {addType === 'file' ? (
+        <>
+          <Label htmlFor="recorded-audio-files" className="mt-3 text-sm text-zinc-200">
+            Add audio files
+          </Label>
+          <input
+            id="recorded-audio-files"
+            type="file"
+            accept="audio/*,.wav,.flac,.mp3,.ogg,.m4a,.aac"
+            multiple
+            disabled={running}
+            onChange={(event) => {
+              addFiles(event.currentTarget.files);
+              event.currentTarget.value = '';
+            }}
+            className="mt-2 block w-full text-sm text-zinc-300 file:mr-3 file:rounded-md file:border-0 file:bg-secondary file:px-3 file:py-2 file:text-secondary-foreground"
+          />
+        </>
+      ) : (
+        <div className="mt-3">
+          <Button variant="secondary" disabled={running || !video} onClick={addVideoAudio}>
+            Add audio from video
+          </Button>
+          <p className="mt-2 text-xs text-zinc-400">
+            {video
+              ? 'Captures the selected video soundtrack only when added below. Separate tracks can be selected only if Chromium exposes them; otherwise the mix remains one source.'
+              : 'Select a recorded video above before adding its soundtrack.'}
+          </p>
+        </div>
+      )}
       <div className="mt-3 space-y-3">
-        {tracks.map((track) => (
+        {activeTracks.map((track) => (
           <div key={track.id} className="rounded-md border border-border p-3">
             <audio
               preload="metadata"
@@ -543,17 +661,31 @@ export const RecordedAudioInput = forwardRef<
               className="hidden"
               onLoadedMetadata={(event) => {
                 const durationMs = Math.round(event.currentTarget.duration * 1000);
-                patch(
-                  track.id,
-                  Number.isFinite(durationMs) && durationMs > 0
-                    ? { durationMs, error: null }
-                    : { durationMs: null, error: 'Audio duration is unavailable or invalid.' },
-                );
+                const embedded =
+                  track.kind === 'video' ? inspectEmbeddedAudio(event.currentTarget) : null;
+                const valid = Number.isFinite(durationMs) && durationMs > 0;
+                const index = track.embeddedTrackIndex;
+                const missingTrack =
+                  embedded?.tracks &&
+                  index !== null &&
+                  !embedded.tracks.some((item) => item.index === index);
+                patch(track.id, {
+                  durationMs: valid ? durationMs : null,
+                  embeddedTracks: embedded?.tracks ?? null,
+                  embeddedTrackIndex: embedded?.tracks?.length && index === null ? 0 : index,
+                  error: !valid
+                    ? 'Audio duration is unavailable or invalid.'
+                    : (embedded?.error ??
+                      (missingTrack ? 'Selected embedded audio track is unavailable.' : null)),
+                });
               }}
               onError={() =>
                 patch(track.id, {
                   durationMs: null,
-                  error: 'File cannot be decoded by Chromium. Choose a supported audio format.',
+                  error:
+                    track.kind === 'video'
+                      ? 'Embedded soundtrack cannot be decoded by Chromium.'
+                      : 'File cannot be decoded by Chromium. Choose a supported audio format.',
                 })
               }
             />
@@ -573,13 +705,42 @@ export const RecordedAudioInput = forwardRef<
                 disabled={running}
                 onClick={() => {
                   setTracks((previous) => previous.filter((item) => item.id !== track.id));
-                  URL.revokeObjectURL(track.url);
-                  urls.current.delete(track.url);
+                  if (track.kind === 'file') {
+                    URL.revokeObjectURL(track.url);
+                    urls.current.delete(track.url);
+                  }
                 }}
               >
                 Remove
               </Button>
             </div>
+            {track.kind === 'video' && track.embeddedTracks && track.embeddedTracks.length > 1 && (
+              <div className="mt-3">
+                <Label htmlFor={`audio-embedded-${track.id}`}>Embedded audio track</Label>
+                <Select
+                  items={track.embeddedTracks.map((choice) => ({
+                    value: String(choice.index),
+                    label: choice.label,
+                  }))}
+                  value={String(track.embeddedTrackIndex ?? 0)}
+                  disabled={running}
+                  onValueChange={(value) =>
+                    patch(track.id, { embeddedTrackIndex: Number(value), error: null })
+                  }
+                >
+                  <SelectTrigger id={`audio-embedded-${track.id}`} className="mt-1">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {track.embeddedTracks.map((choice) => (
+                      <SelectItem key={choice.index} value={String(choice.index)}>
+                        {choice.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             <div className="mt-3 grid gap-3 sm:grid-cols-2">
               <div>
                 <Label htmlFor={`audio-label-${track.id}`}>Source label</Label>

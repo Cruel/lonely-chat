@@ -31,7 +31,11 @@ import {
 import { ModelManager } from '@/components/model-manager';
 import { NumericSettingCombobox } from '@/components/numeric-setting-combobox';
 import { VideoInput } from '@/components/video-input';
-import { RecordedVideoInput, type RecordedVideoHandle } from '@/components/recorded-video-input';
+import {
+  RecordedVideoInput,
+  type RecordedVideoHandle,
+  type RecordedVideoMedia,
+} from '@/components/recorded-video-input';
 import { RecordedAudioInput, type RecordedAudioHandle } from '@/components/recorded-audio-input';
 import { DiagnosticCaptureControls } from '@/components/diagnostic-capture-controls';
 import { OperationalLogs } from '@/components/operational-logs';
@@ -136,6 +140,7 @@ export function DesktopPage() {
   const [inputMode, setInputMode] = useState<'live' | 'recorded'>('live');
   const [publishRecorded, setPublishRecorded] = useState(false);
   const [recordedSelection, setRecordedSelection] = useState({ hasFile: false, ready: true });
+  const [recordedVideoMedia, setRecordedVideoMedia] = useState<RecordedVideoMedia | null>(null);
   const [mediaError, setMediaError] = useState<string | null>(null);
   const recordedPlayer = useRef<RecordedVideoHandle>(null);
   const recordedAudio = useRef<RecordedAudioHandle>(null);
@@ -143,6 +148,7 @@ export function DesktopPage() {
   const [recordedAudioSelection, setRecordedAudioSelection] = useState({ ready: true, count: 0 });
   const updateRecordedAudioSelection = useCallback(setRecordedAudioSelection, []);
   const updateRecordedSelection = useCallback(setRecordedSelection, []);
+  const updateRecordedVideoMedia = useCallback(setRecordedVideoMedia, []);
   const [sampleBusy, setSampleBusy] = useState(false);
   const [audioStatus, setAudioStatus] = useState<AudioStatus | null>(null);
   const [nativeStatus, setNativeStatus] = useState<NativeServiceStatus | null>(null);
@@ -547,11 +553,13 @@ export function DesktopPage() {
                       ref={recordedPlayer}
                       running={mediaActive}
                       onSelectionChange={updateRecordedSelection}
+                      onMediaChange={updateRecordedVideoMedia}
                     />
                     <RecordedAudioInput
                       ref={recordedAudio}
                       running={mediaActive}
                       onSelectionChange={updateRecordedAudioSelection}
+                      video={recordedVideoMedia}
                     />
                     <label className="mt-4 flex items-center gap-2 text-sm text-zinc-300">
                       <input

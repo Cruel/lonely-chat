@@ -1,6 +1,11 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { createRef, useState } from 'react';
+import userEvent from '@testing-library/user-event';
+import type { DesktopAPI } from '../../shared/chat-contract';
+import { RecordedVideoInput, type RecordedVideoMedia } from './recorded-video-input';
+import type { RecordedAudioHandle } from './recorded-audio-input';
 import { RecordedAudioInput } from './recorded-audio-input';
 
 const create = vi.fn((file: File | Blob) => {
@@ -9,11 +14,18 @@ const create = vi.fn((file: File | Blob) => {
 });
 const revoke = vi.fn();
 
+async function selectOption(label: string, option: string) {
+  const user = userEvent.setup();
+  await user.click(screen.getByRole('combobox', { name: label }));
+  await user.click(await screen.findByRole('option', { name: option }));
+}
+
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   create.mockClear();
   revoke.mockClear();
+  delete window.lonelyChat;
 });
 
 it('configures multiple independent file tracks, labels, offsets, enabled state and decoder readiness', async () => {
@@ -59,6 +71,104 @@ it('configures multiple independent file tracks, labels, offsets, enabled state 
   fireEvent.click(buttons[0]);
   expect(revoke).toHaveBeenCalledWith('blob:mic.wav');
   expect(screen.getAllByLabelText('Source label')).toHaveLength(1);
+});
+
+it('does not opt a video into Whisper unless its audio is explicitly added; changing video discards the old source', async () => {
+  Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: create });
+  Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revoke });
+  vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
+  const selection = vi.fn();
+  const start = vi.fn();
+  window.lonelyChat = { startRecordedAudio: start } as unknown as DesktopAPI;
+  const ref = createRef<RecordedAudioHandle>();
+  function Harness() {
+    const [video, setVideo] = useState<RecordedVideoMedia | null>(null);
+    const [showVideo, setShowVideo] = useState(true);
+    return (
+      <>
+        <button onClick={() => setShowVideo(false)}>Leave recorded simulation</button>
+        {showVideo && (
+          <RecordedVideoInput
+            running={false}
+            onSelectionChange={vi.fn()}
+            onMediaChange={setVideo}
+          />
+        )}
+        <RecordedAudioInput ref={ref} running={false} onSelectionChange={selection} video={video} />
+      </>
+    );
+  }
+  render(<Harness />);
+  fireEvent.change(screen.getByLabelText('Video file'), {
+    target: { files: [new File(['video'], 'scene.mp4', { type: 'video/mp4' })] },
+  });
+  expect(selection).toHaveBeenLastCalledWith({ ready: true, count: 0 });
+  await ref.current!.prepare();
+  expect(start).not.toHaveBeenCalled();
+  await selectOption('Audio source type', 'Audio from video');
+  fireEvent.click(screen.getByRole('button', { name: 'Add audio from video' }));
+  const media = document.querySelector('audio')!;
+  expect(media.getAttribute('src')).toBe('blob:scene.mp4');
+  Object.defineProperty(media, 'duration', { configurable: true, value: 8 });
+  Object.defineProperty(media, 'captureStream', {
+    configurable: true,
+    value: () => ({ getAudioTracks: () => [{ id: 'mixed' }] }),
+  });
+  fireEvent.loadedMetadata(media);
+  await waitFor(() => expect(selection).toHaveBeenLastCalledWith({ ready: true, count: 1 }));
+  expect((screen.getByLabelText('Source label') as HTMLInputElement).value).toBe(
+    'Video soundtrack',
+  );
+  fireEvent.change(screen.getByLabelText('Offset (ms, signed)'), {
+    target: { value: '-300' },
+  });
+  expect((screen.getByLabelText('Offset (ms, signed)') as HTMLInputElement).value).toBe('-300');
+  fireEvent.click(screen.getByLabelText('Audio from scene.mp4'));
+  expect(selection).toHaveBeenLastCalledWith({ ready: true, count: 0 });
+  fireEvent.click(screen.getByLabelText('Audio from scene.mp4'));
+  await waitFor(() => expect(selection).toHaveBeenLastCalledWith({ ready: true, count: 1 }));
+  fireEvent.change(screen.getByLabelText('Video file'), {
+    target: { files: [new File(['next'], 'next.mp4', { type: 'video/mp4' })] },
+  });
+  await waitFor(() => expect(selection).toHaveBeenLastCalledWith({ ready: true, count: 0 }));
+  expect(document.querySelectorAll('audio')).toHaveLength(0);
+  expect(revoke).toHaveBeenCalledWith('blob:scene.mp4'); // Only the video owner revokes it.
+  fireEvent.click(screen.getByRole('button', { name: 'Add audio from video' }));
+  expect(document.querySelectorAll('audio')).toHaveLength(1);
+  fireEvent.click(screen.getByRole('button', { name: 'Leave recorded simulation' }));
+  expect(document.querySelectorAll('audio')).toHaveLength(0);
+  expect(
+    screen.getByRole('button', { name: 'Add audio from video' }).hasAttribute('disabled'),
+  ).toBe(true);
+  expect(selection).toHaveBeenLastCalledWith({ ready: true, count: 0 });
+});
+
+it('rejects a video without accessible audio and allows disabling the invalid source', async () => {
+  Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: create });
+  Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revoke });
+  const selection = vi.fn();
+  render(
+    <RecordedAudioInput
+      running={false}
+      onSelectionChange={selection}
+      video={{ url: 'blob:silent-video', name: 'silent.mp4' }}
+    />,
+  );
+  await selectOption('Audio source type', 'Audio from video');
+  fireEvent.click(screen.getByRole('button', { name: 'Add audio from video' }));
+  const media = document.querySelector('audio')!;
+  Object.defineProperty(media, 'duration', { configurable: true, value: 7 });
+  Object.defineProperty(media, 'captureStream', {
+    configurable: true,
+    value: () => ({ getAudioTracks: () => [] }),
+  });
+  fireEvent.loadedMetadata(media);
+  expect(
+    await screen.findByText('This video has no accessible embedded audio soundtrack.'),
+  ).toBeTruthy();
+  expect(selection).toHaveBeenLastCalledWith({ ready: false, count: 1 });
+  fireEvent.click(screen.getByLabelText('Audio from silent.mp4'));
+  await waitFor(() => expect(selection).toHaveBeenLastCalledWith({ ready: true, count: 0 }));
 });
 
 it('blocks undecodable enabled files but does not block other enabled files when disabled', async () => {
