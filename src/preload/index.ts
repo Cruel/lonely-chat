@@ -16,6 +16,19 @@ function invoke<K extends keyof DesktopInvocations>(
 const api: DesktopAPI = {
   getPlaygroundStatus: () => invoke('playground:status'),
   runFreeform: (request) => invoke('playground:run', request),
+  getSpeechTestStatus: () => invoke('speech-test:status'),
+  startSpeechTest: (config) => invoke('speech-test:start', config),
+  submitSpeechTestPcm: (samples, backpressure) => invoke('speech-test:pcm', samples, backpressure),
+  finishSpeechTest: () => invoke('speech-test:finish'),
+  stopSpeechTest: () => invoke('speech-test:stop'),
+  onSpeechTestChange: (listener) => {
+    const receive = (
+      _event: Electron.IpcRendererEvent,
+      state: import('../shared/speech-playground-contract').SpeechTestSnapshot,
+    ) => listener(state);
+    ipcRenderer.on('speech-test:change', receive);
+    return () => ipcRenderer.removeListener('speech-test:change', receive);
+  },
   onPlaygroundStatus: (listener) => {
     const receive = (
       _event: Electron.IpcRendererEvent,

@@ -1,3 +1,9 @@
+export interface SpeechSlice {
+  readonly samples: Float32Array;
+  readonly startSample: number;
+  readonly endSample: number;
+}
+
 /**
  * 16 kHz mono energy-based segmentation. Cheap deterministic VAD gate; whisper.cpp itself
  * handles transcription. Input is never recorded or retained after a segment is consumed.
@@ -8,11 +14,18 @@ export class SpeechSegmenter {
   private quiet = 0;
   private readonly preRoll: number[] = [];
   private readonly chunks: number[] = [];
+  private processed = 0;
+  private bufferStart = 0;
 
   constructor(private readonly sampleRate = 16000) {}
 
   push(input: Float32Array): Float32Array[] {
-    const completed: Float32Array[] = [];
+    return this.pushDetailed(input).map((segment) => segment.samples);
+  }
+
+  /** Same production VAD, with boundaries measured from the start of this capture. */
+  pushDetailed(input: Float32Array): SpeechSlice[] {
+    const completed: SpeechSlice[] = [];
     const block = Math.max(1, Math.round(this.sampleRate / 10)); // 100 ms
     for (const sample of input) this.chunks.push(sample);
     while (this.chunks.length >= block) {
@@ -22,6 +35,7 @@ export class SpeechSegmenter {
       const talking = Math.sqrt(energy / samples.length) >= 0.012;
       if (talking && !this.voiced) {
         this.voiced = true;
+        this.bufferStart = this.processed - this.preRoll.length;
         this.buffer.push(...this.preRoll);
         this.preRoll.length = 0;
       }
@@ -29,7 +43,7 @@ export class SpeechSegmenter {
         this.buffer.push(...samples);
         this.quiet = talking ? 0 : this.quiet + block;
         if (this.quiet >= this.sampleRate * 0.7 || this.buffer.length >= this.sampleRate * 8) {
-          const segment = this.flush();
+          const segment = this.flushDetailed();
           if (segment) completed.push(segment);
         }
       } else {
@@ -38,12 +52,17 @@ export class SpeechSegmenter {
           this.preRoll.splice(0, this.preRoll.length - this.sampleRate * 0.2);
         }
       }
+      this.processed += block;
     }
     return completed;
   }
 
   flush(): Float32Array | null {
-    const segment =
+    return this.flushDetailed()?.samples ?? null;
+  }
+
+  flushDetailed(): SpeechSlice | null {
+    const samples =
       this.voiced && this.buffer.length >= this.sampleRate * 0.5
         ? Float32Array.from(
             this.buffer.slice(
@@ -55,7 +74,9 @@ export class SpeechSegmenter {
     this.buffer = [];
     this.quiet = 0;
     this.voiced = false;
-    return segment;
+    return samples
+      ? { samples, startSample: this.bufferStart, endSample: this.bufferStart + samples.length }
+      : null;
   }
 
   reset(): void {
@@ -64,6 +85,8 @@ export class SpeechSegmenter {
     this.chunks.length = 0;
     this.voiced = false;
     this.quiet = 0;
+    this.processed = 0;
+    this.bufferStart = 0;
   }
 }
 

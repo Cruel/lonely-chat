@@ -31,6 +31,7 @@ import type { AudioInputConfiguration, AudioSegment, AudioStatus } from './audio
 import type { DiagnosticStatus } from './diagnostic-contract';
 import type { LogEntry, LogRetention, LogSnapshot } from './log-contract';
 import type { FreeformRequest, FreeformResult, PlaygroundStatus } from './playground-contract';
+import type { SpeechTestStart, SpeechTestSnapshot } from './speech-playground-contract';
 import type { OverlayStatus } from './overlay-contract';
 import type { ModelDiscoveryResult, ModelRole } from './model-contract';
 import type { ModelInstallRequest, ModelManagerSnapshot } from './model-install-contract';
@@ -44,6 +45,11 @@ export interface DesktopInvocations {
   'logs:configure': LogRetention;
   'playground:status': PlaygroundStatus;
   'playground:run': FreeformResult;
+  'speech-test:status': SpeechTestSnapshot;
+  'speech-test:start': SpeechTestSnapshot;
+  'speech-test:pcm': SpeechTestSnapshot;
+  'speech-test:finish': SpeechTestSnapshot;
+  'speech-test:stop': SpeechTestSnapshot;
   'chat:snapshot': ChatSnapshot;
   'chat:sample': void;
   'overlay:url': string | null;
@@ -96,6 +102,11 @@ export interface DesktopArguments {
   'logs:configure': [retention: LogRetention];
   'playground:status': [];
   'playground:run': [request: FreeformRequest];
+  'speech-test:status': [];
+  'speech-test:start': [config: SpeechTestStart];
+  'speech-test:pcm': [samples: Float32Array, backpressure?: boolean];
+  'speech-test:finish': [];
+  'speech-test:stop': [];
   'chat:snapshot': [];
   'chat:sample': [];
   'overlay:url': [];
@@ -145,6 +156,12 @@ export interface DesktopAPI {
   exportDiagnosticCapture(): Promise<boolean>;
   getPlaygroundStatus(): Promise<PlaygroundStatus>;
   runFreeform(request: FreeformRequest): Promise<FreeformResult>;
+  getSpeechTestStatus(): Promise<SpeechTestSnapshot>;
+  startSpeechTest(config: SpeechTestStart): Promise<SpeechTestSnapshot>;
+  submitSpeechTestPcm(samples: Float32Array, backpressure?: boolean): Promise<SpeechTestSnapshot>;
+  finishSpeechTest(): Promise<SpeechTestSnapshot>;
+  stopSpeechTest(): Promise<SpeechTestSnapshot>;
+  onSpeechTestChange(listener: (snapshot: SpeechTestSnapshot) => void): () => void;
   onPlaygroundStatus(listener: (status: PlaygroundStatus) => void): () => void;
   getOperationalLogs(): Promise<LogSnapshot>;
   configureOperationalLogs(retention: LogRetention): Promise<LogRetention>;

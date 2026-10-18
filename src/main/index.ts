@@ -3,6 +3,7 @@ import { writeFile } from 'node:fs/promises';
 import { DiagnosticCapture } from './diagnostic-capture';
 import { OperationalLogger } from './operational-logger';
 import { PlaygroundService } from './playground-service';
+import { SpeechPlaygroundService } from './speech-playground-service';
 import { installElectronSmoke } from './electron-smoke';
 import { observationNow } from '../shared/observation-clock';
 import { pathToFileURL } from 'node:url';
@@ -175,6 +176,7 @@ let session: SessionController;
 let audience: AudienceService;
 let nativeInference: NativeInference;
 let playground: PlaygroundService;
+let speechTest: SpeechPlaygroundService;
 let audio: AudioService;
 let sessionMedia: SessionMedia | undefined;
 let mainWindow: BrowserWindow | null = null;
@@ -220,6 +222,13 @@ function registerHandlers(): void {
     'playground:status': () => playground.snapshot(),
     'playground:run': (request: import('../shared/playground-contract').FreeformRequest) =>
       playground.run(request),
+    'speech-test:status': () => speechTest.snapshot(),
+    'speech-test:start': (config: import('../shared/speech-playground-contract').SpeechTestStart) =>
+      speechTest.start(config),
+    'speech-test:pcm': (samples: Float32Array, backpressure?: boolean) =>
+      speechTest.push(samples, backpressure),
+    'speech-test:finish': () => speechTest.finish(),
+    'speech-test:stop': () => speechTest.stop(),
     'logs:get': async () => {
       await logReady;
       return logger.snapshot();
@@ -283,8 +292,8 @@ function registerHandlers(): void {
       mode?: import('../shared/session-contract').InferenceMode,
     ) => {
       if (rosterRegenerating) throw new Error('Roster regeneration is in progress.');
-      if (playground.busy)
-        throw new Error('Wait for Playground inference to finish before starting Simulation.');
+      if (playground.busy || speechTest.busy)
+        throw new Error('Stop Playground experiments before starting Simulation.');
       return session.start(
         context,
         mode,
@@ -293,8 +302,8 @@ function registerHandlers(): void {
     },
     'session:stop': () => stopSession(),
     'session:retry': () => {
-      if (playground.busy)
-        throw new Error('Wait for Playground inference to finish before retrying Simulation.');
+      if (playground.busy || speechTest.busy)
+        throw new Error('Stop Playground experiments before retrying Simulation.');
       return session.retry();
     },
     'native:status': () => nativeInference.snapshot(),
@@ -322,8 +331,8 @@ function registerHandlers(): void {
       }
       if (mode !== 'fake' && mode !== 'native') throw new Error('Invalid inference mode.');
       if (rosterRegenerating) throw new Error('Roster regeneration is already in progress.');
-      if (playground.busy)
-        throw new Error('Wait for Playground inference to finish before regenerating the roster.');
+      if (playground.busy || speechTest.busy)
+        throw new Error('Stop Playground experiments before regenerating the roster.');
       rosterRegenerating = true;
       const provider = mode === 'native' ? nativeInference : new FakeInference();
       const abort = new AbortController();
@@ -349,6 +358,7 @@ function registerHandlers(): void {
       if (
         rosterRegenerating ||
         playground.busy ||
+        speechTest.busy ||
         speechSwitchBusy ||
         session.switchingModel ||
         session.snapshot().phase === 'switching'
@@ -395,6 +405,7 @@ function registerHandlers(): void {
       if (
         rosterRegenerating ||
         playground.busy ||
+        speechTest.busy ||
         speechSwitchBusy ||
         session.switchingModel ||
         session.snapshot().phase === 'switching' ||
@@ -470,8 +481,8 @@ function registerHandlers(): void {
       captureId: string,
     ) => audio.submit(segment, captureId),
     'models:choose-directory': async () => {
-      if (playground.busy)
-        throw new Error('Stop Playground inference before changing model storage.');
+      if (playground.busy || speechTest.busy)
+        throw new Error('Stop Playground experiments before changing model storage.');
       if (!mainWindow) throw new Error('Desktop window is unavailable.');
       const choice = await dialog.showOpenDialog(mainWindow, {
         title: 'Select model storage directory',
@@ -622,6 +633,7 @@ async function boot(): Promise<void> {
       !quitting &&
       !rosterRegenerating &&
       !speechSwitchBusy &&
+      !speechTest?.busy &&
       !session.switchingModel &&
       ['stopped', 'error'].includes(session.snapshot().phase) &&
       installs.snapshot().progress.phase === 'idle',
@@ -633,6 +645,28 @@ async function boot(): Promise<void> {
       }),
     () => session.awaitShutdown(),
   );
+  speechTest = new SpeechPlaygroundService(
+    () =>
+      new NativeSpeech({
+        executable: bundledWhisperWorker(app.getAppPath(), app.isPackaged, process.resourcesPath),
+        resolveModel: () => installs.activeSpeechFile(),
+        reportError,
+      }),
+    () =>
+      !quitting &&
+      !playground.busy &&
+      !rosterRegenerating &&
+      !speechSwitchBusy &&
+      !session.switchingModel &&
+      ['stopped', 'error'].includes(session.snapshot().phase) &&
+      installs.snapshot().progress.phase === 'idle',
+  );
+  speechTest.subscribe((status) => {
+    if (status.phase === 'error' && status.error)
+      logger.error('whisper', 'Speech Playground worker failed', new Error(status.error));
+    if (mainWindow && !mainWindow.isDestroyed())
+      mainWindow.webContents.send('speech-test:change', status);
+  });
   playground.subscribe((status) => {
     if (mainWindow && !mainWindow.isDestroyed())
       mainWindow.webContents.send('playground:status-change', status);
@@ -770,6 +804,7 @@ const shutdown = new ManagedShutdown(
     () => audio?.terminate() ?? Promise.resolve(),
     () => nativeInference?.stop() ?? Promise.resolve(),
     () => playground?.stop() ?? Promise.resolve(),
+    () => speechTest?.stop().then(() => {}) ?? Promise.resolve(),
     () => overlay.stop(),
     () => flushWindowSave(),
   ],
@@ -798,6 +833,11 @@ app.on('before-quit', (event) => {
 app.on('will-quit', () => {
   ipcMain.removeHandler('playground:status');
   ipcMain.removeHandler('playground:run');
+  ipcMain.removeHandler('speech-test:status');
+  ipcMain.removeHandler('speech-test:start');
+  ipcMain.removeHandler('speech-test:pcm');
+  ipcMain.removeHandler('speech-test:finish');
+  ipcMain.removeHandler('speech-test:stop');
   ipcMain.removeHandler('logs:get');
   ipcMain.removeHandler('logs:configure');
   ipcMain.removeHandler('diagnostics:get');

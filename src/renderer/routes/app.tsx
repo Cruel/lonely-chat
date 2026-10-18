@@ -34,6 +34,7 @@ import { VideoInput } from '@/components/video-input';
 import { DiagnosticCaptureControls } from '@/components/diagnostic-capture-controls';
 import { OperationalLogs } from '@/components/operational-logs';
 import { FreeformPlayground } from '@/components/freeform-playground';
+import { SpeechPlayground } from '@/components/speech-playground';
 import { AudioInput } from '@/components/audio-input';
 import type { AudioStatus } from '../../shared/audio-contract';
 import type { NativeServiceStatus } from '../../shared/native-service-contract';
@@ -97,6 +98,7 @@ export function DesktopPage() {
   const session = useSession();
   const audience = useAudience();
   const [section, setSection] = useState<DesktopSection>('simulation');
+  const [playgroundTab, setPlaygroundTab] = useState<'freeform' | 'speech'>('freeform');
   const [overlayStatus, setOverlayStatus] = useState<OverlayStatus>({
     port: DEFAULT_OVERLAY_PORT,
     url: null,
@@ -215,7 +217,25 @@ export function DesktopPage() {
         </header>
         <main id="desktop-content" className="mx-auto w-full max-w-5xl p-5 sm:p-7">
           <div hidden={section !== 'playground'}>
-            <FreeformPlayground simulationActive={running || session.busy || audience.busy} />
+            <div className="mb-5 flex flex-wrap gap-2" role="group" aria-label="Playground tools">
+              <Button
+                variant={playgroundTab === 'freeform' ? 'default' : 'secondary'}
+                onClick={() => setPlaygroundTab('freeform')}
+              >
+                Freeform inference
+              </Button>
+              <Button
+                variant={playgroundTab === 'speech' ? 'default' : 'secondary'}
+                onClick={() => setPlaygroundTab('speech')}
+              >
+                Speech testing
+              </Button>
+            </div>
+            {playgroundTab === 'freeform' ? (
+              <FreeformPlayground simulationActive={running || session.busy || audience.busy} />
+            ) : (
+              <SpeechPlayground simulationActive={running || session.busy || audience.busy} />
+            )}
           </div>
           {section === 'simulation' && (
             <section aria-label="Simulation">

@@ -18,6 +18,36 @@ const emptyModels: ModelManagerSnapshot = {
   progress: { phase: 'idle', file: null, receivedBytes: 0, totalBytes: null },
 };
 const modelsAPI = {
+  getSpeechTestStatus: async () => ({
+    revision: 0,
+    phase: 'idle' as const,
+    mode: null,
+    sourceId: null,
+    label: null,
+    pending: 0,
+    segments: [],
+    error: null,
+  }),
+  startSpeechTest: async () => {
+    throw new Error('Not used in this test.');
+  },
+  submitSpeechTestPcm: async () => {
+    throw new Error('Not used in this test.');
+  },
+  finishSpeechTest: async () => {
+    throw new Error('Not used in this test.');
+  },
+  stopSpeechTest: async () => ({
+    revision: 0,
+    phase: 'idle' as const,
+    mode: null,
+    sourceId: null,
+    label: null,
+    pending: 0,
+    segments: [],
+    error: null,
+  }),
+  onSpeechTestChange: () => () => {},
   getPlaygroundStatus: async () => ({ busy: false }),
   onPlaygroundStatus: () => () => {},
   runFreeform: async () => {
