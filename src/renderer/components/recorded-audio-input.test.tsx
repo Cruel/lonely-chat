@@ -171,6 +171,47 @@ it('rejects a video without accessible audio and allows disabling the invalid so
   await waitFor(() => expect(selection).toHaveBeenLastCalledWith({ ready: true, count: 0 }));
 });
 
+it('validates the preview segment against the longest enabled source and closes pre-run decoders on Start', async () => {
+  Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: create });
+  Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revoke });
+  vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
+  const selection = vi.fn();
+  const onSegmentChange = vi.fn();
+  const ref = createRef<RecordedAudioHandle>();
+  const props = { onSelectionChange: selection, onSegmentChange };
+  const page = render(<RecordedAudioInput ref={ref} running={false} {...props} />);
+  fireEvent.change(screen.getByLabelText('Add audio files'), {
+    target: { files: [new File(['a'], 'mic.wav', { type: 'audio/wav' })] },
+  });
+  const tag = document.querySelector('audio')!;
+  Object.defineProperty(tag, 'duration', { configurable: true, value: 10 });
+  fireEvent.loadedMetadata(tag);
+  await waitFor(() => expect(selection).toHaveBeenLastCalledWith({ ready: true, count: 1 }));
+  fireEvent.change(screen.getByLabelText('Start (ms)'), { target: { value: '1500' } });
+  fireEvent.change(screen.getByLabelText('End (ms, blank = automatic)'), {
+    target: { value: '11500' },
+  });
+  expect(screen.getByRole('alert').textContent).toMatch(/not exceed/);
+  expect(selection).toHaveBeenLastCalledWith({ ready: false, count: 1 });
+  expect(screen.getByRole('button', { name: 'Open media preview' }).hasAttribute('disabled')).toBe(
+    true,
+  );
+  fireEvent.change(screen.getByLabelText('End (ms, blank = automatic)'), {
+    target: { value: '7500' },
+  });
+  await waitFor(() =>
+    expect(onSegmentChange).toHaveBeenLastCalledWith({
+      segment: { startMs: 1500, endMs: 7500 },
+      valid: true,
+    }),
+  );
+  fireEvent.click(screen.getByRole('button', { name: 'Open media preview' }));
+  expect(screen.getByLabelText('Recorded media preview')).toBeTruthy();
+  expect(screen.getByLabelText('Preview audio: mic')).toBeTruthy();
+  page.rerender(<RecordedAudioInput ref={ref} running={true} {...props} />);
+  expect(screen.queryByLabelText('Recorded media preview')).toBeNull();
+});
+
 it('blocks undecodable enabled files but does not block other enabled files when disabled', async () => {
   Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: create });
   Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revoke });

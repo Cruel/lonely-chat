@@ -78,6 +78,57 @@ it('validates a local file, plays at 1× and sends decoded JPEGs through trusted
   expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:recorded-test');
 });
 
+it('starts at the selected presentation timestamp and submits irregular decoded frame times', async () => {
+  const select = vi.fn();
+  const submit = vi.fn(async (_frame: import('../../shared/video-contract').VideoFrame) => {});
+  const observedAt = performance.timeOrigin + performance.now();
+  window.lonelyChat = {
+    submitVideoFrame: submit,
+    reportRecordedVideoError: vi.fn(),
+  } as unknown as DesktopAPI;
+  vi.stubGlobal('URL', {
+    ...URL,
+    createObjectURL: vi.fn(() => 'blob:recorded-clip'),
+    revokeObjectURL: vi.fn(),
+  });
+  vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(async function (
+    this: HTMLMediaElement,
+  ) {
+    Object.defineProperty(this, 'paused', { configurable: true, value: false });
+  });
+  vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
+  vi.spyOn(HTMLMediaElement.prototype, 'readyState', 'get').mockReturnValue(4);
+  vi.spyOn(HTMLVideoElement.prototype, 'videoWidth', 'get').mockReturnValue(640);
+  vi.spyOn(HTMLVideoElement.prototype, 'videoHeight', 'get').mockReturnValue(360);
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+    drawImage: vi.fn(),
+  } as unknown as CanvasRenderingContext2D);
+  vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue('data:image/jpeg;base64,/9j/');
+  const ref = createRef<RecordedVideoHandle>();
+  render(<RecordedVideoInput ref={ref} running={false} onSelectionChange={select} />);
+  fireEvent.change(screen.getByLabelText('Video file'), {
+    target: { files: [new File(['fake'], 'variable.mp4', { type: 'video/mp4' })] },
+  });
+  const video = screen.getByLabelText('Video file').parentElement!.querySelector('video')!;
+  Object.defineProperty(video, 'duration', { configurable: true, value: 10 });
+  fireEvent.canPlay(video);
+  await ref.current!.begin(
+    100,
+    { observedAt, monotonicMs: performance.now() },
+    { startMs: 2500, endMs: 4000 },
+  );
+  await waitFor(() => expect(submit).toHaveBeenCalledOnce());
+  expect(submit.mock.calls[0][0]).toMatchObject({
+    sourceId: 'recorded:video',
+    mediaTimeMs: 2500,
+  });
+  // This is a presentation timestamp, not a fabricated constant-FPS frame number.
+  video.currentTime = 2.813;
+  await waitFor(() => expect(submit.mock.calls.length).toBeGreaterThan(1));
+  expect(submit.mock.calls[1][0]).toMatchObject({ mediaTimeMs: 2813 });
+  ref.current!.stop();
+});
+
 it('shows an actionable unsupported-codec message and disallows starting with an undecodable file', async () => {
   vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
   vi.stubGlobal('URL', {

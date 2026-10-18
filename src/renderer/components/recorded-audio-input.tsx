@@ -24,6 +24,12 @@ import {
   type EmbeddedTrackChoice,
 } from '../embedded-audio-tracks';
 import type { RecordedVideoMedia } from './recorded-video-input';
+import {
+  recordedPreviewDuration,
+  resolveRecordedSegment,
+  type RecordedSegment,
+} from '../recorded-preview-timeline';
+import { RecordedMediaPreview } from './recorded-media-preview';
 
 interface RecordedAudioTrack {
   kind: 'file' | 'video';
@@ -48,6 +54,8 @@ interface AudioRuntime {
   sink: GainNode;
   timeout: ReturnType<typeof setTimeout> | null;
   stallTimer: ReturnType<typeof setTimeout> | null;
+  endTimer: ReturnType<typeof setTimeout> | null;
+  completed: boolean;
   driftTimer: ReturnType<typeof setInterval> | null;
   active: boolean;
   started: boolean;
@@ -62,7 +70,10 @@ interface AudioRuntime {
 
 export interface RecordedAudioHandle {
   prepare(): Promise<void>;
-  begin(origin: { observedAt: number; monotonicMs: number }): Promise<void>;
+  begin(
+    origin: { observedAt: number; monotonicMs: number },
+    segment?: RecordedSegment,
+  ): Promise<void>;
   stop(): void;
 }
 
@@ -76,15 +87,37 @@ export const RecordedAudioInput = forwardRef<
     running: boolean;
     onSelectionChange: (state: { ready: boolean; count: number }) => void;
     video?: RecordedVideoMedia | null;
+    onSegmentChange?: (state: { segment: RecordedSegment; valid: boolean }) => void;
   }
->(function RecordedAudioInput({ running, onSelectionChange, video }, ref) {
+>(function RecordedAudioInput({ running, onSelectionChange, video, onSegmentChange }, ref) {
   const [tracks, setTracks] = useState<RecordedAudioTrack[]>([]);
   const [addType, setAddType] = useState<'file' | 'video'>('file');
+  const [segment, setSegment] = useState<RecordedSegment>({ startMs: 0, endMs: null });
+  const [previewOpen, setPreviewOpen] = useState(false);
   // A soundtrack is attached to one specific video selection, never its replacement.
   const activeTracks = useMemo(
     () => tracks.filter((track) => track.kind === 'file' || track.url === video?.url),
     [tracks, video?.url],
   );
+  const previewTracks = useMemo(
+    () =>
+      activeTracks.map(({ id, url, label, enabled, offsetMs, durationMs, embeddedTrackIndex }) => ({
+        id,
+        url,
+        label,
+        enabled,
+        offsetMs,
+        durationMs,
+        embeddedTrackIndex,
+      })),
+    [activeTracks],
+  );
+  const previewDurationMs = recordedPreviewDuration(video?.durationMs ?? null, previewTracks);
+  const hasMedia = Boolean(video) || activeTracks.some((track) => track.enabled);
+  const segmentValid =
+    previewDurationMs === 0
+      ? segment.startMs === 0 && segment.endMs === null
+      : resolveRecordedSegment(segment, previewDurationMs) !== null;
   const [phases, setPhases] = useState<Record<string, string>>({});
   const tracksRef = useRef(tracks);
   tracksRef.current = activeTracks;
@@ -93,9 +126,18 @@ export const RecordedAudioInput = forwardRef<
       previous.filter((track) => track.kind === 'file' || track.url === video?.url),
     );
   }, [video?.url]);
+  useEffect(() => setPreviewOpen(false), [video?.url]);
+  useEffect(() => {
+    if (running) setPreviewOpen(false);
+  }, [running]);
+  useEffect(() => {
+    onSegmentChange?.({ segment, valid: segmentValid });
+  }, [segment, segmentValid, onSegmentChange]);
   const runtimes = useRef(new Map<string, AudioRuntime>());
   const urls = useRef(new Set<string>());
   const generation = useRef(0);
+  const segmentRef = useRef(segment);
+  segmentRef.current = segment;
 
   const patch = (id: string, changes: Partial<RecordedAudioTrack>) => {
     setTracks((previous) =>
@@ -110,6 +152,7 @@ export const RecordedAudioInput = forwardRef<
     runtime.started = false;
     if (runtime.timeout !== null) clearTimeout(runtime.timeout);
     if (runtime.stallTimer !== null) clearTimeout(runtime.stallTimer);
+    if (runtime.endTimer !== null) clearTimeout(runtime.endTimer);
     if (runtime.driftTimer !== null) clearInterval(runtime.driftTimer);
     runtime.node.port.postMessage('pause');
     runtime.audio.pause();
@@ -217,6 +260,8 @@ export const RecordedAudioInput = forwardRef<
               sink,
               timeout: null,
               stallTimer: null,
+              endTimer: null,
+              completed: false,
               driftTimer: null,
               active: false,
               started: false,
@@ -235,7 +280,7 @@ export const RecordedAudioInput = forwardRef<
               captureId,
               sampleRate: context.sampleRate,
               offsetMs: track.offsetMs,
-              seekMs: Math.max(0, -track.offsetMs),
+              seekMs: Math.max(0, segmentRef.current.startMs - track.offsetMs),
             });
             const worker = answer.sources.find((entry) => entry.id === track.id);
             if (worker?.phase !== 'ready')
@@ -254,7 +299,12 @@ export const RecordedAudioInput = forwardRef<
         }),
       );
     },
-    async begin(origin) {
+    async begin(origin, segment = { startMs: 0, endMs: null }) {
+      // Shift the media coordinate while preserving observedAt at the start of the clip.
+      origin = {
+        observedAt: origin.observedAt - segment.startMs,
+        monotonicMs: origin.monotonicMs - segment.startMs,
+      };
       const api = window.lonelyChat;
       if (!api) return;
       await Promise.all(
@@ -300,9 +350,17 @@ export const RecordedAudioInput = forwardRef<
             );
           };
           const finish = async () => {
-            if (!current()) return;
+            if (!current() || runtime.completed) return;
+            runtime.completed = true;
+            if (runtime.endTimer !== null) clearTimeout(runtime.endTimer);
+            runtime.endTimer = null;
+            if (runtime.timeout !== null) clearTimeout(runtime.timeout);
+            runtime.timeout = null;
             runtime.active = false;
             runtime.started = false;
+            // Freeze decoding at the clip boundary before worklet/Whisper draining.
+            // Do not clear the buffered PCM: onpause sees started=false.
+            runtime.audio.pause();
             runtime.pauseResolver?.();
             runtime.pauseResolver = null;
             clearStall();
@@ -341,8 +399,17 @@ export const RecordedAudioInput = forwardRef<
             await api.finishRecordedAudio(runtime.captureId);
             status(track.id, 'End of audio');
           };
+          if (segment.endMs !== null) {
+            const remainingMs = Math.max(
+              0,
+              segment.endMs - (performance.now() - origin.monotonicMs),
+            );
+            runtime.endTimer = setTimeout(() => {
+              void finish().catch(failed);
+            }, remainingMs);
+          }
           const synchronize = async (first: boolean) => {
-            if (!current() || runtime.recovering) return;
+            if (!current() || runtime.completed || runtime.recovering) return;
             runtime.recovering = true;
             runtime.active = false;
             try {
@@ -484,7 +551,7 @@ export const RecordedAudioInput = forwardRef<
             else clearStall();
           };
           const playAtPosition = async () => {
-            if (!current()) return;
+            if (!current() || runtime.completed) return;
             const position = recordedAudioPosition(
               track.offsetMs,
               performance.now() - origin.monotonicMs,
@@ -511,7 +578,10 @@ export const RecordedAudioInput = forwardRef<
             await resumeRecordedContext(runtime.context);
             if (!current()) return;
             await startRecordedMedia(runtime.audio);
-            if (!current()) return;
+            if (!current() || runtime.completed) {
+              runtime.audio.pause();
+              return;
+            }
             // Playback startup may have taken seconds: seek again and only then
             // arm Whisper. Other tracks are free to start meanwhile.
             await synchronize(true);
@@ -528,14 +598,16 @@ export const RecordedAudioInput = forwardRef<
 
   useEffect(() => {
     onSelectionChange({
-      ready: activeTracks.every(
-        (track) =>
-          !track.enabled ||
-          (track.durationMs !== null && !track.error && track.label.trim().length > 0),
-      ),
+      ready:
+        segmentValid &&
+        activeTracks.every(
+          (track) =>
+            !track.enabled ||
+            (track.durationMs !== null && !track.error && track.label.trim().length > 0),
+        ),
       count: activeTracks.filter((track) => track.enabled).length,
     });
-  }, [activeTracks, onSelectionChange]);
+  }, [activeTracks, onSelectionChange, segmentValid]);
 
   useEffect(() => {
     if (!running) stop();
@@ -782,6 +854,73 @@ export const RecordedAudioInput = forwardRef<
             </p>
           </div>
         ))}
+      </div>
+      <div className="mt-5 border-t border-border pt-4">
+        <h3 className="font-medium">Recorded segment and preview</h3>
+        <p className="mt-2 text-xs text-zinc-400">
+          Segment times are on the shared presentation timeline. End defaults to the longest enabled
+          media source, including offsets. A preview never creates transcripts or chat.
+        </p>
+        <div className="mt-3 grid max-w-xl gap-3 sm:grid-cols-2">
+          <div>
+            <Label htmlFor="recorded-segment-start">Start (ms)</Label>
+            <Input
+              id="recorded-segment-start"
+              type="number"
+              min={0}
+              step={1}
+              value={segment.startMs}
+              disabled={running}
+              className="mt-1"
+              onChange={(event) =>
+                setSegment((previous) => ({ ...previous, startMs: Number(event.target.value) }))
+              }
+            />
+          </div>
+          <div>
+            <Label htmlFor="recorded-segment-end">End (ms, blank = automatic)</Label>
+            <Input
+              id="recorded-segment-end"
+              type="number"
+              min={1}
+              step={1}
+              placeholder={previewDurationMs ? String(previewDurationMs) : 'No duration'}
+              value={segment.endMs ?? ''}
+              disabled={running}
+              className="mt-1"
+              onChange={(event) =>
+                setSegment((previous) => ({
+                  ...previous,
+                  endMs: event.target.value === '' ? null : Number(event.target.value),
+                }))
+              }
+            />
+          </div>
+        </div>
+        {!segmentValid && (
+          <p role="alert" className="mt-2 text-sm text-rose-300">
+            Segment must start at or after 0 ms, end after start, and not exceed the
+            {previewDurationMs} ms enabled-media duration.
+          </p>
+        )}
+        <div className="mt-3">
+          <Button
+            variant="secondary"
+            disabled={running || !hasMedia || !previewDurationMs || !segmentValid}
+            onClick={() => setPreviewOpen((previous) => !previous)}
+          >
+            {previewOpen ? 'Close preview' : 'Open media preview'}
+          </Button>
+        </div>
+        {previewOpen && !running && segmentValid && (
+          <RecordedMediaPreview
+            video={video ?? null}
+            tracks={previewTracks}
+            segment={segment}
+            durationMs={previewDurationMs}
+            onClose={() => setPreviewOpen(false)}
+          />
+        )}
       </div>
     </div>
   );

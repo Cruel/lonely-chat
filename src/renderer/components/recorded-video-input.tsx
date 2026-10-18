@@ -1,6 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { Label } from '@/components/ui/label';
 import { RecordedVideoTimeline } from '../recorded-video-timeline';
+import type { RecordedSegment } from '../recorded-preview-timeline';
 import {
   seekRecordedMedia,
   startRecordedMedia,
@@ -12,12 +13,14 @@ const VIDEO_CATCHUP_DRIFT_MS = 450;
 export interface RecordedVideoMedia {
   url: string;
   name: string;
+  durationMs?: number | null;
 }
 
 export interface RecordedVideoHandle {
   begin(
     captureIntervalMs: number,
     origin?: { observedAt: number; monotonicMs: number },
+    segment?: RecordedSegment,
   ): Promise<void>;
   stop(): void;
 }
@@ -51,7 +54,7 @@ export const RecordedVideoInput = forwardRef<
     ref,
     () => ({
       stop,
-      async begin(captureIntervalMs: number, origin) {
+      async begin(captureIntervalMs: number, origin, segment = { startMs: 0, endMs: null }) {
         if (!url) return;
         const element = video.current;
         if (!element || !ready || element.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
@@ -69,10 +72,11 @@ export const RecordedVideoInput = forwardRef<
         if (generation !== epoch.current) return;
         const mediaElapsedMs = () => Math.max(0, performance.now() - originMonotonicMs);
         const expectedMediaMs = () => {
-          const elapsed = mediaElapsedMs();
-          return Number.isFinite(element.duration)
-            ? Math.min(elapsed, Math.max(0, element.duration * 1000 - 10))
-            : elapsed;
+          const elapsed = segment.startMs + mediaElapsedMs();
+          const fileEnd = Number.isFinite(element.duration)
+            ? Math.max(0, element.duration * 1000 - 10)
+            : Infinity;
+          return Math.min(elapsed, fileEnd);
         };
         const timeline = new RecordedVideoTimeline(
           originObservationMs,
@@ -95,6 +99,13 @@ export const RecordedVideoInput = forwardRef<
         const capture = () => {
           if (generation !== epoch.current || inFlight.current || synchronizing || element.ended)
             return;
+          if (segment.endMs !== null && segment.startMs + mediaElapsedMs() >= segment.endMs) {
+            if (timer.current !== null) clearInterval(timer.current);
+            timer.current = null;
+            element.pause();
+            setStatus('End of selected video segment');
+            return;
+          }
           if (element.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || element.paused) {
             stalledAt ??= performance.now();
             if (performance.now() - stalledAt >= AUDIO_STALL_TIMEOUT_MS)
@@ -226,7 +237,7 @@ export const RecordedVideoInput = forwardRef<
       <p className="mt-2 text-sm text-zinc-400">
         Optional local file decoded by Chromium at normal speed, independent of model inference.
         Embedded audio is muted and ignored unless separately added as an audio input. Only sampled
-        JPEG frames enter the video input.
+        JPEG frames enter the video input. Use the synchronized media preview below to seek.
       </p>
       <Label htmlFor="recorded-video-file" className="mt-4 text-sm text-zinc-200">
         Video file
@@ -247,9 +258,15 @@ export const RecordedVideoInput = forwardRef<
           preload="auto"
           playsInline
           muted
-          controls={!running}
           onCanPlay={() => {
             if (video.current?.videoWidth && video.current.videoHeight) {
+              const seconds = video.current.duration;
+              onMediaChange?.({
+                url,
+                name: fileName ?? 'Video',
+                durationMs:
+                  Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1000) : null,
+              });
               setReady(true);
               setError(null);
               if (!running) setStatus('Ready');

@@ -37,6 +37,7 @@ import {
   type RecordedVideoMedia,
 } from '@/components/recorded-video-input';
 import { RecordedAudioInput, type RecordedAudioHandle } from '@/components/recorded-audio-input';
+import type { RecordedSegment } from '../recorded-preview-timeline';
 import { DiagnosticCaptureControls } from '@/components/diagnostic-capture-controls';
 import { OperationalLogs } from '@/components/operational-logs';
 import { InferenceRunInspector } from '@/components/inference-run-inspector';
@@ -146,7 +147,12 @@ export function DesktopPage() {
   const recordedAudio = useRef<RecordedAudioHandle>(null);
   const mediaStartGeneration = useRef(0);
   const [recordedAudioSelection, setRecordedAudioSelection] = useState({ ready: true, count: 0 });
+  const [recordedSegmentState, setRecordedSegmentState] = useState<{
+    segment: RecordedSegment;
+    valid: boolean;
+  }>({ segment: { startMs: 0, endMs: null }, valid: true });
   const updateRecordedAudioSelection = useCallback(setRecordedAudioSelection, []);
+  const updateRecordedSegment = useCallback(setRecordedSegmentState, []);
   const updateRecordedSelection = useCallback(setRecordedSelection, []);
   const updateRecordedVideoMedia = useCallback(setRecordedVideoMedia, []);
   const [sampleBusy, setSampleBusy] = useState(false);
@@ -267,9 +273,13 @@ export function DesktopPage() {
       const origin = { observedAt, monotonicMs: performance.now() };
       // Both producers use one observation epoch; model processing never drives either clock.
       await Promise.all([
-        recordedAudio.current?.begin(origin),
+        recordedAudio.current?.begin(origin, recordedSegmentState.segment),
         recordedSelection.hasFile
-          ? recordedPlayer.current?.begin(session.preferences.videoCaptureIntervalMs, origin)
+          ? recordedPlayer.current?.begin(
+              session.preferences.videoCaptureIntervalMs,
+              origin,
+              recordedSegmentState.segment,
+            )
           : undefined,
       ]);
     } catch (error) {
@@ -559,6 +569,7 @@ export function DesktopPage() {
                       ref={recordedAudio}
                       running={mediaActive}
                       onSelectionChange={updateRecordedAudioSelection}
+                      onSegmentChange={updateRecordedSegment}
                       video={recordedVideoMedia}
                     />
                     <label className="mt-4 flex items-center gap-2 text-sm text-zinc-300">
@@ -587,7 +598,9 @@ export function DesktopPage() {
                         session.busy ||
                         !seedValid ||
                         (inputMode === 'recorded' &&
-                          (!recordedSelection.ready || !recordedAudioSelection.ready))
+                          (!recordedSelection.ready ||
+                            !recordedAudioSelection.ready ||
+                            !recordedSegmentState.valid))
                       }
                       onClick={() => void startSimulation()}
                     >

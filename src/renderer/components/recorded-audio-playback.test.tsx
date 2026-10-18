@@ -295,6 +295,48 @@ it('fails visibly instead of silently mixing audio when the decoder cannot selec
   ).toBeTruthy();
 });
 
+it('runs a selected clip through the same Whisper capture identity and flushes at its end', async () => {
+  const page = setup();
+  fireEvent.change(screen.getByLabelText('Add audio files'), {
+    target: { files: [new File(['audio'], 'speaker.wav', { type: 'audio/wav' })] },
+  });
+  const element = document.querySelector('audio')!;
+  Object.defineProperty(element, 'duration', { configurable: true, value: 10 });
+  fireEvent.loadedMetadata(element);
+  fireEvent.change(screen.getByLabelText('Start (ms)'), { target: { value: '2000' } });
+  fireEvent.change(screen.getByLabelText('End (ms, blank = automatic)'), {
+    target: { value: '2200' },
+  });
+  await waitFor(() => expect(page.selection).toHaveBeenLastCalledWith({ ready: true, count: 1 }));
+  page.rerender(
+    <RecordedAudioInput ref={page.ref} running={true} onSelectionChange={page.selection} />,
+  );
+  await page.ref.current!.prepare();
+  expect(page.start).toHaveBeenCalledWith(
+    expect.objectContaining({
+      seekMs: 2000,
+      offsetMs: 0,
+    }),
+  );
+  const begin = page.ref.current!.begin(
+    { observedAt: 100000, monotonicMs: clock },
+    { startMs: 2000, endMs: 2200 },
+  );
+  await waitFor(() => expect(instances[0].play).toHaveBeenCalledOnce());
+  instances[0].startPlayback();
+  await begin;
+  expect(page.arm.mock.calls[0][1]).toBe(98000);
+  expect(page.arm.mock.calls[0][2]).toBeCloseTo(2000);
+  // The selected 200-ms clip must finish a 10-second audio file early.
+  await waitFor(() => expect(ports[0].postMessage).toHaveBeenCalledWith('flush'));
+  ports[0].onmessage?.({ data: new Float32Array(400) } as MessageEvent);
+  ports[0].onmessage?.({ data: { type: 'flushed' } } as MessageEvent);
+  await waitFor(() => expect(page.finish).toHaveBeenCalledOnce());
+  expect(page.pcm).toHaveBeenCalledOnce();
+  expect(instances[0].pause).toHaveBeenCalled();
+  page.ref.current!.stop();
+});
+
 it('anchors each track after its actual asynchronous playback starts, not before', async () => {
   const page = setup();
   await selectFiles(page, 2);
