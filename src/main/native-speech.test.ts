@@ -70,6 +70,42 @@ describe('native speech IPC and worker lifecycle', () => {
     await expect(speech.transcribe(new Float32Array(20))).rejects.toThrow(/segment/);
   });
 
+  it('ignores late binary stdout from a retired worker after restart', async () => {
+    const children: import('node:child_process').ChildProcess[] = [];
+    const speech = new NativeSpeech({
+      executable: process.execPath,
+      resolveModel: async () => '/fixture/ggml-base.en.bin',
+      launch: (command, _args, options) => {
+        const child = spawn(
+          command,
+          [
+            '-e',
+            fixture
+              .replace(
+                'process.stdout.write(out.subarray(0,2));',
+                'setTimeout(()=>process.stdout.write(out.subarray(0,2)),40);',
+              )
+              .replace(
+                'process.stdout.write(out.subarray(2));',
+                'setTimeout(()=>process.stdout.write(out.subarray(2)),40);',
+              ),
+          ],
+          options,
+        );
+        children.push(child);
+        return child;
+      },
+    });
+    await speech.start();
+    await speech.shutdown();
+    await speech.start();
+    const pending = speech.transcribe(new Float32Array(1600));
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    children[0].stdout?.emit('data', speechFrame(SPEECH_RESULT, Buffer.from('stale data')));
+    await expect(pending).resolves.toBe('hello from test fixture');
+    await speech.shutdown();
+  });
+
   it('rejects invalid samples without communicating untrusted input', async () => {
     const speech = new NativeSpeech({
       executable: process.execPath,

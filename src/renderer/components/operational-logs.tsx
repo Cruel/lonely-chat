@@ -110,7 +110,15 @@ export function OperationalLogs() {
     (entry) =>
       (severity === 'all' || entry.level === severity) &&
       (!search ||
-        (entry.text + ' ' + entry.source + ' ' + (entry.error?.message ?? ''))
+        (
+          entry.text +
+          ' ' +
+          entry.source +
+          ' ' +
+          (entry.error?.message ?? '') +
+          ' ' +
+          JSON.stringify(entry.context ?? {})
+        )
           .toLowerCase()
           .includes(search.toLowerCase())),
   );

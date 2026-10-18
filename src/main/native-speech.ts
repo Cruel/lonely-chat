@@ -2,6 +2,7 @@ import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import path from 'node:path';
 import type { NativeServiceStatus } from '../shared/native-service-contract';
 import type { OperationalErrorSink } from './operational-logger';
+import { NativeWorkerLog, type WorkerLogSink, type WorkerStream } from './native-worker-log';
 import { stat } from 'node:fs/promises';
 import {
   MAX_SPEECH_FRAME,
@@ -17,6 +18,8 @@ import {
 interface SpeechOptions {
   readonly executable: string;
   readonly reportError?: OperationalErrorSink;
+  readonly log?: WorkerLogSink;
+  readonly privateWorkerLine?: (worker: string, stream: WorkerStream, line: string) => void;
   readonly resolveModel: () => Promise<string>;
   readonly launch?: (
     command: string,
@@ -35,7 +38,8 @@ export class NativeSpeech {
   private pending: Pending | null = null;
   private queue: Pending[] = [];
   private reader = new SpeechFrameReader();
-  private tail = '';
+  private workerStop: (() => void) | null = null;
+  private workerLog: NativeWorkerLog | null = null;
   private epoch = 0;
   private ready: Promise<void> | null = null;
   private exitTask: Promise<void> = Promise.resolve();
@@ -70,7 +74,8 @@ export class NativeSpeech {
     } catch (error) {
       // An obsolete load must not kill a newer worker started after Stop/Restart.
       if (epoch === this.epoch) {
-        this.stop();
+        this.workerLog?.runtimeError('startup');
+        this.stop(error instanceof Error ? error : new Error('Speech worker failed.'));
         this.publish('failed', error instanceof Error ? error.message : 'Speech worker failed.');
       }
       throw error;
@@ -94,17 +99,45 @@ export class NativeSpeech {
     }
     this.child = child;
     this.reader = new SpeechFrameReader();
-    this.tail = '';
-    child.stderr?.on('data', (data: Buffer) => {
-      this.tail = (this.tail + data.toString('utf8')).slice(-1500);
-    });
+    const worker = new NativeWorkerLog(
+      'whisper',
+      this.options.log,
+      { backend: 'cpu', ...(child.pid ? { pid: child.pid } : {}) },
+      this.options.privateWorkerLine,
+    );
+    this.workerLog = worker;
+    worker.start();
+    child.stderr?.on('data', (data: Buffer) => worker.write('stderr', data));
+    // stdout is binary length-prefixed IPC, not a text log stream. Never persist
+    // transcription replies or decode binary output as lines.
+    let stopping = false;
+    this.workerStop = () => {
+      stopping = true;
+    };
+    child.once('close', (code, signal) => worker.finish(code, signal, stopping));
     child.stdout?.on('data', (chunk: Buffer) => {
+      // A retired process may still drain its final stdout bytes. Its binary
+      // frames must never reach the next worker's pending request or decoder.
+      if (this.child !== child) return;
       try {
         for (const response of this.reader.push(chunk)) {
+          worker.protocolReply(
+            response.opcode === SPEECH_READY
+              ? 'ready'
+              : response.opcode === SPEECH_RESULT
+                ? 'transcribed'
+                : 'error',
+          );
           const pending = this.pending;
           if (!pending) throw new Error('Unexpected native speech IPC response.');
           this.pending = null;
           if (response.opcode === SPEECH_ERROR) {
+            this.options.privateWorkerLine?.(
+              worker.id,
+              'stdout',
+              response.data.toString('utf8').slice(0, 2048),
+            );
+            worker.runtimeError('ipc-response');
             pending.reject(
               new Error(`whisper.cpp: ${response.data.toString('utf8').slice(0, 500)}`),
             );
@@ -120,13 +153,15 @@ export class NativeSpeech {
         this.fail(error instanceof Error ? error : new Error('Invalid native speech reply.'));
       }
     });
-    child.on('error', (error) =>
-      this.fail(new Error(`Unable to launch whisper.cpp: ${error.message}`)),
-    );
+    child.on('error', (error) => {
+      worker.launchError(error);
+      if (this.child === child)
+        this.fail(new Error(`Unable to launch whisper.cpp: ${error.message}`));
+    });
     child.on('exit', (code, signal) => {
       if (this.child !== child) return;
       this.fail(
-        new Error(`whisper.cpp exited (${signal ?? code ?? 'unknown'}): ${this.tail.slice(-500)}`),
+        new Error(`whisper.cpp exited (${signal ?? code ?? 'unknown'}). See Logs for details.`),
       );
     });
     await this.send(SPEECH_INIT, SPEECH_READY, Buffer.from(model, 'utf8'), START_TIMEOUT_MS);
@@ -199,7 +234,7 @@ export class NativeSpeech {
 
   private fail(error: Error): void {
     if (!this.child) return;
-    this.tail = (this.tail + error.message).slice(-1500);
+    this.workerLog?.runtimeError('ipc-or-worker');
     this.stop(error);
     this.publish('failed', error.message);
   }
@@ -210,16 +245,20 @@ export class NativeSpeech {
     await this.exitTask;
   }
 
-  stop(reason = new Error('Speech transcription stopped.')): void {
+  stop(reason?: Error): void {
     if (!this.child && !this.ready && !this.pending && this.status.phase === 'stopped') return;
     ++this.epoch;
     this.publish('stopped');
     const child = this.child;
     this.child = null;
+    if (!reason) this.workerStop?.();
+    this.workerStop = null;
+    this.workerLog = null;
     this.ready = null;
-    this.pending?.reject(reason);
+    this.pending?.reject(reason ?? new Error('Speech transcription stopped.'));
     this.pending = null;
-    for (const task of this.queue.splice(0)) task.reject(reason);
+    for (const task of this.queue.splice(0))
+      task.reject(reason ?? new Error('Speech transcription stopped.'));
     if (child && child.exitCode === null && child.signalCode === null) {
       const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
       child.kill();

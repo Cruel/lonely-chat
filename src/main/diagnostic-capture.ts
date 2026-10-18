@@ -10,6 +10,7 @@ export class DiagnosticCapture {
     return this.enabled ? this.generation : null;
   }
   private samples: string[] = [];
+  private workerOutput: string[] = [];
   private bytes = 0;
   private dropped = 0;
 
@@ -22,6 +23,7 @@ export class DiagnosticCapture {
     return {
       enabled: this.enabled,
       samples: this.samples.length,
+      workerLines: this.workerOutput.length,
       bytes: this.bytes,
       dropped: this.dropped,
     };
@@ -33,6 +35,7 @@ export class DiagnosticCapture {
     ++this.generation;
     this.enabled = enabled;
     this.samples = [];
+    this.workerOutput = [];
     this.bytes = 0;
     this.dropped = 0;
     return this.status();
@@ -47,15 +50,36 @@ export class DiagnosticCapture {
       return;
     }
     while (this.samples.length >= this.maxSamples || this.bytes + size > this.maxBytes) {
-      this.bytes -= Buffer.byteLength(this.samples.shift()!);
+      if (this.samples.length) this.bytes -= Buffer.byteLength(this.samples.shift()!);
+      else this.bytes -= Buffer.byteLength(this.workerOutput.shift()!);
       this.dropped++;
     }
     this.samples.push(sample);
     this.bytes += size;
   }
 
+  /** Private native stderr/stdout text, never persisted until the user explicitly exports. */
+  recordWorkerLine(worker: string, stream: 'stdout' | 'stderr', line: string): void {
+    if (!this.enabled) return;
+    const sample = JSON.stringify({ worker, stream, line: line.slice(0, 2048) });
+    const size = Buffer.byteLength(sample);
+    if (size > this.maxBytes) {
+      this.dropped++;
+      return;
+    }
+    // Private worker text is capped independently to prevent noisy workers from
+    // crowding out inference samples, and shares the global memory budget.
+    while (this.workerOutput.length >= 200 || this.bytes + size > this.maxBytes) {
+      if (this.workerOutput.length) this.bytes -= Buffer.byteLength(this.workerOutput.shift()!);
+      else this.bytes -= Buffer.byteLength(this.samples.shift()!);
+      this.dropped++;
+    }
+    this.workerOutput.push(sample);
+    this.bytes += size;
+  }
+
   export(): string {
     if (!this.enabled) throw new Error('Enable diagnostic capture before exporting.');
-    return `{"version":1,"dropped":${this.dropped},"samples":[${this.samples.join(',')}]}\n`;
+    return `{"version":2,"dropped":${this.dropped},"samples":[${this.samples.join(',')}],"workerOutput":[${this.workerOutput.join(',')}]}\n`;
   }
 }

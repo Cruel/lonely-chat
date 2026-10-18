@@ -6,6 +6,7 @@ export function DiagnosticCaptureControls() {
   const [status, setStatus] = useState<DiagnosticStatus>({
     enabled: false,
     samples: 0,
+    workerLines: 0,
     bytes: 0,
     dropped: 0,
   });
@@ -49,12 +50,15 @@ export function DiagnosticCaptureControls() {
       <p className="mt-2 text-sm text-zinc-400">
         Off by default. Captures inference samples including private images, transcripts, manual
         context, roster, events and timings in memory (up to 10 samples / 5 MiB). Failed validation
-        samples also include the rejected model response. Export writes a JSON file only where you
-        choose. Review it before sharing. Disabling discards all samples; exports are not deleted.
+        samples also include the rejected model response. It also records native worker
+        stdout/stderr text, which may contain paths, prompts, transcripts and secrets (up to 200
+        lines). Normal operational logs never store raw worker output. Export writes a JSON file
+        only where you choose. Review it before sharing. Disabling discards all samples; exports are
+        not deleted.
       </p>
       <p role="status" className="mt-2 text-xs text-zinc-400">
-        {status.enabled ? 'Capturing' : 'Disabled'} · {status.samples} samples · {status.bytes}{' '}
-        bytes · {status.dropped} dropped
+        {status.enabled ? 'Capturing' : 'Disabled'} · {status.samples} samples ·{' '}
+        {status.workerLines} worker lines · {status.bytes} bytes · {status.dropped} dropped
       </p>
       <div className="mt-3 flex gap-3">
         <Button
@@ -70,7 +74,7 @@ export function DiagnosticCaptureControls() {
           {status.enabled ? 'Disable and discard samples' : 'Enable private diagnostic capture'}
         </Button>
         <Button
-          disabled={busy || !status.enabled || !status.samples}
+          disabled={busy || !status.enabled || !(status.samples || status.workerLines)}
           onClick={() => void perform(() => window.lonelyChat!.exportDiagnosticCapture())}
         >
           Export private samples

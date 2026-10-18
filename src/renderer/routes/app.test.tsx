@@ -58,10 +58,17 @@ const modelsAPI = {
     retention,
   onOperationalLog: () => () => {},
   onMediaStop: () => () => {},
-  getDiagnosticCapture: async () => ({ enabled: false, samples: 0, bytes: 0, dropped: 0 }),
+  getDiagnosticCapture: async () => ({
+    enabled: false,
+    samples: 0,
+    workerLines: 0,
+    bytes: 0,
+    dropped: 0,
+  }),
   configureDiagnosticCapture: async (enabled: boolean) => ({
     enabled,
     samples: 0,
+    workerLines: 0,
     bytes: 0,
     dropped: 0,
   }),

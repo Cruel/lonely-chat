@@ -420,6 +420,11 @@ export function DesktopPage() {
                     {mediaError || session.actionError || session.status.error}
                   </p>
                 )}
+                {(nativeStatus?.phase === 'failed' || session.status.phase === 'error') && (
+                  <Button variant="link" size="sm" onClick={() => setSection('logs')}>
+                    View worker failure in Logs
+                  </Button>
+                )}
                 {session.status.events.length > 0 && (
                   <div className="mt-4 space-y-1" aria-label="Recent inferred events">
                     <p className="text-xs font-medium text-zinc-300">Recent inferred events</p>
@@ -682,8 +687,9 @@ export function DesktopPage() {
                 <p className="mt-2 text-sm text-zinc-400">
                   Recent inference errors below include timestamps, cycle and attempt numbers, and
                   field-level validation failures. Enable private diagnostic capture before retrying
-                  to export the rejected model output. Native worker stdout/stderr is not yet
-                  available in this view.
+                  to export rejected model output and raw native worker text. Worker output is
+                  classified into privacy-safe, source-labeled operational entries above; binary
+                  Whisper transcription replies are never logged as text.
                 </p>
                 <dl className="mt-5 grid gap-3 text-sm sm:grid-cols-2">
                   <div>

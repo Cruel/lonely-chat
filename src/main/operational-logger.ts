@@ -47,6 +47,9 @@ const SAFE_CONTEXT_KEYS = new Set([
   'modelRole',
   'sourceKind',
   'operation',
+  'pid',
+  'signal',
+  'stream',
 ]);
 
 /** Mask common credential forms even in Error.message, Error.stack and Error.cause. */

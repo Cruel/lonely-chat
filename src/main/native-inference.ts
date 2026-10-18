@@ -17,6 +17,7 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { AUDIENCE, type InferenceInput, type InferenceProvider } from './fake-inference';
 import { PrivateInferenceError } from './private-inference-error';
+import { NativeWorkerLog, type WorkerLogSink, type WorkerStream } from './native-worker-log';
 import {
   AUTHOR_PLACEHOLDER,
   CHAT_ACTIVITY_LIMITS,
@@ -295,6 +296,8 @@ interface NativeOptions {
   readonly resourcePreferences?: () => SessionPreferences;
   /** Injectable device detection; production probes the shipped executable. */
   readonly probeDevices?: () => Promise<readonly BackendDevice[]>;
+  readonly log?: WorkerLogSink;
+  readonly privateWorkerLine?: (worker: string, stream: WorkerStream, line: string) => void;
 }
 
 /**
@@ -308,9 +311,9 @@ export class NativeInference implements InferenceProvider {
   private port: number | null = null;
   private apiKey: string | null = null;
   private failure: Error | null = null;
-  private logTail = '';
   private generation = 0;
   private shutdown: Promise<void> | null = null;
+  private workerStop: (() => void) | null = null;
   private status: NativeServiceStatus = { revision: 0, phase: 'stopped', error: null };
   private listeners = new Set<(status: NativeServiceStatus) => void>();
   private resources: NativeRuntimeResources | null = null;
@@ -523,7 +526,6 @@ export class NativeInference implements InferenceProvider {
     this.port = port;
     this.apiKey = key;
     this.failure = null;
-    this.logTail = '';
     this.visionReady = false;
     const executable =
       gpuOffloadLayers > 0 && (selection.selected === 'cuda' || selection.selected === 'vulkan')
@@ -536,27 +538,46 @@ export class NativeInference implements InferenceProvider {
       env: this.processEnvironment(executable),
     });
     this.child = child;
-    const log = (chunk: Buffer) => {
-      // Never expose server logs to the overlay; bound memory for diagnostics.
-      this.logTail = (this.logTail + chunk.toString('utf8')).slice(-3000);
+    const worker = new NativeWorkerLog(
+      'llama.cpp',
+      this.options.log,
+      { backend: this.resources.backend, ...(child.pid ? { pid: child.pid } : {}) },
+      this.options.privateWorkerLine,
+    );
+    worker.start();
+    child.stdout?.on('data', (chunk: Buffer) => worker.write('stdout', chunk));
+    child.stderr?.on('data', (chunk: Buffer) => worker.write('stderr', chunk));
+    let stopping = false;
+    let exited: { code: number | null; signal: NodeJS.Signals | null } = {
+      code: null,
+      signal: null,
     };
-    child.stdout?.on('data', log);
-    child.stderr?.on('data', log);
+    child.once('close', (code, signal) =>
+      worker.finish(code ?? exited.code, signal ?? exited.signal, stopping),
+    );
     child.once('error', (error) => {
+      worker.launchError(error);
+      if (this.child !== child) return;
       if (this.resources?.backend !== 'cpu') this.fallbackToCpu = true;
       this.failure = new Error(`Unable to launch bundled llama.cpp: ${error.message}`);
       this.publish('failed', this.failure.message);
       this.lifecycle?.abort();
     });
     child.once('exit', (code, termination) => {
+      exited = { code, signal: termination };
       if (this.child !== child) return;
       if (this.resources?.backend !== 'cpu') this.fallbackToCpu = true;
       this.failure = new Error(
-        `llama.cpp exited (${termination ?? code ?? 'unknown'}). ${this.logTail.slice(-750)}`,
+        `llama.cpp exited (${termination ?? code ?? 'unknown'}). See Logs for worker diagnostics.`,
       );
       this.publish('failed', this.failure.message);
       this.lifecycle?.abort();
     });
+    // stop() clears the active child before termination; the log retains its own
+    // instance identity and deliberately still records its final exit status.
+    this.workerStop = () => {
+      stopping = true;
+    };
     const fetcher = this.options.fetcher ?? fetch;
     const until = performance.now() + STARTUP_TIMEOUT_MS;
     while (performance.now() < until) {
@@ -611,7 +632,7 @@ export class NativeInference implements InferenceProvider {
         throw error;
       }
     }
-    throw new Error(`Timed out loading llama.cpp model. ${this.logTail.slice(-750)}`);
+    throw new Error('Timed out loading llama.cpp model. See Logs for worker diagnostics.');
   }
 
   async generateRoster(
@@ -789,6 +810,8 @@ export class NativeInference implements InferenceProvider {
     this.resources = null;
     const child = this.child;
     this.child = null;
+    this.workerStop?.();
+    this.workerStop = null;
     if (!child || child.exitCode !== null || child.signalCode !== null) return;
     const task = (async () => {
       const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));

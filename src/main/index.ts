@@ -650,6 +650,9 @@ async function boot(): Promise<void> {
       reasoningEnabled: () => session.getPreferences().reasoningEnabled,
       inferenceTimeoutMs: () => session.getPreferences().inferenceTimeoutMs,
       resourcePreferences: () => session.getPreferences(),
+      log: logger,
+      privateWorkerLine: (worker, stream, line) =>
+        diagnostics.recordWorkerLine(worker, stream, line),
     });
   nativeInference = buildNative(() => installs.activeVisionFiles());
   playground = new PlaygroundService(
@@ -675,6 +678,9 @@ async function boot(): Promise<void> {
         executable: bundledWhisperWorker(app.getAppPath(), app.isPackaged, process.resourcesPath),
         resolveModel: () => installs.activeSpeechFile(),
         reportError,
+        log: logger,
+        privateWorkerLine: (worker, stream, line) =>
+          diagnostics.recordWorkerLine(worker, stream, line),
       }),
     () =>
       !quitting &&
@@ -722,6 +728,9 @@ async function boot(): Promise<void> {
         executable: bundledWhisperWorker(app.getAppPath(), app.isPackaged, process.resourcesPath),
         resolveModel: () => installs.activeSpeechFile(),
         reportError,
+        log: logger,
+        privateWorkerLine: (worker, stream, line) =>
+          diagnostics.recordWorkerLine(worker, stream, line),
       }),
     (entry) => sessionMedia?.recordTranscript(entry),
     undefined,
