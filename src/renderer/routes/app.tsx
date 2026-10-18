@@ -123,6 +123,7 @@ export function DesktopPage() {
   const [overlayPort, setOverlayPort] = useState(String(DEFAULT_OVERLAY_PORT));
   const [overlayBusy, setOverlayBusy] = useState(false);
   const [manualContext, setManualContext] = useState('');
+  const [sessionSeedText, setSessionSeedText] = useState('');
   const [inferenceMode, setInferenceMode] = useState<InferenceMode>('fake');
   const [inputMode, setInputMode] = useState<'live' | 'recorded'>('live');
   const [publishRecorded, setPublishRecorded] = useState(false);
@@ -204,6 +205,10 @@ export function DesktopPage() {
     (session.status.phase === 'error' &&
       !session.status.error?.startsWith('Recorded video failed:'));
   const current = DESKTOP_SECTIONS.find((item) => item.id === section)!;
+  const seedValid =
+    sessionSeedText === '' ||
+    (/^[0-9]+$/.test(sessionSeedText) && Number(sessionSeedText) <= 2147483647);
+  const configuredSeed = sessionSeedText === '' ? undefined : Number(sessionSeedText);
   const update = (changes: Partial<SessionPreferences>) =>
     void session.updatePreferences({ ...session.preferences, ...changes });
 
@@ -213,6 +218,7 @@ export function DesktopPage() {
       inputMode,
       publishToOverlay: inputMode === 'live' || publishRecorded,
       hasVideoFile: inputMode === 'recorded' && recordedSelection.hasFile,
+      ...(configuredSeed === undefined ? {} : { seed: configuredSeed }),
     });
     if (!started || inputMode !== 'recorded' || !recordedSelection.hasFile) return;
     try {
@@ -386,6 +392,31 @@ export function DesktopPage() {
                   onChange={(event) => setManualContext(event.target.value)}
                   placeholder="For example: I'm exploring a haunted castle in a fantasy game…"
                 />
+                <Label htmlFor="simulation-seed" className="mt-4 text-sm text-zinc-200">
+                  Session seed (optional)
+                </Label>
+                <Input
+                  id="simulation-seed"
+                  className="mt-2 max-w-sm"
+                  type="number"
+                  min={0}
+                  max={2147483647}
+                  step={1}
+                  placeholder="Generate at Start"
+                  value={sessionSeedText}
+                  onChange={(event) => setSessionSeedText(event.target.value)}
+                  disabled={running}
+                  aria-invalid={!seedValid}
+                />
+                <p className="mt-2 text-xs text-zinc-500">
+                  Blank generates a new base seed. Each model request and retry gets its own derived
+                  seed; existing viewer identities are kept until regeneration.
+                </p>
+                {!seedValid && (
+                  <p role="alert" className="mt-2 text-sm text-rose-300">
+                    Enter a whole-number seed from 0 to 2147483647.
+                  </p>
+                )}
                 {inputMode === 'recorded' && (
                   <>
                     <RecordedVideoInput
@@ -417,6 +448,7 @@ export function DesktopPage() {
                       disabled={
                         !session.ready ||
                         session.busy ||
+                        !seedValid ||
                         (inputMode === 'recorded' && !recordedSelection.ready)
                       }
                       onClick={() => void startSimulation()}
@@ -665,13 +697,27 @@ export function DesktopPage() {
                       audience.busy ||
                       !session.ready ||
                       session.busy ||
-                      audience.status.phase === 'generating'
+                      audience.status.phase === 'generating' ||
+                      !seedValid
                     }
-                    onClick={() => void audience.regenerate(inferenceMode)}
+                    onClick={() => void audience.regenerate(inferenceMode, configuredSeed)}
                   >
                     Regenerate roster ({inferenceMode === 'native' ? 'native model' : 'fixture'})
                   </Button>
                 </div>
+                {audience.status.attemptedGenerationSeed != null &&
+                  audience.status.attemptedGenerationSeed !== audience.status.generationSeed && (
+                    <p className="mt-3 text-xs text-zinc-400">
+                      Last requested roster seed: {audience.status.attemptedGenerationSeed}
+                    </p>
+                  )}
+                {audience.status.generationSeed != null && (
+                  <p className="mt-3 text-xs text-zinc-400">
+                    Roster generation seed: {audience.status.generationSeed}
+                    {!!audience.status.generationAttemptSeeds?.length &&
+                      ` · request seeds: ${audience.status.generationAttemptSeeds.join(', ')}`}
+                  </p>
+                )}
                 {(audience.error || audience.status.error || session.actionError) && (
                   <p role="alert" className="mt-3 text-sm text-rose-300">
                     {audience.error || audience.status.error || session.actionError}
@@ -767,6 +813,14 @@ export function DesktopPage() {
                     <dd className="mt-1">{session.status.retryAttempt}</dd>
                   </div>
                   <div>
+                    <dt className="text-zinc-400">Session seed</dt>
+                    <dd className="mt-1">{session.status.sessionSeed ?? '—'}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-zinc-400">Last submitted seed</dt>
+                    <dd className="mt-1">{session.status.effectiveSeed ?? '—'}</dd>
+                  </div>
+                  <div>
                     <dt className="text-zinc-400">Latest inference</dt>
                     <dd className="mt-1">
                       {session.status.latestInferenceMs === null
@@ -848,6 +902,16 @@ export function DesktopPage() {
                 )}
                 {session.status.adaptationReason && (
                   <p className="mt-3 text-xs text-amber-300">{session.status.adaptationReason}</p>
+                )}
+                {!!session.status.recentAttemptSeeds?.length && (
+                  <div className="mt-4 text-xs text-zinc-400" aria-label="Recent inference seeds">
+                    <h4 className="font-medium">Recent inference attempt seeds</h4>
+                    {session.status.recentAttemptSeeds.map(({ cycle, attempt, seed }, index) => (
+                      <p key={index} className="mt-1">
+                        Cycle {cycle} · attempt {attempt} · seed {seed}
+                      </p>
+                    ))}
+                  </div>
                 )}
                 {!!session.status.recentErrors?.length && (
                   <div className="mt-4 text-xs text-zinc-400" aria-label="Recent inference errors">

@@ -9,6 +9,7 @@ import {
 } from '../shared/audience-contract';
 import type { InferenceProvider } from './fake-inference';
 import type { ScheduledChat } from './chat-scheduler';
+import { deriveInferenceSeed, randomInferenceSeed, validInferenceSeed } from './inference-seeds';
 
 const FILE = 'audience.json';
 const PALETTE = [
@@ -88,11 +89,24 @@ export class AudienceService {
     private readonly directory: string | null,
     targetCount: number,
   ) {
-    this.state = { revision: 0, phase: 'uninitialized', members: [], targetCount, error: null };
+    this.state = {
+      revision: 0,
+      phase: 'uninitialized',
+      members: [],
+      targetCount,
+      error: null,
+      generationSeed: null,
+      attemptedGenerationSeed: null,
+      generationAttemptSeeds: [],
+    };
   }
 
   snapshot(): AudienceSnapshot {
-    return { ...this.state, members: this.state.members.map((member) => ({ ...member })) };
+    return {
+      ...this.state,
+      members: this.state.members.map((member) => ({ ...member })),
+      generationAttemptSeeds: [...(this.state.generationAttemptSeeds ?? [])],
+    };
   }
 
   subscribe(listener: (snapshot: AudienceSnapshot) => void): () => void {
@@ -116,8 +130,10 @@ export class AudienceService {
         !raw ||
         typeof raw !== 'object' ||
         Array.isArray(raw) ||
-        Object.keys(raw).sort().join(',') !== 'members,version' ||
+        Object.keys(raw).some((key) => !['members', 'version', 'generationSeed'].includes(key)) ||
         (raw as { version?: unknown }).version !== 1 ||
+        ((raw as { generationSeed?: unknown }).generationSeed !== undefined &&
+          !validInferenceSeed((raw as { generationSeed?: unknown }).generationSeed)) ||
         !validMembers((raw as { members?: unknown }).members)
       )
         throw new Error('Invalid saved audience roster.');
@@ -125,9 +141,17 @@ export class AudienceService {
         0,
         this.state.targetCount,
       );
-      this.publish({ members, phase: 'ready', error: null });
+      const generationSeed = (raw as { generationSeed?: number }).generationSeed ?? null;
+      this.publish({
+        members,
+        phase: 'ready',
+        error: null,
+        generationSeed,
+        attemptedGenerationSeed: null,
+        generationAttemptSeeds: [],
+      });
       if (members.length !== (raw as { members: ChatterIdentity[] }).members.length)
-        await this.save(members);
+        await this.save(members, generationSeed);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         this.publish({ phase: 'ready' });
@@ -145,7 +169,8 @@ export class AudienceService {
     if (count === this.state.targetCount) return this.snapshot();
     if (this.state.phase === 'generating') throw new Error('Roster generation is in progress.');
     const members = this.state.members.slice(0, count);
-    if (members.length !== this.state.members.length) await this.save(members);
+    if (members.length !== this.state.members.length)
+      await this.save(members, this.state.generationSeed ?? null);
     this.publish({ targetCount: count, members, phase: 'ready', error: null });
     return this.snapshot();
   }
@@ -154,7 +179,10 @@ export class AudienceService {
     provider: InferenceProvider,
     signal: AbortSignal,
     regenerate = false,
+    requestedSeed?: number,
   ): Promise<AudienceSnapshot> {
+    if (requestedSeed !== undefined && !validInferenceSeed(requestedSeed))
+      throw new Error('Invalid roster generation seed.');
     if (signal.aborted) throw new Error('Roster generation cancelled.');
     if (this.state.phase === 'generating') throw new Error('Roster generation is already running.');
     if (!regenerate && this.state.members.length === this.state.targetCount) return this.snapshot();
@@ -166,7 +194,13 @@ export class AudienceService {
     const seen = new Set(
       (regenerate ? previous : members).map((item) => normalizedAuthor(item.author)),
     );
-    this.publish({ phase: 'generating', error: null });
+    const generationSeed = requestedSeed ?? randomInferenceSeed();
+    this.publish({
+      phase: 'generating',
+      error: null,
+      attemptedGenerationSeed: generationSeed,
+      generationAttemptSeeds: [],
+    });
     const attempts = Math.max(
       GENERATION_ATTEMPTS_PER_BATCH,
       Math.ceil((this.state.targetCount - members.length) / MAX_GENERATION_BATCH) *
@@ -179,7 +213,11 @@ export class AudienceService {
         attempt++
       ) {
         const requested = Math.min(MAX_GENERATION_BATCH, this.state.targetCount - members.length);
-        const names = await provider.generateRoster(requested, [...seen], signal);
+        const seed = deriveInferenceSeed(generationSeed, 'roster', 0, attempt + 1);
+        this.publish({
+          generationAttemptSeeds: [...(this.state.generationAttemptSeeds ?? []), seed],
+        });
+        const names = await provider.generateRoster(requested, [...seen], signal, seed);
         if (signal.aborted) throw new Error('Roster generation cancelled.');
         if (!Array.isArray(names) || names.length > requested) {
           throw new Error('The model returned an invalid roster.');
@@ -199,8 +237,8 @@ export class AudienceService {
         );
       }
       if (signal.aborted) throw new Error('Roster generation cancelled.');
-      await this.save(members);
-      this.publish({ members, phase: 'ready', error: null });
+      await this.save(members, generationSeed);
+      this.publish({ members, phase: 'ready', error: null, generationSeed });
       return this.snapshot();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unable to generate roster.';
@@ -220,16 +258,27 @@ export class AudienceService {
     return resolveChatAuthors(this.state.members, messages, recentChat);
   }
 
-  private async save(members: readonly ChatterIdentity[]): Promise<void> {
+  private async save(
+    members: readonly ChatterIdentity[],
+    generationSeed: number | null,
+  ): Promise<void> {
     if (!this.directory) return;
     const save = this.writes.then(async () => {
       await mkdir(this.directory!, { recursive: true });
       const destination = path.join(this.directory!, FILE);
       const temp = `${destination}.${process.pid}.tmp`;
       try {
-        await writeFile(temp, JSON.stringify({ version: 1, members }, null, 2) + '\n', {
-          mode: 0o600,
-        });
+        await writeFile(
+          temp,
+          JSON.stringify(
+            { version: 1, members, ...(generationSeed === null ? {} : { generationSeed }) },
+            null,
+            2,
+          ) + '\n',
+          {
+            mode: 0o600,
+          },
+        );
         await rename(temp, destination);
       } finally {
         await rm(temp, { force: true });

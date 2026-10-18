@@ -37,6 +37,11 @@ const server = createServer(async (request, response) => {
   for await (const chunk of request) body += chunk;
   const parsed = JSON.parse(body);
   if (parsed.messages[0].content.startsWith('Generate distinct')) {
+    if (parsed.seed !== 2345 || parsed.temperature !== 0.85 || parsed.max_tokens !== 1024) {
+      response.writeHead(422);
+      response.end(JSON.stringify({error:'incorrect roster sampling'}));
+      return;
+    }
     response.end(JSON.stringify({choices:[{finish_reason:'stop', message:{content:JSON.stringify({names:['TestFox','TestCat']})}}]}));
     return;
   }
@@ -56,7 +61,8 @@ const server = createServer(async (request, response) => {
       usage:{prompt_tokens:10,completion_tokens:6,total_tokens:16}}));
     return;
   }
-  if (parsed.response_format?.type !== 'json_object' || parsed.messages[1].content.indexOf('campfire') < 0) {
+  if (parsed.response_format?.type !== 'json_object' || parsed.messages[1].content.indexOf('campfire') < 0 ||
+      parsed.seed !== 314 || parsed.temperature !== 0.7 || parsed.max_tokens !== 2048) {
     response.writeHead(400);
     response.end(JSON.stringify({error:'invalid structured request'}));
     return;
@@ -344,10 +350,10 @@ describe('native llama.cpp adapter', () => {
     provider.subscribe((status) => transitions.push(status.phase));
     expect(provider.snapshot().phase).toBe('stopped');
     expect(
-      await provider.generateRoster(2, ['ExcludedName'], new AbortController().signal),
+      await provider.generateRoster(2, ['ExcludedName'], new AbortController().signal, 2345),
     ).toEqual(['TestFox', 'TestCat']);
     const result = await provider.generate(
-      { context: 'campfire', cycle: 1 },
+      { context: 'campfire', cycle: 1, seed: 314 },
       new AbortController().signal,
     );
     expect(parseInferenceResult(result, 1000).messages[0].text).toBe('warm fire');

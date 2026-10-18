@@ -7,6 +7,7 @@ import { validateSimulationCycle } from './simulation-cycle';
 import { InferenceHistory, type CycleInput } from './inference-history';
 import { VideoFrameBuffer } from './video-frame-buffer';
 import { PrivateInferenceError } from './private-inference-error';
+import { deriveInferenceSeed, randomInferenceSeed, validInferenceSeed } from './inference-seeds';
 import { chooseWorkload, type ResourceMeasurements } from './resource-policy';
 import type { AudienceService } from './audience-service';
 import type { VideoFrame } from '../shared/video-contract';
@@ -172,7 +173,8 @@ export class SessionController {
       !options ||
       !['live', 'recorded'].includes(options.inputMode) ||
       typeof options.publishToOverlay !== 'boolean' ||
-      (options.hasVideoFile !== undefined && typeof options.hasVideoFile !== 'boolean')
+      (options.hasVideoFile !== undefined && typeof options.hasVideoFile !== 'boolean') ||
+      (options.seed !== undefined && !validInferenceSeed(options.seed))
     )
       throw new Error('Invalid simulation media options.');
     const context =
@@ -185,6 +187,7 @@ export class SessionController {
     if (mode === 'native' && !this.nativeInference) {
       throw new Error('The native inference runtime is not configured.');
     }
+    const sessionSeed = options.seed ?? randomInferenceSeed();
     this.activeInference = mode === 'native' ? this.nativeInference! : this.inference;
     this.context = context;
     this.epoch++;
@@ -202,6 +205,9 @@ export class SessionController {
       events: [],
       cycle: 0,
       retryAttempt: 0,
+      sessionSeed,
+      effectiveSeed: null,
+      recentAttemptSeeds: [],
       error: null,
       warning: null,
       latestInferenceMs: null,
@@ -425,7 +431,9 @@ export class SessionController {
     this.abort = abort;
     const provider = this.activeInference;
     let inferenceStarted = this.clock.now();
-    let effectiveInput = input;
+    const sessionSeed = this.state.sessionSeed!;
+    const seed = deriveInferenceSeed(sessionSeed, 'cycle', input.cycle, attempt);
+    let effectiveInput: CycleInput = { ...input, seed };
     let rawOutput: unknown;
     let receivedOutput = false;
     void Promise.resolve()
@@ -434,14 +442,26 @@ export class SessionController {
         await this.shutdownPromise;
         if (!this.active(epoch) || abort.signal.aborted) return undefined;
         if (this.audience) {
-          await this.audience.ensure(provider, abort.signal);
-          effectiveInput = { ...input, roster: this.audience.snapshot().members };
+          await this.audience.ensure(
+            provider,
+            abort.signal,
+            false,
+            deriveInferenceSeed(sessionSeed, 'roster', 0, 1),
+          );
+          effectiveInput = { ...effectiveInput, roster: this.audience.snapshot().members };
         }
         if (!this.active(epoch) || abort.signal.aborted) return undefined;
         await provider.prepare?.(abort.signal);
         if (!this.active(epoch) || abort.signal.aborted) return undefined;
         if (this.state.phase === 'starting') this.setState({ phase: 'running' });
         inferenceStarted = this.clock.now();
+        this.setState({
+          effectiveSeed: seed,
+          recentAttemptSeeds: [
+            ...(this.state.recentAttemptSeeds ?? []),
+            { cycle: input.cycle, attempt, seed },
+          ].slice(-24),
+        });
         const output = await provider.generate(effectiveInput, abort.signal);
         rawOutput = output;
         receivedOutput = true;
@@ -525,6 +545,7 @@ export class SessionController {
         this.reportError?.('session', 'Inference attempt failed', error, {
           cycle: input.cycle,
           attempt,
+          seed,
         });
         this.diagnostics?.record(
           effectiveInput,
@@ -536,7 +557,7 @@ export class SessionController {
               : { error: message },
           diagnosticToken,
         );
-        const logEntry = `${new Date().toISOString()} · cycle ${input.cycle}, attempt ${attempt}: ${message}`;
+        const logEntry = `${new Date().toISOString()} · cycle ${input.cycle}, attempt ${attempt}, seed ${seed}: ${message}`;
         this.setState({ recentErrors: [...(this.state.recentErrors ?? []), logEntry].slice(-5) });
         // Native crashes/model load failures require a new worker. Retry the exact same
         // snapshot boundary; observations arriving in the meantime remain for the next cycle.

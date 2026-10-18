@@ -18,6 +18,12 @@ export interface AudienceSnapshot {
   readonly members: readonly ChatterIdentity[];
   readonly targetCount: number;
   readonly error: string | null;
+  /** Last roster generation's base seed, retained with the roster when saved. */
+  readonly generationSeed?: number | null;
+  /** Last requested generation, including failed or cancelled attempts. */
+  readonly attemptedGenerationSeed?: number | null;
+  /** Seeds actually submitted in the most recent roster generation. */
+  readonly generationAttemptSeeds?: readonly number[];
 }
 
 export const AUTHOR_PLACEHOLDER = '__any__';

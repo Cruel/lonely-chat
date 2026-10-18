@@ -370,7 +370,10 @@ function registerHandlers(): void {
       return session.setPreferences(written);
     },
     'audience:get': () => audience.snapshot(),
-    'audience:regenerate': async (mode: import('../shared/session-contract').InferenceMode) => {
+    'audience:regenerate': async (
+      mode: import('../shared/session-contract').InferenceMode,
+      seed?: number,
+    ) => {
       if (!['stopped', 'error'].includes(session.snapshot().phase)) {
         throw new Error('Stop the simulation before regenerating its audience.');
       }
@@ -384,7 +387,7 @@ function registerHandlers(): void {
       rosterGenerationAbort = abort;
       try {
         await session.awaitShutdown();
-        return await audience.ensure(provider, abort.signal, true);
+        return await audience.ensure(provider, abort.signal, true, seed);
       } finally {
         if (mode === 'native') await nativeInference.stop();
         rosterRegenerating = false;

@@ -226,7 +226,8 @@ describe('T17 full-session certification through public application services', (
       clock.advance(500);
       await flushMicrotasks();
       expect(inputs).toHaveLength(3);
-      expect(inputs[2]).toEqual(inputs[1]);
+      expect(inputs[2].seed).not.toBe(inputs[1].seed);
+      expect({ ...inputs[2], seed: inputs[1].seed }).toEqual(inputs[1]);
       pending[2].resolve({
         events: [{ kind: 'context', summary: 'Guest reacts', ageMs: 100 }],
         messages: [

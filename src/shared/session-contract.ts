@@ -5,6 +5,8 @@ export interface SimulationInputOptions {
   /** Recorded chat stays in desktop preview unless explicitly published. */
   readonly publishToOverlay: boolean;
   readonly hasVideoFile?: boolean;
+  /** Optional user-selected seed; otherwise generate a new effective seed at Start. */
+  readonly seed?: number;
 }
 export type VideoSamplingStrategy = 'uniform' | 'recent-weighted';
 export type ComputeBackend = 'auto' | 'cpu' | 'cuda' | 'vulkan' | 'metal';
@@ -39,6 +41,12 @@ export interface SessionSnapshot {
   readonly warning: string | null;
   readonly cycle: number;
   readonly retryAttempt: number;
+  /** Base seed for this session (whether user-supplied or generated). */
+  readonly sessionSeed?: number | null;
+  /** Most recent actually submitted inference attempt seed. */
+  readonly effectiveSeed?: number | null;
+  /** Bounded, chronological record of submitted inference seeds. */
+  readonly recentAttemptSeeds?: readonly { cycle: number; attempt: number; seed: number }[];
   readonly pendingMessages: number;
   readonly mode: InferenceMode;
   readonly inputMode?: 'live' | 'recorded';

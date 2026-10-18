@@ -35,11 +35,11 @@ export function useAudience() {
     };
   }, []);
 
-  const regenerate = async (mode: InferenceMode) => {
+  const regenerate = async (mode: InferenceMode, seed?: number) => {
     setBusy(true);
     setError(null);
     try {
-      const next = await window.lonelyChat!.regenerateAudience(mode);
+      const next = await window.lonelyChat!.regenerateAudience(mode, seed);
       if (next.revision >= latest.current.revision) {
         latest.current = next;
         setStatus(next);

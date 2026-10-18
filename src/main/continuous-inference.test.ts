@@ -4,6 +4,7 @@ import { SessionController } from './session-controller';
 import { FakeClock, flushMicrotasks as flush } from './test-support/fake-clock';
 import type { InferenceInput, InferenceProvider } from './fake-inference';
 import { DEFAULT_PREFERENCES } from '../shared/session-contract';
+import { validInferenceSeed } from './inference-seeds';
 
 const message = (text: string, offsetMs = 0) => ({
   author: 'pixelpilot',
@@ -17,6 +18,24 @@ const response = (text: string, ageMs = 0) => ({
 });
 
 describe('continuous inference loop', () => {
+  it('assigns an effective session and request seed when none is configured', async () => {
+    const inputs: InferenceInput[] = [];
+    const provider: InferenceProvider = {
+      generate: async (input) => {
+        inputs.push(input);
+        return { events: [], messages: [] };
+      },
+    };
+    const session = new SessionController(new ChatService(), provider, new FakeClock());
+    const started = session.start('unspecified seed');
+    expect(validInferenceSeed(started.sessionSeed)).toBe(true);
+    await flush();
+    expect(inputs).toHaveLength(1);
+    expect(validInferenceSeed(inputs[0].seed)).toBe(true);
+    expect(session.snapshot().effectiveSeed).toBe(inputs[0].seed);
+    session.stop();
+  });
+
   it('waits for a configurable baseline; records a fixed observation window; starts again while chat drains', async () => {
     const clock = new FakeClock();
     const chat = new ChatService();
@@ -130,7 +149,11 @@ describe('continuous inference loop', () => {
       },
       provider,
     );
-    session.start('stream', 'native');
+    session.start('stream', 'native', null, {
+      inputMode: 'live',
+      publishToOverlay: true,
+      seed: 42,
+    });
     session.recordObservation({
       kind: 'audio',
       source: 'game',
@@ -149,7 +172,14 @@ describe('continuous inference loop', () => {
     clock.advance(500);
     await flush();
     expect(inputs).toHaveLength(2);
-    expect(inputs[1]).toEqual(inputs[0]);
+    expect(inputs[0].seed).toBeDefined();
+    expect(inputs[1].seed).not.toBe(inputs[0].seed);
+    expect({ ...inputs[1], seed: inputs[0].seed }).toEqual(inputs[0]);
+    expect(session.snapshot().sessionSeed).toBe(42);
+    expect(session.snapshot().recentAttemptSeeds).toEqual([
+      { cycle: 1, attempt: 1, seed: inputs[0].seed },
+      { cycle: 1, attempt: 2, seed: inputs[1].seed },
+    ]);
     expect(chat.snapshot().messages.map((item) => item.text)).toEqual(['good']);
     clock.advance(1000);
     await flush();
@@ -158,6 +188,7 @@ describe('continuous inference loop', () => {
       'voice',
       'next frame',
     ]);
+    expect(inputs[2].seed).not.toBe(inputs[1].seed);
     // The first observation occurred after cycle one's snapshot, so it remains pending.
     session.stop();
   });
@@ -207,6 +238,9 @@ describe('continuous inference loop', () => {
     await flush();
     expect(session.snapshot().phase).toBe('error');
     expect(session.snapshot().error).toMatch(/3 attempts: server crashed/);
+    const failedSeeds = session.snapshot().recentAttemptSeeds!.filter((item) => item.cycle === 3);
+    expect(failedSeeds).toHaveLength(3);
+    expect(new Set(failedSeeds.map((item) => item.seed)).size).toBe(3);
     expect(session.snapshot().events).toHaveLength(2);
     session.stop();
     expect(session.snapshot().events).toHaveLength(2);

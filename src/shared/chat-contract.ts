@@ -227,7 +227,7 @@ export interface DesktopAPI {
   getPreferences(): Promise<SessionPreferences>;
   setPreferences(preferences: SessionPreferences): Promise<SessionPreferences>;
   getAudience(): Promise<AudienceSnapshot>;
-  regenerateAudience(mode: InferenceMode): Promise<AudienceSnapshot>;
+  regenerateAudience(mode: InferenceMode, seed?: number): Promise<AudienceSnapshot>;
   onAudienceChange(listener: (snapshot: AudienceSnapshot) => void): () => void;
   discoverModels(source: string): Promise<ModelDiscoveryResult>;
   getModelsSnapshot(): Promise<ModelManagerSnapshot>;

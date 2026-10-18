@@ -194,8 +194,10 @@ it('starts and stops manual-context simulation, shows status and only saves pref
     return status;
   });
   const setPreferences = vi.fn(async (preferences: SessionPreferences) => preferences);
+  const regenerateAudience = vi.fn(modelsAPI.regenerateAudience);
   window.lonelyChat = {
     ...modelsAPI,
+    regenerateAudience,
     getChatSnapshot: async () => ({ type: 'snapshot', sequence: 0, messages: [] }),
     onChatEvent: () => () => {},
     publishSample: async () => {},
@@ -216,10 +218,22 @@ it('starts and stops manual-context simulation, shows status and only saves pref
   fireEvent.change(screen.getByLabelText('Stream context'), {
     target: { value: 'I am playing a spooky game' },
   });
+  fireEvent.change(screen.getByLabelText('Session seed (optional)'), {
+    target: { value: '2147483648' },
+  });
+  expect(start.hasAttribute('disabled')).toBe(true);
+  fireEvent.change(screen.getByLabelText('Session seed (optional)'), { target: { value: '0' } });
+  expect(start.hasAttribute('disabled')).toBe(false);
   fireEvent.click(start);
   await screen.findByRole('button', { name: /Stop simulation/i });
   expect(screen.getByRole('status').textContent).toContain('Running');
   expect(startSession).toHaveBeenCalledOnce();
+  expect(startSession).toHaveBeenCalledWith('I am playing a spooky game', 'fake', {
+    inputMode: 'live',
+    publishToOverlay: true,
+    hasVideoFile: false,
+    seed: 0,
+  });
   fireEvent.click(screen.getByRole('button', { name: /Stop simulation/i }));
   await screen.findByRole('button', { name: /Start simulation/i });
   expect(stopSession).toHaveBeenCalledOnce();
@@ -316,6 +330,7 @@ it('starts and stops manual-context simulation, shows status and only saves pref
   );
   await user.click(screen.getByRole('button', { name: /Regenerate roster/ }));
   expect(await screen.findByText('viewer_one')).toBeTruthy();
+  expect(regenerateAudience).toHaveBeenCalledWith('fake', 0);
 }, 20_000);
 
 it('navigates across all categories without losing the session or private draft context', async () => {

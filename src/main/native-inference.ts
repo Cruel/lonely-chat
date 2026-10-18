@@ -174,6 +174,7 @@ export function nativeChatRequest(input: InferenceInput) {
     : context;
   return {
     stream: false,
+    ...(input.seed === undefined ? {} : { seed: input.seed }),
     temperature: 0.7,
     max_tokens: COMPLETION_MAX_TOKENS,
     // Pinned llama-server b11700 enforces this schema via json_object. Its json_schema
@@ -673,10 +674,12 @@ export class NativeInference implements InferenceProvider {
     count: number,
     excluded: readonly string[],
     signal: AbortSignal,
+    seed?: number,
   ): Promise<string[]> {
     const prompt = {
       stream: false,
       temperature: 0.85,
+      ...(seed === undefined ? {} : { seed }),
       max_tokens: 1024,
       response_format: {
         type: 'json_object',

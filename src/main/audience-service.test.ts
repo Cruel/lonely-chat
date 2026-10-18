@@ -56,9 +56,42 @@ describe('stable audience roster', () => {
       'viewer_7',
       'viewer_8',
     ]);
-    expect(JSON.parse(await readFile(path.join(directory, 'audience.json'), 'utf8')).version).toBe(
-      1,
-    );
+    const saved = JSON.parse(await readFile(path.join(directory, 'audience.json'), 'utf8'));
+    expect(saved.version).toBe(1);
+    expect(saved.generationSeed).toBe(restored.snapshot().generationSeed);
+  });
+
+  it('forwards distinct model seeds for each roster batch and retains the generation seed across restart', async () => {
+    const { service, directory } = await roster(13);
+    const fixture = new FakeInference();
+    const sent: number[] = [];
+    const provider: InferenceProvider = {
+      generate: async () => ({}),
+      generateRoster: async (count, excluded, signal, seed) => {
+        expect(seed).toBeTypeOf('number');
+        sent.push(seed!);
+        return fixture.generateRoster(count, excluded, signal);
+      },
+    };
+    await service.ensure(provider, signal, false, 1234);
+    expect(sent).toHaveLength(2);
+    expect(new Set(sent).size).toBe(2);
+    expect(service.snapshot()).toMatchObject({
+      generationSeed: 1234,
+      generationAttemptSeeds: sent,
+    });
+    const opened = new AudienceService(directory, 13);
+    await opened.open();
+    expect(opened.snapshot()).toMatchObject({
+      generationSeed: 1234,
+      members: service.snapshot().members,
+    });
+    await opened.ensure(provider, signal, false, 999);
+    expect(sent).toHaveLength(2); // Do not regenerate stable identities on a new session.
+    await opened.ensure(provider, signal, true, 5678);
+    expect(opened.snapshot().generationSeed).toBe(5678);
+    expect(opened.snapshot().members).not.toEqual(service.snapshot().members);
+    expect(sent[2]).not.toBe(sent[0]);
   });
 
   it('deduplicates generated names case-insensitively, retries collisions, and preserves roster on failure', async () => {
@@ -85,8 +118,14 @@ describe('stable audience roster', () => {
         throw new Error('model disconnected');
       },
     };
-    await expect(service.ensure(failure, signal, true)).rejects.toThrow(/model disconnected/);
-    expect(service.snapshot()).toMatchObject({ phase: 'error', error: 'model disconnected' });
+    const oldGenerationSeed = service.snapshot().generationSeed;
+    await expect(service.ensure(failure, signal, true, 4321)).rejects.toThrow(/model disconnected/);
+    expect(service.snapshot()).toMatchObject({
+      phase: 'error',
+      error: 'model disconnected',
+      generationSeed: oldGenerationSeed,
+      attemptedGenerationSeed: 4321,
+    });
     expect(service.snapshot().members).toHaveLength(3);
     await service.ensure(new FakeInference(), signal, true);
     expect(service.snapshot().phase).toBe('ready');

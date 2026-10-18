@@ -82,7 +82,9 @@ describe('end-to-end temporal video inference windows', () => {
     add();
     await flushMicrotasks();
     expect(inputs).toHaveLength(3);
-    expect(inputs[2]).toBe(long);
+    expect(inputs[2].seed).not.toBe(long.seed);
+    expect({ ...inputs[2], seed: long.seed }).toEqual(long);
+    expect(inputs[2].frames).toBe(long.frames);
     pending[2].resolve({
       events: [{ kind: 'reaction', summary: 'A jump at 1s', ageMs: 29000 }],
       messages: [{ author: 'pixelpilot', color: '#bba5ff', text: 'Nice jump!', offsetMs: 0 }],

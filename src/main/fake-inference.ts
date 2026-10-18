@@ -10,6 +10,8 @@ import type {
 
 export interface InferenceInput {
   readonly context: string;
+  /** Exact model sampling seed for this inference attempt. */
+  readonly seed?: number;
   readonly cycle: number;
   readonly playbackWindowMs?: number;
   readonly recentEvents?: readonly InferredEvent[];
@@ -35,6 +37,7 @@ export interface InferenceProvider {
     count: number,
     excluded: readonly string[],
     signal: AbortSignal,
+    seed?: number,
   ): Promise<string[]>;
   stop?(): Promise<void> | void;
   resourceMeasurements?(): Promise<ResourceMeasurements>;
