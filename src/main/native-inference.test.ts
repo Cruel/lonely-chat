@@ -352,10 +352,20 @@ describe('native llama.cpp adapter', () => {
     expect(
       await provider.generateRoster(2, ['ExcludedName'], new AbortController().signal, 2345),
     ).toEqual(['TestFox', 'TestCat']);
+    const transportStages: Array<{ stage: string; value: unknown }> = [];
     const result = await provider.generate(
       { context: 'campfire', cycle: 1, seed: 314 },
       new AbortController().signal,
+      (stage, value) => transportStages.push({ stage, value }),
     );
+    expect(transportStages.map((item) => item.stage)).toEqual([
+      'request',
+      'response',
+      'normalized',
+    ]);
+    expect(transportStages[0].value).toMatchObject({ stream: false, seed: 314 });
+    expect(transportStages[1].value).toMatchObject({ choices: [{ finish_reason: 'stop' }] });
+    expect(transportStages[2].value).toEqual(result);
     expect(parseInferenceResult(result, 1000).messages[0].text).toBe('warm fire');
     expect(transitions).toEqual(['loading', 'ready']);
     expect(launchedArgs).toContain('--no-webui');

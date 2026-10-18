@@ -18,6 +18,9 @@ const emptyModels: ModelManagerSnapshot = {
   progress: { phase: 'idle', file: null, receivedBytes: 0, totalBytes: null },
 };
 const modelsAPI = {
+  listInferenceTraces: async () => ({ attempts: [], dropped: 0, bytes: 0 }),
+  getInferenceTrace: async () => null,
+  onInferenceTraces: () => () => {},
   getSpeechTestStatus: async () => ({
     revision: 0,
     phase: 'idle' as const,

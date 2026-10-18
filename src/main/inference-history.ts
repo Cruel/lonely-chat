@@ -114,6 +114,18 @@ export class InferenceHistory {
       context,
       cycle,
       boundary,
+      captureSelection: {
+        observations: eligible
+          .filter((item) => item.kind === 'observation' && item.sequence > this.acknowledged)
+          .map((item) => item.sequence),
+        transcripts: eligible
+          .filter((item) => item.kind === 'transcript')
+          .map((item) => item.sequence),
+        chat: this.bounded(chat, (item) => item.presentedAt, now).map((item) => item.id),
+        events: this.recentEvents(now).map(
+          (event, index) => `${event.kind}:${event.observedAt}:${index}`,
+        ),
+      },
       playbackWindowMs,
       recentEvents: this.recentEvents(now),
       recentTranscripts,

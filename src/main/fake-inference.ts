@@ -1,4 +1,5 @@
 import type { ScheduledChat } from './chat-scheduler';
+import type { InferenceTraceObserver } from './inference-trace';
 import { CHAT_ACTIVITY_LIMITS, type ChatActivity } from '../shared/audience-contract';
 import type { VideoFrame } from '../shared/video-contract';
 import type { ResourceMeasurements } from './resource-policy';
@@ -22,6 +23,14 @@ export interface InferenceInput {
   readonly recentChat?: readonly { author: string; text: string; presentedAt: number }[];
   readonly roster?: readonly { author: string; color: string }[];
   readonly chatActivity?: ChatActivity;
+  /** Stable capture IDs for private Run Inspector correlation; excluded from native prompt. */
+  readonly captureSelection?: {
+    observations: readonly number[];
+    transcripts: readonly number[];
+    chat: readonly string[];
+    events: readonly string[];
+    frames?: readonly string[];
+  };
   readonly boundary?: {
     fromSequence: number;
     throughSequence: number;
@@ -31,7 +40,11 @@ export interface InferenceInput {
 }
 
 export interface InferenceProvider {
-  generate(input: InferenceInput, signal: AbortSignal): Promise<unknown>;
+  generate(
+    input: InferenceInput,
+    signal: AbortSignal,
+    trace?: InferenceTraceObserver,
+  ): Promise<unknown>;
   prepare?(signal: AbortSignal): Promise<void>;
   generateRoster?(
     count: number,

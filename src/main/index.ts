@@ -348,6 +348,12 @@ function registerHandlers(): void {
       await flushWindowSave();
       return windowStatus();
     },
+    'trace:list': () => session.trace.list(),
+    'trace:get': (id: string) => {
+      if (typeof id !== 'string' || !/^attempt-\d{1,12}$/.test(id))
+        throw new Error('Invalid inference attempt ID.');
+      return session.trace.get(id);
+    },
     'session:snapshot': () => session.snapshot(),
     'session:start': async (
       context: string,
@@ -883,6 +889,10 @@ async function boot(): Promise<void> {
     lifecycle.refreshTray();
   });
   registerHandlers();
+  session.trace.subscribe((traces) => {
+    if (mainWindow && !mainWindow.isDestroyed())
+      mainWindow.webContents.send('trace:change', traces);
+  });
   logger.subscribe((entry) => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('logs:entry', entry);
   });
@@ -1008,6 +1018,8 @@ app.on('will-quit', () => {
   ipcMain.removeHandler('floating:configure');
   ipcMain.removeHandler('window:get');
   ipcMain.removeHandler('window:set-close-to-tray');
+  ipcMain.removeHandler('trace:list');
+  ipcMain.removeHandler('trace:get');
   ipcMain.removeHandler('session:snapshot');
   ipcMain.removeHandler('session:start');
   ipcMain.removeHandler('session:stop');

@@ -91,6 +91,16 @@ const api: DesktopAPI = {
     ipcRenderer.on('floating:change', receive);
     return () => ipcRenderer.removeListener('floating:change', receive);
   },
+  listInferenceTraces: () => invoke('trace:list'),
+  getInferenceTrace: (id) => invoke('trace:get', id),
+  onInferenceTraces: (listener) => {
+    const receive = (
+      _event: Electron.IpcRendererEvent,
+      snapshot: import('../shared/inference-trace-contract').TraceList,
+    ) => listener(snapshot);
+    ipcRenderer.on('trace:change', receive);
+    return () => ipcRenderer.removeListener('trace:change', receive);
+  },
   getSessionSnapshot: () => invoke('session:snapshot'),
   onSessionChange: (listener) => {
     const receive = (

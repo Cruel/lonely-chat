@@ -35,6 +35,7 @@ import { RecordedVideoInput, type RecordedVideoHandle } from '@/components/recor
 import { RecordedAudioInput, type RecordedAudioHandle } from '@/components/recorded-audio-input';
 import { DiagnosticCaptureControls } from '@/components/diagnostic-capture-controls';
 import { OperationalLogs } from '@/components/operational-logs';
+import { InferenceRunInspector } from '@/components/inference-run-inspector';
 import { useUnreadLogErrors } from '../use-unread-log-errors';
 import { reportRendererFailure } from '../renderer-error-reporting';
 import { FreeformPlayground } from '@/components/freeform-playground';
@@ -900,6 +901,16 @@ export function DesktopPage() {
               </div>
             </section>
           </div>
+
+          {section === 'inspector' && (
+            <section aria-label="Run Inspector">
+              <SectionHeading
+                title="Run Inspector"
+                description="Inspect each production Simulation inference attempt, including retries, raw model responses and scheduled chat."
+              />
+              <InferenceRunInspector />
+            </section>
+          )}
 
           {section === 'logs' && (
             <section aria-label="Logs">

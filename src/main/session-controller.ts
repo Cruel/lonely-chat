@@ -7,6 +7,7 @@ import { validateSimulationCycle } from './simulation-cycle';
 import { InferenceHistory, type CycleInput } from './inference-history';
 import { VideoFrameBuffer } from './video-frame-buffer';
 import { PrivateInferenceError } from './private-inference-error';
+import { InferenceTrace, traceFailureStage, traceUsage } from './inference-trace';
 import { deriveInferenceSeed, randomInferenceSeed, validInferenceSeed } from './inference-seeds';
 import { chooseWorkload, type ResourceMeasurements } from './resource-policy';
 import type { AudienceService } from './audience-service';
@@ -53,6 +54,8 @@ export class SessionController {
   private readonly history: InferenceHistory;
   private readonly video: VideoFrameBuffer;
   private readonly chat: ChatService;
+  readonly trace: InferenceTrace;
+  private runId = 0;
   private epoch = 0;
   private abort: AbortController | null = null;
   private inferenceTimer: unknown = null;
@@ -80,7 +83,9 @@ export class SessionController {
     private readonly audience?: AudienceService,
     private readonly diagnostics?: DiagnosticCapture,
     private readonly reportError?: OperationalErrorSink,
+    trace = new InferenceTrace(),
   ) {
+    this.trace = trace;
     this.chat = chat;
     this.activeInference = inference;
     this.preferences = validatePreferences(initialPreferences);
@@ -224,6 +229,7 @@ export class SessionController {
     this.history.configure(this.runPreferences, this.clock.wallNow());
     this.video.configure(this.runPreferences, this.clock.wallNow());
     this.epoch++;
+    this.runId++;
     this.history.reset(this.clock.wallNow());
     this.chatStartSequence = this.chat.snapshot().sequence;
     this.recordedChatPublication = options.inputMode === 'live' || options.publishToOverlay;
@@ -270,6 +276,7 @@ export class SessionController {
   stop(): SessionSnapshot {
     if (this.state.phase === 'stopped') return this.snapshot();
     this.epoch++;
+    this.trace.cancelPending(this.runId);
     this.switchAbort?.abort();
     this.switchAbort = null;
     this.abort?.abort();
@@ -337,6 +344,7 @@ export class SessionController {
       settle = resolve;
     });
     const epoch = ++this.epoch;
+    this.trace.cancelPending(this.runId);
     this.abort?.abort();
     this.abort = null;
     if (this.inferenceTimer !== null) this.clock.clearTimeout(this.inferenceTimer);
@@ -440,6 +448,12 @@ export class SessionController {
     );
     const input: CycleInput = {
       ...snapshot,
+      captureSelection: {
+        ...snapshot.captureSelection!,
+        frames: media.frames.map(
+          (frame, index) => `${frame.sourceId}:${frame.observedAt}:${index}`,
+        ),
+      },
       chatActivity: this.runPreferences.chatActivity,
       frames: media.frames,
       videoWindow: { fromMs: media.fromMs, throughMs: media.throughMs, truncated: media.truncated },
@@ -475,6 +489,38 @@ export class SessionController {
     let effectiveInput: CycleInput = { ...input, seed };
     let rawOutput: unknown;
     let receivedOutput = false;
+    const traceStarted = this.clock.now();
+    const rosterSeed = deriveInferenceSeed(sessionSeed, 'roster', input.cycle, attempt);
+    const traceId = this.trace.begin({
+      runId: this.runId,
+      cycle: input.cycle,
+      attempt,
+      seed,
+      rosterSeed,
+      mode: this.state.mode,
+      modelId: this.state.modelId ?? null,
+      startedAt: this.clock.wallNow(),
+      input: effectiveInput,
+      settings: this.runPreferences,
+      promptPreset: this.state.promptPreset ?? null,
+      adaptation: {
+        frameLimit: this.state.adaptiveFrameLimit ?? null,
+        effectiveCycleMs: this.state.effectiveCycleMs ?? null,
+        reason: this.state.adaptationReason ?? null,
+        videoWindow: input.videoWindow ?? null,
+      },
+    });
+    const observer = (stage: 'request' | 'response' | 'normalized', value: unknown) => {
+      if (stage === 'request') this.trace.update(traceId, { stage: 'transport', request: value });
+      if (stage === 'response')
+        this.trace.update(traceId, {
+          stage: 'normalization',
+          rawResponse: value,
+          usage: traceUsage(value),
+        });
+      if (stage === 'normalized')
+        this.trace.update(traceId, { stage: 'validation', normalized: value });
+    };
     void Promise.resolve()
       .then(async () => {
         // A prior asynchronous stop must finish before this worker is reused.
@@ -487,9 +533,10 @@ export class SessionController {
             false,
             // A manual retry advances the cycle, so it must not replay the
             // previous failed roster generation's deterministic sampling seeds.
-            deriveInferenceSeed(sessionSeed, 'roster', input.cycle, attempt),
+            rosterSeed,
           );
           effectiveInput = { ...effectiveInput, roster: this.audience.snapshot().members };
+          this.trace.update(traceId, { input: effectiveInput });
         }
         if (!this.active(epoch) || abort.signal.aborted) return undefined;
         await provider.prepare?.(abort.signal);
@@ -503,8 +550,12 @@ export class SessionController {
             { cycle: input.cycle, attempt, seed },
           ].slice(-24),
         });
-        const output = await provider.generate(effectiveInput, abort.signal);
+        this.trace.update(traceId, { stage: 'transport' });
+        const output = await provider.generate(effectiveInput, abort.signal, observer);
         rawOutput = output;
+        // Third-party/fixture providers may not implement the optional trace observer.
+        if (this.trace.get(traceId)?.stage === 'transport') observer('normalized', output);
+        if (this.state.mode === 'fake') this.trace.update(traceId, { rawResponse: output });
         receivedOutput = true;
         return output;
       })
@@ -514,7 +565,9 @@ export class SessionController {
           effectiveInput,
           raw,
           Boolean(this.audience),
+          (parsed) => this.trace.update(traceId, { stage: 'validation', parsed }),
         );
+        this.trace.update(traceId, { stage: 'accepted', accepted });
         const resolved = accepted.messages;
         // All validation precedes every state change, history acknowledgement and playback.
         const duration = Math.max(0, this.clock.now() - inferenceStarted);
@@ -554,6 +607,16 @@ export class SessionController {
               }))
             : resolved;
         this.scheduler.enqueue(messages, this.clock.now());
+        this.trace.update(traceId, {
+          stage: 'scheduled',
+          scheduled: {
+            events: result.events,
+            messages,
+            windowMs,
+            enqueuedAt: this.clock.wallNow(),
+          },
+          durationMs: Math.max(0, this.clock.now() - traceStarted),
+        });
         this.abort = null;
         if (this.state.mode === 'native' && provider.resourceMeasurements) {
           void provider
@@ -583,6 +646,16 @@ export class SessionController {
         if (!this.active(epoch) || abort.signal.aborted) return;
         this.abort = null;
         const message = error instanceof Error ? error.message : 'Unknown inference error.';
+        const errorStage = traceFailureStage(this.trace.get(traceId));
+        this.trace.update(traceId, {
+          stage: 'failed',
+          errorStage,
+          error: message,
+          durationMs: Math.max(0, this.clock.now() - traceStarted),
+          ...(error instanceof PrivateInferenceError
+            ? { transportError: error.diagnosticDetails }
+            : {}),
+        });
         this.reportError?.('session', 'Inference attempt failed', error, {
           cycle: input.cycle,
           attempt,

@@ -8,6 +8,7 @@ import {
   type ResourceMeasurements,
 } from './resource-policy';
 import { DEFAULT_PREFERENCES, type SessionPreferences } from '../shared/session-contract';
+import type { InferenceTraceObserver } from './inference-trace';
 import type { NativeRuntimeResources } from '../shared/native-service-contract';
 import type { NativeServiceStatus } from '../shared/native-service-contract';
 import type { FreeformRequest, FreeformResult, FreeformUsage } from '../shared/playground-contract';
@@ -787,9 +788,18 @@ export class NativeInference implements InferenceProvider {
     return this.complete(request, signal);
   }
 
-  async generate(input: InferenceInput, signal: AbortSignal): Promise<unknown> {
-    const response = await this.completeSimulationRequest(input, nativeChatRequest(input), signal);
-    return extractNativeChat(response, input.roster ?? AUDIENCE);
+  async generate(
+    input: InferenceInput,
+    signal: AbortSignal,
+    trace?: InferenceTraceObserver,
+  ): Promise<unknown> {
+    const request = nativeChatRequest(input);
+    trace?.('request', request);
+    const response = await this.completeSimulationRequest(input, request, signal);
+    trace?.('response', response);
+    const normalized = extractNativeChat(response, input.roster ?? AUDIENCE);
+    trace?.('normalized', normalized);
+    return normalized;
   }
 
   private async complete(request: unknown, signal: AbortSignal): Promise<unknown> {

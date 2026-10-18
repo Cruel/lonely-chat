@@ -7,6 +7,7 @@ export function validateSimulationCycle(
   input: InferenceInput,
   output: unknown,
   enforceAudience = true,
+  onParsed?: (parsed: ReturnType<typeof parseInferenceResult>) => void,
 ) {
   const evidenceStart = Math.min(
     input.boundary?.fromMs ?? Date.now() - 60000,
@@ -17,6 +18,7 @@ export function validateSimulationCycle(
   );
   const now = input.boundary?.throughMs ?? Date.now();
   const parsed = parseInferenceResult(output, now, evidenceStart);
+  onParsed?.(parsed);
   if (
     enforceAudience &&
     parsed.messages.length > CHAT_ACTIVITY_LIMITS[input.chatActivity ?? 'normal']
