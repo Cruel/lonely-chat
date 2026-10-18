@@ -17,6 +17,8 @@ import {
   type FreeformResult,
 } from '../../shared/playground-contract';
 import type { ModelManagerSnapshot } from '../../shared/model-install-contract';
+import type { PlaygroundFrame } from '../../shared/playground-media-contract';
+import { PlaygroundMediaPicker } from './playground-media-picker';
 
 function randomSeed(): number {
   return crypto.getRandomValues(new Uint32Array(1))[0] & 0x7fffffff;
@@ -33,6 +35,7 @@ export function FreeformPlayground({
   const [models, setModels] = useState<ModelManagerSnapshot | null>(null);
   const [modelId, setModelId] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('You are a helpful assistant.');
+  const [frames, setFrames] = useState<PlaygroundFrame[]>([]);
   const [userPrompt, setUserPrompt] = useState('');
   const [temperature, setTemperature] = useState(String(DEFAULT_FREEFORM_SAMPLING.temperature));
   const [topP, setTopP] = useState(String(DEFAULT_FREEFORM_SAMPLING.topP));
@@ -112,6 +115,7 @@ export function FreeformPlayground({
       topK: Number(topK),
       maxTokens: Number(maxTokens),
       seed,
+      ...(frames.length ? { frames } : {}),
     };
     try {
       const result = await window.lonelyChat.runFreeform(request);
@@ -183,6 +187,9 @@ export function FreeformPlayground({
           placeholder="Ask the installed model something…"
           onChange={(event) => setUserPrompt(event.target.value)}
         />
+        <div className="mt-5">
+          <PlaygroundMediaPicker frames={frames} onChange={setFrames} />
+        </div>
         <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {(
             [
@@ -339,6 +346,28 @@ export function FreeformPlayground({
                 {selected.result.request.userPrompt}
               </pre>
             </div>
+            {!!selected.result.request.frames?.length && (
+              <div className="space-y-2">
+                <h4 className="text-xs font-medium text-zinc-400">
+                  Submitted media (in request order)
+                </h4>
+                {selected.result.request.frames.map((frame, index) => (
+                  <div key={index} className="flex items-center gap-2 text-xs">
+                    <img
+                      src={frame.dataUrl}
+                      className="h-20 w-24 bg-black object-contain"
+                      alt={`Submitted frame ${index + 1}`}
+                    />
+                    <span>
+                      {index + 1}. {frame.sourceId}
+                      {frame.mediaTimeMs === undefined
+                        ? ''
+                        : ` · ${(frame.mediaTimeMs / 1000).toFixed(3)} s`}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
             <div>
               <h4 className="mb-1 text-xs font-medium text-zinc-400">Model response</h4>
               <pre className="whitespace-pre-wrap break-words rounded-md bg-background p-3">

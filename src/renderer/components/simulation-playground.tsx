@@ -11,6 +11,8 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { JsonInspector } from './json-inspector';
+import { PlaygroundMediaPicker } from './playground-media-picker';
+import type { PlaygroundFrame } from '../../shared/playground-media-contract';
 import type {
   SimulationExperimentRequest,
   SimulationExperimentResult,
@@ -41,6 +43,7 @@ export function SimulationPlayground({
   const [windowMs, setWindowMs] = useState('3000');
   const [activity, setActivity] = useState<'quiet' | 'normal' | 'busy'>('normal');
   const [roster, setRoster] = useState(JSON.stringify(defaultRoster, null, 2));
+  const [frames, setFrames] = useState<PlaygroundFrame[]>([]);
   const [events, setEvents] = useState('[]');
   const [transcripts, setTranscripts] = useState('[]');
   const [observations, setObservations] = useState('[]');
@@ -131,7 +134,12 @@ export function SimulationPlayground({
         recentChat,
       ) as unknown as SimulationExperimentValues['recentChat'],
     };
-    return { modelId: selectedModelId, values, ...(useRaw ? { rawRequestJson: rawJson } : {}) };
+    return {
+      modelId: selectedModelId,
+      values,
+      ...(frames.length ? { frames } : {}),
+      ...(useRaw ? { rawRequestJson: rawJson } : {}),
+    };
   }
 
   const construct = async () => {
@@ -247,6 +255,7 @@ export function SimulationPlayground({
             </Select>
           </div>
         </div>
+        <PlaygroundMediaPicker frames={frames} onChange={setFrames} />
         <p className="text-xs text-zinc-400">
           Provide JSON arrays for the roster and optional historical inputs. Each history item uses
           ageMs (milliseconds before this request). Only the bounded production history reaches the
@@ -386,6 +395,26 @@ export function SimulationPlayground({
               <p role="alert" className="text-sm text-rose-300">
                 {selected.result.errorStage}: {selected.result.error}
               </p>
+            )}
+            {!!selected.result.submittedFrames?.length && (
+              <div aria-label="Submitted media" className="space-y-2">
+                <h4 className="text-xs font-medium">Submitted frames (request order)</h4>
+                {selected.result.submittedFrames.map((frame, index) => (
+                  <div key={index} className="flex items-center gap-2 text-xs">
+                    <img
+                      src={frame.dataUrl}
+                      className="h-20 w-24 bg-black object-contain"
+                      alt={`Submitted frame ${index + 1}`}
+                    />
+                    <span>
+                      {index + 1}. {frame.sourceId}
+                      {frame.mediaTimeMs === undefined
+                        ? ''
+                        : ` · ${(frame.mediaTimeMs / 1000).toFixed(3)} s`}
+                    </span>
+                  </div>
+                ))}
+              </div>
             )}
             <JsonInspector title="Constructed request" value={selected.result.constructedRequest} />
             <JsonInspector title="Submitted request" value={selected.result.submittedRequest} />

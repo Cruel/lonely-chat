@@ -1,4 +1,8 @@
 import { AUDIENCE, type InferenceInput } from './fake-inference';
+import {
+  validatePlaygroundFrames,
+  type PlaygroundFrame,
+} from '../shared/playground-media-contract';
 import { InferenceHistory } from './inference-history';
 import { nativeChatRequest } from './native-inference';
 import {
@@ -44,11 +48,13 @@ function entries(value: unknown, label: string): Record<string, unknown>[] {
 /** IPC input is bounded and cannot inject private frames or an unbounded session history. */
 export function validateSimulationExperiment(value: unknown): SimulationExperimentRequest {
   const v = object(value, 'simulation experiment');
-  fields(v, ['modelId', 'values', 'rawRequestJson'], 'simulation experiment');
+  fields(v, ['modelId', 'values', 'rawRequestJson', 'frames'], 'simulation experiment');
+  const frames = validatePlaygroundFrames(v.frames);
   const modelId = text(v.modelId, 'model', 200);
   if (
     v.rawRequestJson !== undefined &&
-    (typeof v.rawRequestJson !== 'string' || v.rawRequestJson.length > 131072)
+    (typeof v.rawRequestJson !== 'string' ||
+      v.rawRequestJson.length > 131072 + frames.length * 120000)
   )
     throw new Error('Raw request must be JSON under 128 KiB.');
   const source = object(v.values, 'simulation inputs');
@@ -128,6 +134,7 @@ export function validateSimulationExperiment(value: unknown): SimulationExperime
   });
   return {
     modelId,
+    ...(frames.length ? { frames } : {}),
     values: {
       context,
       cycle,
@@ -148,6 +155,7 @@ export function buildSimulationExperimentInput(
   values: SimulationExperimentValues,
   now: number,
   limits: Pick<SessionPreferences, 'historyMaxAgeMs' | 'historyMaxCount'> = DEFAULT_PREFERENCES,
+  selectedFrames: SimulationExperimentRequest['frames'] = [],
 ): InferenceInput {
   const history = new InferenceHistory(limits);
   history.reset(now - values.playbackWindowMs);
@@ -198,13 +206,29 @@ export function buildSimulationExperimentInput(
   return {
     ...snapshot,
     chatActivity: values.chatActivity,
-    frames: [],
-    videoWindow: { fromMs: snapshot.boundary.fromMs, throughMs: now, truncated: false },
+    // Preserve explicit selection order independent of source video time.
+    frames:
+      selectedFrames?.map((frame, index) => ({
+        ...frame,
+        observedAt: now - (selectedFrames.length - 1 - index) * 1000,
+      })) ?? [],
+    videoWindow: {
+      fromMs: Math.min(
+        snapshot.boundary.fromMs,
+        now - Math.max(0, (selectedFrames?.length ?? 0) - 1) * 1000,
+      ),
+      throughMs: now,
+      truncated: false,
+    },
   };
 }
 
-export function validateRawSimulationRequest(raw: string): ReturnType<typeof nativeChatRequest> {
-  if (raw.length > 131072) throw new Error('Raw request exceeds 128 KiB.');
+export function validateRawSimulationRequest(
+  raw: string,
+  selectedFrames: readonly PlaygroundFrame[] = [],
+): ReturnType<typeof nativeChatRequest> {
+  if (raw.length > 131072 + selectedFrames.length * 120000)
+    throw new Error('Raw request exceeds the JSON/media size limit.');
   let value: unknown;
   try {
     value = JSON.parse(raw);
@@ -214,14 +238,45 @@ export function validateRawSimulationRequest(raw: string): ReturnType<typeof nat
   const request = object(value, 'raw request');
   if (request.stream !== false || !Array.isArray(request.messages) || request.messages.length !== 2)
     throw new Error('Raw request requires stream:false and system/user messages.');
-  for (const [index, role] of ['system', 'user'].entries()) {
-    const message = object(request.messages[index], 'message');
+  const system = object(request.messages[0], 'system message');
+  const user = object(request.messages[1], 'user message');
+  fields(system, ['role', 'content'], 'system message');
+  fields(user, ['role', 'content'], 'user message');
+  if (
+    system.role !== 'system' ||
+    typeof system.content !== 'string' ||
+    system.content.length > 65536 ||
+    user.role !== 'user'
+  )
+    throw new Error('Raw request requires a system prompt and user content.');
+  if (selectedFrames.length === 0) {
+    if (typeof user.content !== 'string' || user.content.length > 65536)
+      throw new Error('Raw user prompt must be text without selected media.');
+  } else {
+    if (!Array.isArray(user.content) || user.content.length > 1 + selectedFrames.length * 2)
+      throw new Error('Raw multimodal request must include the selected frames.');
+    const urls: string[] = [];
+    for (const part of user.content) {
+      const entry = object(part, 'multimodal content part');
+      if (entry.type === 'text') {
+        fields(entry, ['type', 'text'], 'text part');
+        if (typeof entry.text !== 'string' || entry.text.length > 65536)
+          throw new Error('Invalid raw multimodal text.');
+      } else if (entry.type === 'image_url') {
+        fields(entry, ['type', 'image_url'], 'image part');
+        const image = object(entry.image_url, 'image URL');
+        fields(image, ['url'], 'image URL');
+        if (typeof image.url !== 'string') throw new Error('Invalid raw image URL.');
+        urls.push(image.url);
+      } else {
+        throw new Error('Unsupported raw multimodal content type.');
+      }
+    }
     if (
-      message.role !== role ||
-      typeof message.content !== 'string' ||
-      message.content.length > 65536
+      urls.length !== selectedFrames.length ||
+      urls.some((url, index) => url !== selectedFrames[index].dataUrl)
     )
-      throw new Error(`Raw request has an invalid ${role} message.`);
+      throw new Error('Raw request images must exactly match all selected frames in order.');
   }
   const format = object(request.response_format, 'response format');
   if (format.type !== 'json_object')

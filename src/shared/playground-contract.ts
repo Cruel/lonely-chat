@@ -1,5 +1,7 @@
 import type { ChatActivity, ChatterIdentity } from './audience-contract';
 import type { InferredEvent } from './session-contract';
+import type { PlaygroundFrame } from './playground-media-contract';
+import { validatePlaygroundFrames } from './playground-media-contract';
 
 /** Desktop-only, transient Freeform and Simulation inference. No chat/overlay serialization. */
 export interface FreeformRequest {
@@ -11,6 +13,7 @@ export interface FreeformRequest {
   readonly topK: number;
   readonly maxTokens: number;
   readonly seed: number;
+  readonly frames?: readonly PlaygroundFrame[];
 }
 export interface FreeformUsage {
   readonly promptTokens: number | null;
@@ -51,11 +54,13 @@ export interface SimulationExperimentValues {
 export interface SimulationExperimentRequest {
   readonly modelId: string;
   readonly values: SimulationExperimentValues;
+  readonly frames?: readonly PlaygroundFrame[];
   /** Advanced override, submitted without rewriting the production-constructed reference. */
   readonly rawRequestJson?: string;
 }
 export interface SimulationExperimentResult {
   readonly modelId: string;
+  readonly submittedFrames?: readonly PlaygroundFrame[];
   readonly startedAt: string;
   readonly durationMs: number;
   readonly constructedRequest: unknown;
@@ -93,6 +98,7 @@ export function validateFreeformRequest(value: unknown): FreeformRequest {
   if (
     Object.keys(v).sort().join(',') !==
     [
+      'frames',
       'maxTokens',
       'modelId',
       'seed',
@@ -101,7 +107,9 @@ export function validateFreeformRequest(value: unknown): FreeformRequest {
       'topK',
       'topP',
       'userPrompt',
-    ].join(',')
+    ]
+      .filter((key) => key !== 'frames' || Object.hasOwn(v, 'frames'))
+      .join(',')
   )
     throw new Error('Invalid Playground request fields.');
   if (typeof v.modelId !== 'string' || v.modelId.length < 1 || v.modelId.length > 200)
@@ -135,5 +143,6 @@ export function validateFreeformRequest(value: unknown): FreeformRequest {
     topK: range('topK', 1, 200, true),
     maxTokens: range('maxTokens', 1, 8192, true),
     seed: range('seed', 0, 2147483647, true),
+    ...(v.frames === undefined ? {} : { frames: validatePlaygroundFrames(v.frames) }),
   };
 }

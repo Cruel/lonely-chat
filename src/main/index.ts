@@ -704,11 +704,17 @@ async function boot(): Promise<void> {
       !session.switchingModel &&
       ['stopped', 'error'].includes(session.snapshot().phase) &&
       installs.snapshot().progress.phase === 'idle',
-    // Freeform T04 is text-only. Do not load a projector for a request without images.
-    (id) =>
+    (id, needsVision) =>
       buildNative(async () => {
         const files = await installs.visionFiles(id);
-        return { modelPath: files.modelPath, projectorPath: null };
+        if (needsVision && !files.projectorPath)
+          throw new Error(
+            'Selected model has no installed vision projector. Install a matching projector or remove selected frames.',
+          );
+        return {
+          modelPath: files.modelPath,
+          projectorPath: needsVision ? files.projectorPath : null,
+        };
       }),
     () => session.awaitShutdown(),
     () => session.getPreferences(),

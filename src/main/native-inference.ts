@@ -35,6 +35,37 @@ const MAX_REPLY_BYTES = 1024 * 1024;
 const STARTUP_TIMEOUT_MS = 300_000;
 const COMPLETION_MAX_TOKENS = 2048;
 
+/** Freeform multimodal requests use the same llama.cpp image parts as Session. */
+export function nativeFreeformRequest(request: FreeformRequest) {
+  const frames = request.frames ?? [];
+  return {
+    stream: false,
+    messages: [
+      ...(request.systemPrompt ? [{ role: 'system', content: request.systemPrompt }] : []),
+      {
+        role: 'user',
+        content: frames.length
+          ? [
+              { type: 'text', text: request.userPrompt },
+              ...frames.flatMap((frame, index) => [
+                {
+                  type: 'text',
+                  text: `Selected frame ${index + 1}, source=${frame.sourceId}${frame.mediaTimeMs === undefined ? '' : `, mediaTimeMs=${frame.mediaTimeMs}`}`,
+                },
+                { type: 'image_url', image_url: { url: frame.dataUrl } },
+              ]),
+            ]
+          : request.userPrompt,
+      },
+    ],
+    temperature: request.temperature,
+    top_p: request.topP,
+    top_k: request.topK,
+    max_tokens: request.maxTokens,
+    seed: request.seed,
+  };
+}
+
 /** Schema is a generation hint, never a substitute for parseInferenceResult. */
 export const INFERENCE_SCHEMA = {
   type: 'object',
@@ -117,14 +148,17 @@ export function nativeChatRequest(input: InferenceInput) {
     observationWindow: input.boundary ?? null,
     playbackWindowMs: input.playbackWindowMs ?? 3000,
     videoWindow: input.videoWindow ?? null,
-    videoFrames: (input.frames ?? []).map(({ observedAt, sourceId, width, height }) => ({
-      observedAt,
-      sourceId,
-      width,
-      height,
-      offsetMs: input.videoWindow ? observedAt - input.videoWindow.fromMs : 0,
-      ageMs: input.videoWindow ? input.videoWindow.throughMs - observedAt : 0,
-    })),
+    videoFrames: (input.frames ?? []).map(
+      ({ observedAt, sourceId, width, height, mediaTimeMs }) => ({
+        observedAt,
+        sourceId,
+        width,
+        height,
+        ...(mediaTimeMs === undefined ? {} : { mediaTimeMs }),
+        offsetMs: input.videoWindow ? observedAt - input.videoWindow.fromMs : 0,
+        ageMs: input.videoWindow ? input.videoWindow.throughMs - observedAt : 0,
+      }),
+    ),
   });
   const content = input.frames?.length
     ? [
@@ -689,20 +723,12 @@ export class NativeInference implements InferenceProvider {
   ): Promise<Omit<FreeformResult, 'modelId' | 'request'>> {
     const startedAt = new Date().toISOString();
     const started = performance.now();
-    const messages = [
-      ...(request.systemPrompt ? [{ role: 'system', content: request.systemPrompt }] : []),
-      { role: 'user', content: request.userPrompt },
-    ];
-    const payload = {
-      stream: false,
-      messages,
-      temperature: request.temperature,
-      top_p: request.topP,
-      top_k: request.topK,
-      max_tokens: request.maxTokens,
-      seed: request.seed,
-    };
-    const response = await this.complete(payload, signal);
+    await this.prepare(signal);
+    if (request.frames?.length && !this.visionReady)
+      throw new Error(
+        'Selected model is not vision-capable. Install a matching projector or remove selected frames.',
+      );
+    const response = await this.complete(nativeFreeformRequest(request), signal);
     if (!response || typeof response !== 'object' || Array.isArray(response))
       throw new Error('llama.cpp returned an invalid Playground response.');
     const body = response as Record<string, unknown>;

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { spawn } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { NativeInference, extractNativeChat, nativeChatRequest } from './native-inference';
 import { PrivateInferenceError } from './private-inference-error';
@@ -239,6 +240,84 @@ describe('native llama.cpp adapter', () => {
     expect((await provider.completeFreeform(request, new AbortController().signal)).content).toBe(
       'An original haiku',
     );
+  });
+
+  it('submits the selected JPEG bytes, order and timestamps to the authenticated multimodal worker', async () => {
+    const red =
+      'data:image/jpeg;base64,' +
+      readFileSync('tests/fixtures/playground-red.jpg').toString('base64');
+    const blue =
+      'data:image/jpeg;base64,' +
+      readFileSync('tests/fixtures/playground-blue.jpg').toString('base64');
+    const frames = [
+      { sourceId: 'video:clip', width: 4, height: 4, dataUrl: blue, mediaTimeMs: 750 },
+      { sourceId: 'video:clip', width: 4, height: 4, dataUrl: red, mediaTimeMs: 9000 },
+    ];
+    const requests: unknown[] = [];
+    const provider = new NativeInference({
+      executable: process.execPath,
+      resolveModel: async () => ({
+        modelPath: '/managed/vision.gguf',
+        projectorPath: '/managed/mmproj.gguf',
+      }),
+      launch: (_binary, args, options) =>
+        spawn(
+          process.execPath,
+          [
+            '--input-type=module',
+            '-e',
+            childScript,
+            args[args.indexOf('--port') + 1],
+            args[args.indexOf('--api-key') + 1],
+          ],
+          options,
+        ),
+      fetcher: async (url, options) => {
+        if (!String(url).endsWith('/v1/chat/completions')) return fetch(url, options);
+        requests.push(JSON.parse(options?.body as string));
+        return new Response(
+          JSON.stringify({
+            choices: [{ finish_reason: 'stop', message: { content: 'Frame order received' } }],
+            usage: { prompt_tokens: 77, completion_tokens: 4, total_tokens: 81 },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      },
+    });
+    providers.push(provider);
+    const result = await provider.completeFreeform(
+      {
+        modelId: 'vision',
+        systemPrompt: 'Look carefully',
+        userPrompt: 'Compare frames',
+        temperature: 0.7,
+        topP: 0.95,
+        topK: 40,
+        maxTokens: 256,
+        seed: 123,
+        frames,
+      },
+      new AbortController().signal,
+    );
+    expect(result.content).toBe('Frame order received');
+    expect(result.usage?.totalTokens).toBe(81);
+    const transport = requests[0] as {
+      messages: {
+        content: string | { type: string; text?: string; image_url?: { url: string } }[];
+      }[];
+    };
+    const parts = transport.messages[1].content;
+    expect(Array.isArray(parts)).toBe(true);
+    if (!Array.isArray(parts)) throw new Error('Multimodal body expected');
+    expect(parts.filter((part) => part.image_url).map((part) => part.image_url?.url)).toEqual([
+      blue,
+      red,
+    ]);
+    expect(parts.map((part) => part.text).filter(Boolean)).toEqual([
+      'Compare frames',
+      'Selected frame 1, source=video:clip, mediaTimeMs=750',
+      'Selected frame 2, source=video:clip, mediaTimeMs=9000',
+    ]);
   });
 
   it('starts a private server, awaits health, authorizes completion and stops the process', async () => {
