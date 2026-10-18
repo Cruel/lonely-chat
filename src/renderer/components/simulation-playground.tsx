@@ -34,7 +34,7 @@ export function SimulationPlayground({
   onViewLogs,
 }: {
   readonly simulationActive: boolean;
-  readonly onViewLogs?: () => void;
+  readonly onViewLogs?: (source: 'ipc' | 'playground') => void;
 }) {
   const [models, setModels] = useState<ModelManagerSnapshot | null>(null);
   const [modelId, setModelId] = useState('');
@@ -54,6 +54,7 @@ export function SimulationPlayground({
   const [serverBusy, setServerBusy] = useState(false);
   const [localBusy, setLocalBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [errorLogSource, setErrorLogSource] = useState<'ipc' | null>(null);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
@@ -145,28 +146,35 @@ export function SimulationPlayground({
   const construct = async () => {
     if (!window.lonelyChat) return;
     setError(null);
+    setErrorLogSource(null);
+    let submittedToMain = false;
     try {
-      const result = await window.lonelyChat.previewSimulation({
-        ...request(),
-        rawRequestJson: undefined,
-      });
+      const payload = { ...request(), rawRequestJson: undefined };
+      submittedToMain = true;
+      const result = await window.lonelyChat.previewSimulation(payload);
       setPreview(result);
       if (useRaw) setRawJson(JSON.stringify(result.constructedRequest, null, 2));
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : String(failure));
+      setErrorLogSource(submittedToMain ? 'ipc' : null);
     }
   };
   const run = async () => {
     if (!window.lonelyChat || busy || simulationActive) return;
     setLocalBusy(true);
     setError(null);
+    setErrorLogSource(null);
+    let submittedToMain = false;
     try {
-      const result = await window.lonelyChat.runSimulationExperiment(request());
+      const payload = request();
+      submittedToMain = true;
+      const result = await window.lonelyChat.runSimulationExperiment(payload);
       const id = crypto.randomUUID();
       setHistory((prior) => [{ id, result }, ...prior].slice(0, 10));
       setSelectedId(id);
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : String(failure));
+      setErrorLogSource(submittedToMain ? 'ipc' : null);
     } finally {
       setLocalBusy(false);
     }
@@ -356,9 +364,9 @@ export function SimulationPlayground({
             {error}
           </p>
         )}
-        {error && onViewLogs && (
-          <Button variant="link" onClick={onViewLogs}>
-            View Logs
+        {error && errorLogSource && onViewLogs && (
+          <Button variant="link" onClick={() => onViewLogs(errorLogSource)}>
+            View request error in Logs
           </Button>
         )}
       </div>
@@ -395,6 +403,11 @@ export function SimulationPlayground({
               <p role="alert" className="text-sm text-rose-300">
                 {selected.result.errorStage}: {selected.result.error}
               </p>
+            )}
+            {selected.result.errorStage && onViewLogs && (
+              <Button variant="link" onClick={() => onViewLogs('playground')}>
+                View experiment failure in Logs
+              </Button>
             )}
             {!!selected.result.submittedFrames?.length && (
               <div aria-label="Submitted media" className="space-y-2">

@@ -2,7 +2,10 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { DesktopAPI } from '../../shared/chat-contract';
-import type { SimulationExperimentRequest } from '../../shared/playground-contract';
+import type {
+  SimulationExperimentRequest,
+  SimulationExperimentResult,
+} from '../../shared/playground-contract';
 import { SimulationPlayground } from './simulation-playground';
 import { JsonInspector } from './json-inspector';
 
@@ -36,19 +39,21 @@ function setup() {
     constructedRequest: constructed,
     submittedRequest: constructed,
   }));
-  const runSimulationExperiment = vi.fn(async (request: SimulationExperimentRequest) => ({
-    modelId: request.modelId,
-    startedAt: '2026-10-18T12:00:00.000Z',
-    durationMs: 25,
-    constructedRequest: constructed,
-    submittedRequest: request.rawRequestJson ? JSON.parse(request.rawRequestJson) : constructed,
-    rawNativeOutput: { choices: [{ message: { content: '{"messages":[]}' } }] },
-    normalizedResult: { events: [], messages: [] },
-    accepted: { events: [], messages: [] },
-    error: null,
-    errorStage: null,
-    usage: { promptTokens: 42, completionTokens: 12, totalTokens: 54 },
-  }));
+  const runSimulationExperiment = vi.fn(
+    async (request: SimulationExperimentRequest): Promise<SimulationExperimentResult> => ({
+      modelId: request.modelId,
+      startedAt: '2026-10-18T12:00:00.000Z',
+      durationMs: 25,
+      constructedRequest: constructed,
+      submittedRequest: request.rawRequestJson ? JSON.parse(request.rawRequestJson) : constructed,
+      rawNativeOutput: { choices: [{ message: { content: '{"messages":[]}' } }] },
+      normalizedResult: { events: [], messages: [] },
+      accepted: { events: [], messages: [] },
+      error: null,
+      errorStage: null,
+      usage: { promptTokens: 42, completionTokens: 12, totalTokens: 54 },
+    }),
+  );
   window.lonelyChat = {
     getModelsSnapshot: async () => ({
       storageDirectory: '/models',
@@ -110,6 +115,48 @@ it('builds from production via IPC, validates the advanced editor, submits raw J
       'Accepted events and chat',
     ),
   ).toBeTruthy();
+});
+
+it('routes thrown desktop request errors to IPC logs, but returned experiment failures to playground logs', async () => {
+  const { runSimulationExperiment } = setup();
+  const onViewLogs = vi.fn();
+  const view = render(<SimulationPlayground simulationActive={false} onViewLogs={onViewLogs} />);
+  await screen.findByText(/gguf\/test/);
+  runSimulationExperiment.mockRejectedValueOnce(new Error('Invalid advanced raw JSON request.'));
+  fireEvent.click(screen.getByRole('button', { name: 'Run simulation one-shot' }));
+  fireEvent.click(await screen.findByRole('button', { name: /View .*Logs/ }));
+  expect(onViewLogs).toHaveBeenLastCalledWith('ipc');
+  runSimulationExperiment.mockResolvedValueOnce({
+    modelId: 'native-model',
+    startedAt: '2026-10-18T12:00:00.000Z',
+    durationMs: 25,
+    constructedRequest: {},
+    submittedRequest: {},
+    rawNativeOutput: null,
+    normalizedResult: null,
+    accepted: null,
+    error: 'HTTP 422',
+    errorStage: 'transport',
+    usage: null,
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Run simulation one-shot' }));
+  expect(await screen.findByText('transport: HTTP 422')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: /View experiment .*Logs/ }));
+  expect(onViewLogs).toHaveBeenLastCalledWith('playground');
+  expect(onViewLogs).toHaveBeenCalledTimes(2);
+  view.unmount();
+});
+
+it('does not link to IPC logs for errors rejected by renderer-side draft parsing', async () => {
+  const { runSimulationExperiment } = setup();
+  const onViewLogs = vi.fn();
+  render(<SimulationPlayground simulationActive={false} onViewLogs={onViewLogs} />);
+  await screen.findByText(/gguf\/test/);
+  fireEvent.change(screen.getByLabelText('Chatter roster'), { target: { value: '{invalid' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Run simulation one-shot' }));
+  expect((await screen.findByRole('alert')).textContent).toContain('Roster is not valid JSON');
+  expect(screen.queryByRole('button', { name: /View .*Logs/ })).toBeNull();
+  expect(runSimulationExperiment).not.toHaveBeenCalled();
 });
 
 it('shows syntax-highlighted raw JSON, nested tree, and copyable JSON paths/values', () => {

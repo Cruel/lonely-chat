@@ -56,10 +56,21 @@ describe('session lifecycle with deterministic clock', () => {
     expect(new Set(rosterSeeds).size).toBe(3);
     expect(rosterSeeds).toEqual(
       [1, 2, 3].map((attempt) =>
-        deriveInferenceSeed(deriveInferenceSeed(42, 'roster', 0, attempt), 'roster', 0, 1),
+        deriveInferenceSeed(deriveInferenceSeed(42, 'roster', 1, attempt), 'roster', 0, 1),
       ),
     );
     expect(audience.snapshot().members).toEqual([]);
+    const firstRetrySeeds = [...rosterSeeds];
+    expect(session.retry().cycle).toBe(2);
+    await flush();
+    clock.advance(500);
+    await flush();
+    clock.advance(1000);
+    await flush();
+    expect(session.snapshot().phase).toBe('error');
+    expect(rosterSeeds).toHaveLength(6);
+    expect(new Set(rosterSeeds).size).toBe(6);
+    expect(rosterSeeds.slice(3)).not.toEqual(firstRetrySeeds);
     session.stop();
   });
   it('schedules offset messages once, merges overlapping batches in deadline order, and retains chat after stop', async () => {

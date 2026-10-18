@@ -325,7 +325,7 @@ export function DesktopPage() {
             {playgroundTab === 'simulation' && (
               <SimulationPlayground
                 simulationActive={running || session.busy || audience.busy}
-                onViewLogs={() => openLogs('playground')}
+                onViewLogs={(source) => openLogs(source)}
               />
             )}
             {playgroundTab === 'speech' && (

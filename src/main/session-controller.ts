@@ -457,7 +457,9 @@ export class SessionController {
             provider,
             abort.signal,
             false,
-            deriveInferenceSeed(sessionSeed, 'roster', 0, attempt),
+            // A manual retry advances the cycle, so it must not replay the
+            // previous failed roster generation's deterministic sampling seeds.
+            deriveInferenceSeed(sessionSeed, 'roster', input.cycle, attempt),
           );
           effectiveInput = { ...effectiveInput, roster: this.audience.snapshot().members };
         }

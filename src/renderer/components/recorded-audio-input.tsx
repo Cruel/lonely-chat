@@ -216,6 +216,20 @@ export const RecordedAudioInput = forwardRef<
           };
           const pauseForBuffering = () => {
             if (!current() || !runtime.started || runtime.recovering || runtime.stalled) return;
+            // HTMLMediaElement fires pause immediately before ended. Chromium
+            // may not set ended until after pause, so also check media position.
+            // Preserve partial PCM for EOF, but fail if the expected end never arrives.
+            if (
+              runtime.audio.ended ||
+              runtime.audio.currentTime * 1000 >= track.durationMs! - 150
+            ) {
+              if (runtime.stallTimer === null)
+                runtime.stallTimer = setTimeout(
+                  () => failed(new Error('Recorded audio did not complete at end of file.')),
+                  AUDIO_STALL_TIMEOUT_MS,
+                );
+              return;
+            }
             runtime.active = false;
             runtime.stalled = true;
             runtime.node.port.postMessage('pause');
@@ -343,6 +357,7 @@ export const RecordedAudioInput = forwardRef<
                 runtime.driftTimer = setInterval(() => {
                   if (!current() || !runtime.started || runtime.recovering || !runtime.active)
                     return;
+                  if (runtime.audio.ended) return;
                   if (
                     runtime.audio.paused ||
                     runtime.audio.seeking ||
@@ -406,6 +421,7 @@ export const RecordedAudioInput = forwardRef<
           runtime.audio.onpause = pauseForBuffering;
           runtime.audio.onplaying = () => {
             if (runtime.stalled && !runtime.recovering) void synchronize(false).catch(failed);
+            else clearStall();
           };
           const playAtPosition = async () => {
             if (!current()) return;

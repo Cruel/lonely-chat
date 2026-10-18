@@ -228,12 +228,34 @@ it('flushes the final audio worklet samples and closes the transcription source 
   await waitFor(() => expect(instances[0].play).toHaveBeenCalled());
   instances[0].startPlayback();
   await beginning;
+  // HTMLMediaElement normally pauses before dispatching ended. The trailing
+  // partial worklet buffer must not be cleared by that pause.
+  instances[0].currentTime = 9.99;
+  instances[0].paused = true;
+  instances[0].onpause?.(new Event('pause'));
+  instances[0].ended = true;
   instances[0].onended?.(new Event('ended'));
+  expect(ports[0].postMessage).not.toHaveBeenCalledWith('pause');
   await waitFor(() => expect(ports[0].postMessage).toHaveBeenCalledWith('flush'));
   ports[0].onmessage?.({ data: new Float32Array(4096) } as MessageEvent);
   ports[0].onmessage?.({ data: { type: 'flushed' } } as MessageEvent);
   await waitFor(() => expect(page.finish).toHaveBeenCalledTimes(1));
   expect(page.pcm).toHaveBeenCalledTimes(1);
+  page.ref.current!.stop();
+});
+
+it('still discards mid-track PCM on genuine playback pause', async () => {
+  const page = setup();
+  await selectFiles(page, 1);
+  const beginning = page.ref.current!.begin({ observedAt: 100000, monotonicMs: 0 });
+  await waitFor(() => expect(instances[0].play).toHaveBeenCalled());
+  instances[0].startPlayback();
+  await beginning;
+  instances[0].currentTime = 2;
+  instances[0].paused = true;
+  instances[0].onpause?.(new Event('pause'));
+  expect(ports[0].postMessage).toHaveBeenCalledWith('pause');
+  expect(await screen.findByText('Waiting for audio playback')).toBeTruthy();
   page.ref.current!.stop();
 });
 
