@@ -46,6 +46,7 @@ export class OverlayController {
       url = await next.start(port);
       if (persist) await this.store.write(port);
     } catch (error) {
+      this.reportError?.('overlay', 'Overlay listener could not start', error, { port });
       await next.stop();
       const reason = error instanceof Error ? error.message : String(error);
       const detail =

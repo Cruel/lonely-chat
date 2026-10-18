@@ -57,6 +57,31 @@ describe('operational logger', () => {
     await logger.close();
   });
 
+  it('sanitizes IPC operation failures even when errors echo private renderer content', async () => {
+    const { root, logger } = await setup();
+    const secret = 'PRIVATE_PROMPT_124523';
+    logger.error('ipc', 'Desktop operation failed', new Error('Rejected message ' + secret), {
+      operation: 'playground:run',
+      prompt: secret,
+    });
+    await logger.open();
+    await logger.flush();
+    expect(JSON.stringify(logger.snapshot())).not.toContain(secret);
+    expect(logger.snapshot().entries[0]).toMatchObject({
+      source: 'ipc',
+      context: { operation: 'playground:run' },
+    });
+    const files = (await readdir(path.join(root, 'operational-logs'))).filter((name) =>
+      name.endsWith('.jsonl'),
+    );
+    for (const file of files) {
+      expect(await readFile(path.join(root, 'operational-logs', file), 'utf8')).not.toContain(
+        secret,
+      );
+    }
+    await logger.close();
+  });
+
   it('never persists model responses, echoed prompts or untrusted field names in provider errors', async () => {
     const { root, logger } = await setup();
     const secret = 'PRIVATE_TRANSCRIPT_DO_NOT_PERSIST_3490';

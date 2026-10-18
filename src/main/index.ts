@@ -2,6 +2,8 @@ import path from 'node:path';
 import { writeFile } from 'node:fs/promises';
 import { DiagnosticCapture } from './diagnostic-capture';
 import { OperationalLogger } from './operational-logger';
+import { serializeOperationalLogs } from './operational-log-export';
+import { validateRendererFailure } from '../shared/renderer-log-contract';
 import { PlaygroundService } from './playground-service';
 import { SpeechPlaygroundService } from './speech-playground-service';
 import { installElectronSmoke } from './electron-smoke';
@@ -107,6 +109,7 @@ const floating = new FloatingChatWindowController(
     if (!url) throw new Error('Chat overlay server is unavailable.');
     return url;
   },
+  reportError,
 );
 const preferenceStore = new PreferencesStore(app.getPath('userData'));
 const audioConfig = new AudioConfigStore(app.getPath('userData'));
@@ -235,6 +238,31 @@ function registerHandlers(): void {
     },
     'logs:configure': (retention: import('../shared/log-contract').LogRetention) =>
       logger.configure(retention),
+    'logs:export': async (ids: readonly string[]) => {
+      if (!mainWindow) throw new Error('Desktop window is unavailable.');
+      await logReady;
+      const data = serializeOperationalLogs(logger.snapshot().entries, ids);
+      const choice = await dialog.showSaveDialog(mainWindow, {
+        title: 'Export operational logs (review before sharing)',
+        defaultPath: 'lonely-chat-logs.jsonl',
+        filters: [{ name: 'Operational JSONL logs', extensions: ['jsonl'] }],
+      });
+      if (choice.canceled || !choice.filePath) return false;
+      await writeFile(choice.filePath, data, { mode: 0o600 });
+      return true;
+    },
+    'renderer:report-failure': (
+      value: import('../shared/renderer-log-contract').RendererFailure,
+    ) => {
+      const failure = validateRendererFailure(value);
+      const error = new Error(failure.name + ' in desktop renderer');
+      error.stack = [error.message, ...failure.frames.map((frame) => 'at ' + frame)].join('\n');
+      if (failure.cause) error.cause = new Error('Caused by ' + failure.cause);
+      logger.error('renderer', 'Desktop renderer failure', error, {
+        operation: failure.area,
+        phase: failure.kind,
+      });
+    },
     'diagnostics:get': () => diagnostics.status(),
     'diagnostics:configure': (enabled: boolean) => diagnostics.configure(enabled),
     'diagnostics:export': async () => {
@@ -520,10 +548,16 @@ function registerHandlers(): void {
     ) => DesktopInvocations[K] | Promise<DesktopInvocations[K]>;
   };
   for (const channel of Object.keys(actions) as Array<keyof DesktopInvocations>) {
-    ipcMain.handle(channel, (event, ...args: unknown[]) => {
+    ipcMain.handle(channel, async (event, ...args: unknown[]) => {
       requireDesktop(event);
-      // Channel-specific input validation occurs in the owning service/store.
-      return (actions[channel] as (...values: unknown[]) => unknown)(...args);
+      try {
+        // Channel-specific input validation occurs in the owning service/store.
+        return await (actions[channel] as (...values: unknown[]) => unknown)(...args);
+      } catch (error) {
+        // Never log renderer-provided arguments or raw provider replies.
+        logger.error('ipc', 'Desktop operation failed', error, { operation: channel });
+        throw error;
+      }
     });
   }
 }
@@ -873,6 +907,8 @@ app.on('will-quit', () => {
   ipcMain.removeHandler('speech-test:stop');
   ipcMain.removeHandler('logs:get');
   ipcMain.removeHandler('logs:configure');
+  ipcMain.removeHandler('logs:export');
+  ipcMain.removeHandler('renderer:report-failure');
   ipcMain.removeHandler('diagnostics:get');
   ipcMain.removeHandler('diagnostics:configure');
   ipcMain.removeHandler('diagnostics:export');

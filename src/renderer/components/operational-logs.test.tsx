@@ -58,3 +58,58 @@ it('shows persisted one-line events, subscribes to live logs, expands errors and
   fireEvent.click(screen.getByRole('button', { name: 'Save retention' }));
   await waitFor(() => expect(configure).toHaveBeenCalledWith({ ageDays: 7, maxMiB: 5 }));
 });
+
+it('filters by source, stops auto-follow without stopping live updates, copies and exports main-owned IDs', async () => {
+  const copy = vi.fn(async (_text: string) => {});
+  Object.defineProperty(navigator, 'clipboard', { value: { writeText: copy }, configurable: true });
+  const exportLogs = vi.fn(async (_ids: readonly string[]) => true);
+  const entries: LogEntry[] = [
+    {
+      id: 'one',
+      timestamp: '2026-10-18T00:00:00Z',
+      level: 'error',
+      source: 'overlay',
+      text: 'Overlay failed',
+    },
+    {
+      id: 'two',
+      timestamp: '2026-10-18T00:00:01Z',
+      level: 'warn',
+      source: 'models',
+      text: 'Model stalled',
+    },
+  ];
+  let emit: (entry: LogEntry) => void = () => {};
+  window.lonelyChat = {
+    onOperationalLog: (listener: (entry: LogEntry) => void) => {
+      emit = listener;
+      return () => {};
+    },
+    getOperationalLogs: async () => ({ entries, retention: { ageDays: 14, maxMiB: 5 } }),
+    exportOperationalLogs: exportLogs,
+  } as unknown as DesktopAPI;
+  const { rerender } = render(<OperationalLogs focus={{ source: 'overlay', nonce: 1 }} />);
+  expect((await screen.findAllByText('Overlay failed')).length).toBe(2);
+  expect(screen.queryByText('Model stalled')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Copy filtered' }));
+  await waitFor(() => expect(copy).toHaveBeenCalledWith(expect.stringContaining('Overlay failed')));
+  expect(copy.mock.calls[0][0]).not.toContain('Model stalled');
+  fireEvent.click(screen.getByRole('button', { name: 'Export filtered…' }));
+  await waitFor(() => expect(exportLogs).toHaveBeenCalledWith(['one']));
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Follow newest logs' }));
+  expect(screen.getByRole('checkbox', { name: 'Follow newest logs' })).not.toHaveProperty(
+    'checked',
+    true,
+  );
+  emit({
+    id: 'three',
+    timestamp: '2026-10-18T00:00:02Z',
+    level: 'error',
+    source: 'overlay',
+    text: 'Again',
+  });
+  expect((await screen.findAllByText('Again')).length).toBe(2);
+  rerender(<OperationalLogs focus={null} />);
+  expect((await screen.findAllByText('Model stalled')).length).toBe(2);
+  expect(screen.getByLabelText('Event history').querySelectorAll('li')).toHaveLength(3);
+});

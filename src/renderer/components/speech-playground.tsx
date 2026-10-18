@@ -17,7 +17,13 @@ const reason = (error: unknown) => (error instanceof Error ? error.message : Str
 const seconds = (ms: number) => (ms / 1000).toFixed(2) + 's';
 
 /** The only state crossing to main is transient mono PCM. No Simulation recording or Chat effects. */
-export function SpeechPlayground({ simulationActive }: { simulationActive: boolean }) {
+export function SpeechPlayground({
+  simulationActive,
+  onViewLogs,
+}: {
+  simulationActive: boolean;
+  onViewLogs?: () => void;
+}) {
   const [source, setSource] = useState<TestSource>('file');
   const [mode, setMode] = useState<SpeechTestMode>('live-equivalent');
   const [file, setFile] = useState<File | null>(null);
@@ -401,9 +407,16 @@ export function SpeechPlayground({ simulationActive }: { simulationActive: boole
           </p>
         )}
         {(error || snapshot?.error) && (
-          <p role="alert" className="text-sm text-amber-300">
-            {error || snapshot?.error}
-          </p>
+          <>
+            <p role="alert" className="text-sm text-amber-300">
+              {error || snapshot?.error}
+            </p>
+            {onViewLogs && (
+              <Button variant="link" size="sm" onClick={onViewLogs}>
+                View speech errors in Logs
+              </Button>
+            )}
+          </>
         )}
       </div>
       <div className="rounded-xl border border-border bg-card p-5">

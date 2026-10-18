@@ -57,6 +57,8 @@ const modelsAPI = {
   configureOperationalLogs: async (retention: import('../../shared/log-contract').LogRetention) =>
     retention,
   onOperationalLog: () => () => {},
+  exportOperationalLogs: async () => true,
+  reportRendererFailure: async () => {},
   onMediaStop: () => () => {},
   getDiagnosticCapture: async () => ({
     enabled: false,
@@ -497,7 +499,11 @@ it('shows an unavailable overlay and lets Settings recover with a custom port', 
   } satisfies DesktopAPI;
 
   render(<DesktopPage />);
-  expect(await screen.findByRole('button', { name: 'Overlay port issue · Settings' })).toBeTruthy();
+  expect(
+    await screen.findByRole('button', { name: 'Overlay port issue · View Logs' }),
+  ).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Overlay port issue · View Logs' }));
+  expect(screen.getByText('Application events')).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'Chat & Overlay' }));
   expect(await screen.findByText(/Port 18080 is already in use or reserved/)).toBeTruthy();
   expect(screen.getByText('Overlay server unavailable')).toBeTruthy();

@@ -34,6 +34,8 @@ import { VideoInput } from '@/components/video-input';
 import { RecordedVideoInput, type RecordedVideoHandle } from '@/components/recorded-video-input';
 import { DiagnosticCaptureControls } from '@/components/diagnostic-capture-controls';
 import { OperationalLogs } from '@/components/operational-logs';
+import { useUnreadLogErrors } from '../use-unread-log-errors';
+import { reportRendererFailure } from '../renderer-error-reporting';
 import { FreeformPlayground } from '@/components/freeform-playground';
 import { SpeechPlayground } from '@/components/speech-playground';
 import { AudioInput } from '@/components/audio-input';
@@ -99,6 +101,16 @@ export function DesktopPage() {
   const session = useSession();
   const audience = useAudience();
   const [section, setSection] = useState<DesktopSection>('simulation');
+  const [logFocus, setLogFocus] = useState<{ source: string; nonce: number } | null>(null);
+  const unreadErrors = useUnreadLogErrors(section === 'logs');
+  const selectSection = (next: DesktopSection) => {
+    if (next === 'logs') setLogFocus(null);
+    setSection(next);
+  };
+  const openLogs = (source: string) => {
+    setLogFocus({ source, nonce: Date.now() });
+    setSection('logs');
+  };
   const [playgroundTab, setPlaygroundTab] = useState<'freeform' | 'speech'>('freeform');
   const [overlayStatus, setOverlayStatus] = useState<OverlayStatus>({
     port: DEFAULT_OVERLAY_PORT,
@@ -163,6 +175,7 @@ export function DesktopPage() {
     try {
       setOverlayStatus(await window.lonelyChat.configureOverlayPort(Number(overlayPort)));
     } catch (error) {
+      reportRendererFailure('overlay', 'operation', error);
       setOverlayStatus((previous) => ({
         ...previous,
         error: error instanceof Error ? error.message : String(error),
@@ -204,6 +217,7 @@ export function DesktopPage() {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setMediaError(message);
+      reportRendererFailure('simulation', 'operation', error);
       await window.lonelyChat?.reportRecordedVideoError(message).catch(() => {});
     }
   };
@@ -217,8 +231,9 @@ export function DesktopPage() {
     <div className="min-h-dvh bg-background text-foreground sm:flex">
       <DesktopSidebar
         selected={section}
-        onSelect={setSection}
+        onSelect={selectSection}
         simulationPhase={session.status.phase}
+        unreadErrors={unreadErrors}
       />
       <div className="min-w-0 flex-1">
         <header className="sticky top-0 z-10 flex min-h-14 items-center justify-between gap-3 border-b border-border bg-[#181820] px-5 py-3 sm:px-7">
@@ -232,9 +247,9 @@ export function DesktopPage() {
                 variant="link"
                 size="sm"
                 className="text-amber-300"
-                onClick={() => setSection('settings')}
+                onClick={() => openLogs('overlay')}
               >
-                Overlay port issue · Settings
+                Overlay port issue · View Logs
               </Button>
             )}
             <span
@@ -265,10 +280,16 @@ export function DesktopPage() {
               </Button>
             </div>
             <div hidden={playgroundTab !== 'freeform'}>
-              <FreeformPlayground simulationActive={running || session.busy || audience.busy} />
+              <FreeformPlayground
+                simulationActive={running || session.busy || audience.busy}
+                onViewLogs={() => openLogs('llama.cpp')}
+              />
             </div>
             {playgroundTab === 'speech' && (
-              <SpeechPlayground simulationActive={running || session.busy || audience.busy} />
+              <SpeechPlayground
+                simulationActive={running || session.busy || audience.busy}
+                onViewLogs={() => openLogs('whisper')}
+              />
             )}
           </div>
           <div hidden={section !== 'simulation'}>
@@ -421,7 +442,13 @@ export function DesktopPage() {
                   </p>
                 )}
                 {(nativeStatus?.phase === 'failed' || session.status.phase === 'error') && (
-                  <Button variant="link" size="sm" onClick={() => setSection('logs')}>
+                  <Button
+                    variant="link"
+                    size="sm"
+                    onClick={() =>
+                      openLogs(nativeStatus?.phase === 'failed' ? 'llama.cpp' : 'session')
+                    }
+                  >
                     View worker failure in Logs
                   </Button>
                 )}
@@ -461,7 +488,11 @@ export function DesktopPage() {
                 title="Models"
                 description="Discover, install, activate, and remove local inference models."
               />
-              <ModelManager sessionPhase={session.status.phase} sessionMode={session.status.mode} />
+              <ModelManager
+                sessionPhase={session.status.phase}
+                sessionMode={session.status.mode}
+                onViewLogs={() => openLogs('ipc')}
+              />
             </section>
           )}
 
@@ -504,9 +535,16 @@ export function DesktopPage() {
                       </p>
                     )}
                     {!overlayStatus.url && (
-                      <Button variant="link" size="sm" onClick={() => setSection('settings')}>
-                        Configure overlay port
-                      </Button>
+                      <>
+                        <Button variant="link" size="sm" onClick={() => setSection('settings')}>
+                          Configure overlay port
+                        </Button>
+                        {overlayStatus.error && (
+                          <Button variant="link" size="sm" onClick={() => openLogs('overlay')}>
+                            See overlay errors in Logs
+                          </Button>
+                        )}
+                      </>
                     )}
                     {overlayStatus.url && (
                       <Button
@@ -655,6 +693,11 @@ export function DesktopPage() {
                 title="Inputs"
                 description="Configure what the simulation can see and hear."
               />
+              {audioStatus?.sources.some((source) => source.phase === 'error') && (
+                <Button variant="link" size="sm" onClick={() => openLogs('whisper')}>
+                  View speech input errors in Logs
+                </Button>
+              )}
               <div className="grid gap-5 lg:grid-cols-2">
                 <Panel>
                   <VideoInput
@@ -672,7 +715,7 @@ export function DesktopPage() {
           {section === 'logs' && (
             <section aria-label="Logs">
               <SectionHeading title="Logs" description="Runtime status and diagnostics." />
-              <OperationalLogs />
+              <OperationalLogs focus={logFocus} />
               <DiagnosticCaptureControls />
               <Panel>
                 <h3 className="font-medium">Session diagnostics</h3>

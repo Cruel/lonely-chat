@@ -31,9 +31,11 @@ function modelLabel(candidate: ModelCandidate): string {
 export function ModelManager({
   sessionPhase = 'stopped',
   sessionMode = 'fake',
+  onViewLogs,
 }: {
   sessionPhase?: SessionPhase;
   sessionMode?: InferenceMode;
+  onViewLogs?: () => void;
 }) {
   const [source, setSource] = useState('');
   const [discovery, setDiscovery] = useState<ModelDiscoveryResult | null>(null);
@@ -179,6 +181,11 @@ export function ModelManager({
           <Alert variant="destructive">
             <AlertTitle>Discovery failed</AlertTitle>
             <AlertDescription>{error}</AlertDescription>
+            {onViewLogs && (
+              <Button variant="link" size="sm" onClick={onViewLogs}>
+                View model errors in Logs
+              </Button>
+            )}
           </Alert>
         )}
 
@@ -448,6 +455,11 @@ export function ModelManager({
           <Alert variant="destructive">
             <AlertTitle>Model management error</AlertTitle>
             <AlertDescription>{managementError}</AlertDescription>
+            {onViewLogs && (
+              <Button variant="link" size="sm" onClick={onViewLogs}>
+                View model errors in Logs
+              </Button>
+            )}
           </Alert>
         )}
       </CardContent>

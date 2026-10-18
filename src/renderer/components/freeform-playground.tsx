@@ -23,7 +23,13 @@ function randomSeed(): number {
 }
 type HistoryItem = { readonly id: string; readonly result: FreeformResult };
 
-export function FreeformPlayground({ simulationActive }: { readonly simulationActive: boolean }) {
+export function FreeformPlayground({
+  simulationActive,
+  onViewLogs,
+}: {
+  readonly simulationActive: boolean;
+  readonly onViewLogs?: () => void;
+}) {
   const [models, setModels] = useState<ModelManagerSnapshot | null>(null);
   const [modelId, setModelId] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('You are a helpful assistant.');
@@ -271,6 +277,11 @@ export function FreeformPlayground({ simulationActive }: { readonly simulationAc
           <p role="alert" className="mt-3 whitespace-pre-wrap break-words text-sm text-rose-300">
             {error}
           </p>
+        )}
+        {error && onViewLogs && (
+          <Button variant="link" size="sm" onClick={onViewLogs}>
+            View inference errors in Logs
+          </Button>
         )}
         {error && lastFailure && (
           <details className="mt-3 text-xs text-zinc-300">

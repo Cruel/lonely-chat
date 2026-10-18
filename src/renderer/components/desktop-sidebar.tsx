@@ -34,9 +34,15 @@ interface DesktopSidebarProps {
   readonly selected: DesktopSection;
   readonly onSelect: (section: DesktopSection) => void;
   readonly simulationPhase: 'stopped' | 'starting' | 'running' | 'switching' | 'error';
+  readonly unreadErrors?: number;
 }
 
-export function DesktopSidebar({ selected, onSelect, simulationPhase }: DesktopSidebarProps) {
+export function DesktopSidebar({
+  selected,
+  onSelect,
+  simulationPhase,
+  unreadErrors = 0,
+}: DesktopSidebarProps) {
   return (
     <aside className="shrink-0 border-b border-border bg-[#181820] sm:sticky sm:top-0 sm:flex sm:h-dvh sm:w-52 sm:flex-col sm:border-r sm:border-b-0 lg:w-60">
       <div className="hidden items-center gap-3 border-b border-border/60 px-5 py-5 sm:flex">
@@ -81,6 +87,14 @@ export function DesktopSidebar({ selected, onSelect, simulationPhase }: DesktopS
             >
               <Icon aria-hidden="true" className="size-4" />
               {title}
+              {id === 'logs' && unreadErrors > 0 && (
+                <span
+                  aria-label={`${unreadErrors} unread log errors`}
+                  className="ml-auto rounded-full bg-rose-600 px-1.5 py-0.5 text-[10px] font-semibold text-white"
+                >
+                  {unreadErrors > 99 ? '99+' : unreadErrors}
+                </span>
+              )}
               {id === 'simulation' && simulationPhase === 'error' && (
                 <span
                   className="ml-auto size-2 rounded-full bg-rose-400"

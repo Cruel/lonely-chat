@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -57,7 +57,7 @@ function Entry({ entry }: { entry: LogEntry }) {
             </>
           )}
           {entry.context && (
-            <pre className="mt-2 overflow-x-auto whitespace-pre-wrap text-zinc-400">
+            <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words text-zinc-400">
               {JSON.stringify(entry.context, null, 2)}
             </pre>
           )}
@@ -67,19 +67,41 @@ function Entry({ entry }: { entry: LogEntry }) {
   );
 }
 
-export function OperationalLogs() {
+function searchText(entry: LogEntry): string {
+  return [
+    entry.text,
+    entry.source,
+    entry.error?.message,
+    entry.error?.stack,
+    JSON.stringify(entry.error?.cause ?? ''),
+    JSON.stringify(entry.context ?? {}),
+  ]
+    .join(' ')
+    .toLowerCase();
+}
+
+/** Dense persisted, desktop-only operational viewer. Filtering never deletes stored entries. */
+export function OperationalLogs({ focus }: { focus?: { source: string; nonce: number } | null }) {
   const [entries, setEntries] = useState<LogEntry[]>([]);
   const [retention, setRetention] = useState<LogRetention>(DEFAULT_LOG_RETENTION);
   const [draft, setDraft] = useState<LogRetention>(DEFAULT_LOG_RETENTION);
   const [severity, setSeverity] = useState<LogLevel | 'all'>('all');
+  const [source, setSource] = useState('all');
   const [search, setSearch] = useState('');
+  const [following, setFollowing] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const listRef = useRef<HTMLUListElement>(null);
+
+  useEffect(() => {
+    setSource(focus?.source ?? 'all');
+  }, [focus]);
 
   useEffect(() => {
     let live = true;
     const api = window.lonelyChat;
-    // Subscribe before requesting history, then merge by ID to avoid lost/duplicated events.
+    // Subscribe before history so concurrent entries are not lost or duplicated.
     const stop = api?.onOperationalLog((entry) => {
       if (live)
         setEntries((old) => [...old.filter((item) => item.id !== entry.id), entry].slice(-1000));
@@ -106,22 +128,28 @@ export function OperationalLogs() {
     };
   }, []);
 
-  const filtered = entries.filter(
-    (entry) =>
-      (severity === 'all' || entry.level === severity) &&
-      (!search ||
-        (
-          entry.text +
-          ' ' +
-          entry.source +
-          ' ' +
-          (entry.error?.message ?? '') +
-          ' ' +
-          JSON.stringify(entry.context ?? {})
-        )
-          .toLowerCase()
-          .includes(search.toLowerCase())),
+  const sources = useMemo(
+    () =>
+      [
+        ...new Set([...entries.map((entry) => entry.source), ...(focus ? [focus.source] : [])]),
+      ].sort(),
+    [entries, focus],
   );
+  const filtered = useMemo(
+    () =>
+      entries.filter(
+        (entry) =>
+          (severity === 'all' || entry.level === severity) &&
+          (source === 'all' || entry.source === source) &&
+          (!search || searchText(entry).includes(search.toLowerCase())),
+      ),
+    [entries, severity, source, search],
+  );
+
+  useEffect(() => {
+    if (following && listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
+  }, [filtered, following]);
+
   const save = async () => {
     if (!window.lonelyChat) return;
     setSaving(true);
@@ -130,6 +158,36 @@ export function OperationalLogs() {
       const next = await window.lonelyChat.configureOperationalLogs(draft);
       setRetention(next);
       setDraft(next);
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : String(failure));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const copy = async () => {
+    setError(null);
+    setNotice(null);
+    try {
+      await navigator.clipboard.writeText(
+        filtered.map((entry) => JSON.stringify(entry)).join('\n'),
+      );
+      setNotice(`Copied ${filtered.length} filtered entries.`);
+    } catch {
+      setError('Unable to copy logs to the clipboard.');
+    }
+  };
+
+  const exportLogs = async () => {
+    if (!window.lonelyChat || saving) return;
+    setSaving(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const saved = await window.lonelyChat.exportOperationalLogs(
+        filtered.map((entry) => entry.id),
+      );
+      if (saved) setNotice(`Exported ${filtered.length} filtered entries.`);
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : String(failure));
     } finally {
@@ -181,8 +239,62 @@ export function OperationalLogs() {
             <SelectItem value="debug">Debug</SelectItem>
           </SelectContent>
         </Select>
+        <label htmlFor="log-source" className="sr-only">
+          Source
+        </label>
+        <Select
+          items={[
+            { value: 'all', label: 'All sources' },
+            ...sources.map((name) => ({ value: name, label: name })),
+          ]}
+          value={source}
+          onValueChange={(value) => setSource(value ?? 'all')}
+        >
+          <SelectTrigger id="log-source" className="w-40">
+            <SelectValue placeholder={source} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All sources</SelectItem>
+            {sources.map((name) => (
+              <SelectItem key={name} value={name}>
+                {name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="mb-3 flex flex-wrap items-center gap-3">
+        <label className="flex items-center gap-2 text-xs text-zinc-300">
+          <input
+            aria-label="Follow newest logs"
+            type="checkbox"
+            checked={following}
+            onChange={(event) => setFollowing(event.target.checked)}
+          />
+          Follow newest
+        </label>
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={!filtered.length}
+          onClick={() => void copy()}
+        >
+          Copy filtered
+        </Button>
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={!filtered.length || saving}
+          onClick={() => void exportLogs()}
+        >
+          Export filtered…
+        </Button>
+        <span className="text-xs text-zinc-500">
+          {filtered.length} of {entries.length} entries
+        </span>
       </div>
       <ul
+        ref={listRef}
         aria-label="Event history"
         className="max-h-96 space-y-px overflow-y-auto rounded-md border border-border"
       >
@@ -233,6 +345,11 @@ export function OperationalLogs() {
         </Button>
         <span className="text-xs text-zinc-500">Showing up to 1,000 recent entries</span>
       </div>
+      {notice && (
+        <p role="status" className="mt-2 text-xs text-zinc-300">
+          {notice}
+        </p>
+      )}
       {error && (
         <p role="alert" className="mt-2 text-sm text-rose-300">
           {error}

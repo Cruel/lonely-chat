@@ -42,6 +42,8 @@ const api: DesktopAPI = {
   exportDiagnosticCapture: () => invoke('diagnostics:export'),
   getOperationalLogs: () => invoke('logs:get'),
   configureOperationalLogs: (retention) => invoke('logs:configure', retention),
+  exportOperationalLogs: (ids) => invoke('logs:export', ids),
+  reportRendererFailure: (failure) => invoke('renderer:report-failure', failure),
   onOperationalLog: (listener) => {
     const receive = (
       _event: Electron.IpcRendererEvent,

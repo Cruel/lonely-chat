@@ -207,7 +207,7 @@ export class OperationalLogger {
       ...(error === undefined
         ? {}
         : {
-            error: ['session', 'llama.cpp', 'whisper', 'media'].includes(source)
+            error: ['session', 'llama.cpp', 'whisper', 'media', 'ipc'].includes(source)
               ? operationalProviderError(error)
               : safeError(error),
           }),

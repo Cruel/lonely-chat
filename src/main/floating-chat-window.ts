@@ -5,6 +5,7 @@ import {
   type FloatingChatSettings,
   type FloatingChatSnapshot,
 } from '../shared/floating-chat-contract';
+import type { OperationalErrorSink } from './operational-logger';
 
 /** Minimal window adapter; real Electron and test doubles both implement this seam. */
 export interface FloatingChatWindow {
@@ -35,6 +36,7 @@ export class FloatingChatWindowController {
   constructor(
     private readonly create: (options: FloatingWindowOptions) => FloatingChatWindow,
     private readonly overlayUrl: () => string,
+    private readonly reportError?: OperationalErrorSink,
   ) {}
 
   snapshot(): FloatingChatSnapshot {
@@ -68,6 +70,7 @@ export class FloatingChatWindowController {
     } catch (error) {
       // Transparent and always-on-top creation can be unavailable on some WMs.
       // Retry with safe standard flags, without changing the requested settings.
+      this.reportError?.('window', 'Floating window creation failed', error);
       if (!options.transparent && !options.alwaysOnTop) throw error;
       options = { ...options, transparent: false, alwaysOnTop: false };
       window = this.create(options);
@@ -104,6 +107,7 @@ export class FloatingChatWindowController {
     void window.loadURL(url.href).catch((error: unknown) => {
       if (this.window !== window) return;
       this.warning = `Unable to load chat overlay: ${String(error)}`;
+      this.reportError?.('window', 'Floating chat failed to load', error);
       this.notify();
     });
     return this.notify();
@@ -132,6 +136,7 @@ export class FloatingChatWindowController {
         return this.open();
       } catch (error) {
         this.warning = `Unable to reopen the floating window: ${String(error)}`;
+        this.reportError?.('window', 'Floating chat reopen failed', error);
         this.notify();
         throw error;
       }
@@ -142,6 +147,7 @@ export class FloatingChatWindowController {
       if (next.alwaysOnTop !== previous.alwaysOnTop) window.setAlwaysOnTop(next.alwaysOnTop);
     } catch (error) {
       this.warning = `Window manager could not apply a setting: ${String(error)}`;
+      this.reportError?.('window', 'Floating window configuration failed', error);
     }
     return this.notify();
   }

@@ -35,6 +35,7 @@ import type { VideoFrame, VideoSource } from './video-contract';
 import type { AudioInputConfiguration, AudioSegment, AudioStatus } from './audio-contract';
 import type { DiagnosticStatus } from './diagnostic-contract';
 import type { LogEntry, LogRetention, LogSnapshot } from './log-contract';
+import type { RendererFailure } from './renderer-log-contract';
 import type { FreeformRequest, FreeformResult, PlaygroundStatus } from './playground-contract';
 import type { SpeechTestStart, SpeechTestSnapshot } from './speech-playground-contract';
 import type { OverlayStatus } from './overlay-contract';
@@ -48,6 +49,8 @@ export interface DesktopInvocations {
   'diagnostics:export': boolean;
   'logs:get': LogSnapshot;
   'logs:configure': LogRetention;
+  'logs:export': boolean;
+  'renderer:report-failure': void;
   'playground:status': PlaygroundStatus;
   'playground:run': FreeformResult;
   'speech-test:status': SpeechTestSnapshot;
@@ -107,6 +110,8 @@ export interface DesktopArguments {
   'diagnostics:export': [];
   'logs:get': [];
   'logs:configure': [retention: LogRetention];
+  'logs:export': [ids: readonly string[]];
+  'renderer:report-failure': [failure: RendererFailure];
   'playground:status': [];
   'playground:run': [request: FreeformRequest];
   'speech-test:status': [];
@@ -174,6 +179,8 @@ export interface DesktopAPI {
   onPlaygroundStatus(listener: (status: PlaygroundStatus) => void): () => void;
   getOperationalLogs(): Promise<LogSnapshot>;
   configureOperationalLogs(retention: LogRetention): Promise<LogRetention>;
+  exportOperationalLogs(ids: readonly string[]): Promise<boolean>;
+  reportRendererFailure(failure: RendererFailure): Promise<void>;
   onOperationalLog(listener: (entry: LogEntry) => void): () => void;
   getChatSnapshot(): Promise<ChatSnapshot>;
   onChatEvent(listener: (event: ChatEvent) => void): () => void;
