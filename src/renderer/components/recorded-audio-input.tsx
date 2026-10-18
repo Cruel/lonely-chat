@@ -234,8 +234,16 @@ export const RecordedAudioInput = forwardRef<
             clearStall();
             if (runtime.driftTimer !== null) clearInterval(runtime.driftTimer);
             runtime.driftTimer = null;
-            await new Promise<void>((resolve) => {
-              runtime.flushResolver = resolve;
+            await new Promise<void>((resolve, reject) => {
+              const deadline = setTimeout(() => {
+                runtime.flushResolver = null;
+                runtime.node.port.onmessage = old;
+                reject(new Error('Recorded audio worklet did not flush at end of file.'));
+              }, AUDIO_STALL_TIMEOUT_MS);
+              runtime.flushResolver = () => {
+                clearTimeout(deadline);
+                resolve();
+              };
               const old = runtime.node.port.onmessage;
               runtime.node.port.onmessage = (
                 event: MessageEvent<Float32Array | { type: string }>,
@@ -248,8 +256,8 @@ export const RecordedAudioInput = forwardRef<
                   }
                 } else if (event.data?.type === 'flushed') {
                   runtime.node.port.onmessage = old;
+                  runtime.flushResolver?.();
                   runtime.flushResolver = null;
-                  resolve();
                 }
               };
               runtime.node.port.postMessage('flush');

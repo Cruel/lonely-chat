@@ -134,6 +134,27 @@ describe('native worker diagnostic streams', () => {
     expect(JSON.stringify(logger.snapshot())).not.toContain('PRIVATE_WORKER_LINE');
   });
 
+  it('retains the final diagnostic after a flood of earlier error lines', async () => {
+    const { logger } = await setup();
+    const worker = new NativeWorkerLog('llama.cpp', logger, { backend: 'cuda' });
+    worker.start();
+    for (let n = 0; n < 200; n++)
+      worker.write('stderr', Buffer.from('generic CUDA error PRIVATE_SECRET_887\n'));
+    worker.write('stderr', Buffer.from('ggml_cuda: out of memory PRIVATE_SECRET_998\n'));
+    worker.finish(1, null, false);
+    const entries = logger.snapshot().entries;
+    expect(
+      entries.some(
+        (entry) =>
+          entry.text === 'stderr: CUDA: memory allocation failed' &&
+          entry.context?.code === 'RATE_LIMIT_TAIL',
+      ),
+    ).toBe(true);
+    expect(entries.at(-1)?.text).toBe('Native worker exited unexpectedly');
+    expect(JSON.stringify(entries)).not.toContain('PRIVATE_SECRET');
+    expect(entries.length).toBeLessThanOrEqual(90);
+  });
+
   it('retains stderr and crash identity after a fake llama worker restart', async () => {
     const { logger } = await setup();
     let starts = 0;

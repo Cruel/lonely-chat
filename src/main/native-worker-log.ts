@@ -77,6 +77,11 @@ export class NativeWorkerLog {
   private windowStart = Date.now();
   private routineLines = 0;
   private failureLines = 0;
+  private latestSuppressedFailure: {
+    stream: WorkerStream;
+    text: string;
+    level: 'warn' | 'error';
+  } | null = null;
   private dropped = 0;
   private unclassified = new Set<WorkerStream>();
   private finished = false;
@@ -127,8 +132,21 @@ export class NativeWorkerLog {
     }
   }
 
+  private emitSuppressedFailure(): void {
+    const tail = this.latestSuppressedFailure;
+    this.latestSuppressedFailure = null;
+    if (!tail) return;
+    this.sink?.[tail.level](
+      this.source,
+      `${tail.stream}: ${tail.text}`,
+      undefined,
+      this.context({ stream: tail.stream, code: 'RATE_LIMIT_TAIL' }),
+    );
+  }
+
   private permit(failure: boolean): boolean {
     if (Date.now() - this.windowStart >= WINDOW_MS) {
+      this.emitSuppressedFailure();
       this.windowStart = Date.now();
       this.routineLines = 0;
       this.failureLines = 0;
@@ -152,7 +170,16 @@ export class NativeWorkerLog {
     // after routine operational output has been suppressed.
     this.privateLine?.(this.id, stream, line);
     const classified = safeNativeLine(line);
-    if (!this.permit(classified?.level === 'error' || classified?.level === 'warn')) return;
+    if (!this.permit(classified?.level === 'error' || classified?.level === 'warn')) {
+      if (classified && (classified.level === 'error' || classified.level === 'warn')) {
+        this.latestSuppressedFailure = {
+          stream,
+          text: classified.text,
+          level: classified.level,
+        };
+      }
+      return;
+    }
     if (!this.sink) return;
     if (!classified) {
       if (!this.unclassified.has(stream)) {
@@ -197,6 +224,9 @@ export class NativeWorkerLog {
       state.pending = '';
     }
     this.finished = true;
+    // Preserve the final classified failure even after a continuous error flood.
+    // Only safe categories/codes are retained; raw output remains private.
+    this.emitSuppressedFailure();
     if (this.dropped) {
       this.sink?.warn(
         this.source,

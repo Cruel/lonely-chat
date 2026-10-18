@@ -1,6 +1,13 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { Label } from '@/components/ui/label';
 import { RecordedVideoTimeline } from '../recorded-video-timeline';
+import {
+  seekRecordedMedia,
+  startRecordedMedia,
+  AUDIO_STALL_TIMEOUT_MS,
+} from '../recorded-audio-sync';
+
+const VIDEO_CATCHUP_DRIFT_MS = 450;
 
 export interface RecordedVideoHandle {
   begin(
@@ -49,14 +56,18 @@ export const RecordedVideoInput = forwardRef<
         stop();
         const generation = epoch.current;
         element.pause();
-        element.currentTime = origin
-          ? Math.max(0, (performance.now() - origin.monotonicMs) / 1000)
-          : 0;
         element.playbackRate = 1;
         element.muted = true; // Embedded audio must not leak into live monitoring or STT.
         const originObservationMs = origin?.observedAt ?? (await api.getVideoClock());
         const originMonotonicMs = origin?.monotonicMs ?? performance.now();
         if (generation !== epoch.current) return;
+        const mediaElapsedMs = () => Math.max(0, performance.now() - originMonotonicMs);
+        const expectedMediaMs = () => {
+          const elapsed = mediaElapsedMs();
+          return Number.isFinite(element.duration)
+            ? Math.min(elapsed, Math.max(0, element.duration * 1000 - 10))
+            : elapsed;
+        };
         const timeline = new RecordedVideoTimeline(
           originObservationMs,
           originMonotonicMs,
@@ -65,9 +76,36 @@ export const RecordedVideoInput = forwardRef<
         const canvas = document.createElement('canvas');
         const context = canvas.getContext('2d');
         if (!context) throw new Error('JPEG decoding/capture is unavailable.');
+        let synchronizing = false;
+        let stalledAt: number | null = null;
+        const failPlayback = (reason: unknown) => {
+          if (generation !== epoch.current) return;
+          const message =
+            reason instanceof Error ? reason.message : 'Unable to synchronize recorded video.';
+          setError(message);
+          stop();
+          void api.reportRecordedVideoError(message).catch(() => {});
+        };
         const capture = () => {
-          if (generation !== epoch.current || inFlight.current || element.readyState < 2) return;
-          if (element.paused && element.currentTime > 0) return;
+          if (generation !== epoch.current || inFlight.current || synchronizing || element.ended)
+            return;
+          if (element.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || element.paused) {
+            stalledAt ??= performance.now();
+            if (performance.now() - stalledAt >= AUDIO_STALL_TIMEOUT_MS)
+              failPlayback(new Error('Recorded video playback stalled.'));
+            return;
+          }
+          stalledAt = null;
+          const expected = expectedMediaMs();
+          if (expected - element.currentTime * 1000 > VIDEO_CATCHUP_DRIFT_MS) {
+            synchronizing = true;
+            void seekRecordedMedia(element, expected)
+              .catch(failPlayback)
+              .finally(() => {
+                synchronizing = false;
+              });
+            return;
+          }
           const timestamp = timeline.sample(element.currentTime, performance.now());
           if (!timestamp) return;
           const scale = Math.min(1, 320 / element.videoWidth, 180 / element.videoHeight);
@@ -99,7 +137,9 @@ export const RecordedVideoInput = forwardRef<
             });
         };
         try {
-          await element.play();
+          await seekRecordedMedia(element, expectedMediaMs());
+          if (generation !== epoch.current) return;
+          await startRecordedMedia(element);
           if (generation !== epoch.current) {
             element.pause();
             return;

@@ -29,7 +29,11 @@ it('validates a local file, plays at 1× and sends decoded JPEGs through trusted
     createObjectURL: vi.fn(() => 'blob:recorded-test'),
     revokeObjectURL: vi.fn(),
   });
-  vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue();
+  vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(async function (
+    this: HTMLMediaElement,
+  ) {
+    Object.defineProperty(this, 'paused', { configurable: true, value: false });
+  });
   vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
   vi.spyOn(HTMLMediaElement.prototype, 'readyState', 'get').mockReturnValue(4);
   vi.spyOn(HTMLVideoElement.prototype, 'videoWidth', 'get').mockReturnValue(640);

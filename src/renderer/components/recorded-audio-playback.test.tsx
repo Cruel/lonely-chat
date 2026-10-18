@@ -221,6 +221,49 @@ it('fails a prolonged buffering track without interrupting another track', async
   }
 });
 
+it('flushes the final audio worklet samples and closes the transcription source on EOF', async () => {
+  const page = setup();
+  await selectFiles(page, 1);
+  const beginning = page.ref.current!.begin({ observedAt: 100000, monotonicMs: 0 });
+  await waitFor(() => expect(instances[0].play).toHaveBeenCalled());
+  instances[0].startPlayback();
+  await beginning;
+  instances[0].onended?.(new Event('ended'));
+  await waitFor(() => expect(ports[0].postMessage).toHaveBeenCalledWith('flush'));
+  ports[0].onmessage?.({ data: new Float32Array(4096) } as MessageEvent);
+  ports[0].onmessage?.({ data: { type: 'flushed' } } as MessageEvent);
+  await waitFor(() => expect(page.finish).toHaveBeenCalledTimes(1));
+  expect(page.pcm).toHaveBeenCalledTimes(1);
+  page.ref.current!.stop();
+});
+
+it('fails only the affected track if the audio worklet never acknowledges EOF flush', async () => {
+  const page = setup();
+  await selectFiles(page, 2);
+  const beginning = page.ref.current!.begin({ observedAt: 100000, monotonicMs: 0 });
+  await waitFor(() =>
+    expect(instances.every((audio) => audio.play.mock.calls.length === 1)).toBe(true),
+  );
+  instances[0].startPlayback();
+  instances[1].startPlayback();
+  await beginning;
+  vi.useFakeTimers();
+  try {
+    instances[0].onended?.(new Event('ended'));
+    expect(ports[0].postMessage).toHaveBeenCalledWith('flush');
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(7100);
+    });
+    expect(
+      screen.getByText(/Audio error: Recorded audio worklet did not flush at end of file/),
+    ).toBeTruthy();
+    expect(ports[1].postMessage).toHaveBeenCalledWith('start');
+  } finally {
+    vi.useRealTimers();
+    page.ref.current!.stop();
+  }
+});
+
 it('stops posting PCM during buffering and reanchors after playback recovery', async () => {
   const page = setup();
   await selectFiles(page, 1);

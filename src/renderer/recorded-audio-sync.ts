@@ -6,7 +6,7 @@ const SEEK_TIMEOUT_MS = 5_000;
 
 /** Wait for the decoder to honor the actual media seek, not just the seek assignment. */
 export async function seekRecordedMedia(
-  audio: HTMLAudioElement,
+  audio: HTMLMediaElement,
   milliseconds: number,
 ): Promise<void> {
   if (!Number.isFinite(milliseconds) || milliseconds < 0) throw new Error('Invalid media seek.');
@@ -61,7 +61,7 @@ export async function resumeRecordedContext(context: AudioContext): Promise<void
 }
 
 /** Bound the wait for an actual playing decoder. A never-settling play promise is a track failure. */
-export async function startRecordedMedia(audio: HTMLAudioElement): Promise<void> {
+export async function startRecordedMedia(audio: HTMLMediaElement): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | null = null;
   try {
     await Promise.race([
