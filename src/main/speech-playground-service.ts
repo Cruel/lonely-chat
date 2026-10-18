@@ -102,6 +102,9 @@ export class SpeechPlaygroundService {
     } catch (error) {
       if (generation === this.generation) {
         await this.retireWorker();
+        // Stop or a newer Start may have superseded this attempt while the
+        // old worker was retiring. Never alter the new experiment's state.
+        if (generation !== this.generation) throw error;
         // A failed initial load does not own a worker. Preserve the error for
         // the workspace, but permit model activation and another Start.
         this.resampler = null;

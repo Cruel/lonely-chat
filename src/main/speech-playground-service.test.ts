@@ -176,6 +176,46 @@ describe('isolated speech Playground', () => {
     await service.stop();
   });
 
+  it('ignores a superseded startup failure after its worker shutdown completes', async () => {
+    let finishRetirement!: () => void;
+    const retire = new Promise<void>((resolve) => {
+      finishRetirement = resolve;
+    });
+    const oldWorker = fakeWorker();
+    oldWorker.start.mockRejectedValue(new Error('previous model load failed'));
+    oldWorker.shutdown.mockImplementation(() => retire);
+    const currentWorker = fakeWorker();
+    const service = new SpeechPlaygroundService(
+      vi.fn().mockReturnValueOnce(oldWorker).mockReturnValueOnce(currentWorker),
+    );
+    const config = {
+      mode: 'whole-file' as const,
+      sourceId: 'file',
+      label: 'Fresh attempt',
+      sampleRate: 16000,
+    };
+
+    const initialAttempt = service.start(config).catch((error: unknown) => error);
+    await vi.waitFor(() => expect(oldWorker.shutdown).toHaveBeenCalledOnce());
+    await service.stop(); // A tab switch can stop while the old shutdown is pending.
+    expect(service.snapshot().phase).toBe('idle');
+    const nextAttempt = service.start(config);
+    expect(service.snapshot().phase).toBe('starting');
+    finishRetirement();
+
+    const previousError = await initialAttempt;
+    expect(previousError).toBeInstanceOf(Error);
+    expect((previousError as Error).message).toBe('previous model load failed');
+    await expect(nextAttempt).resolves.toMatchObject({
+      phase: 'ready',
+      label: 'Fresh attempt',
+      error: null,
+    });
+    expect(currentWorker.start).toHaveBeenCalledOnce();
+    expect(service.busy).toBe(true);
+    await service.stop();
+  });
+
   it('throttles accelerated file PCM instead of dropping speech while Whisper is busy', async () => {
     const finishers: Array<(text: string) => void> = [];
     const worker = fakeWorker(
