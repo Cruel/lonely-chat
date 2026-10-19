@@ -103,6 +103,126 @@ it('reopens saved audio references, retains offsets and permits a missing track 
   expect(ref.current!.snapshot().audio[1].enabled).toBe(false);
 });
 
+it('restores independent audio and segment despite missing or relinked Scenario video', async () => {
+  const open = vi.fn(async (filePath: string) => `lonely-media:${filePath}`);
+  window.lonelyChat = { openRecordedMedia: open } as unknown as DesktopAPI;
+  const config: import('../../shared/recorded-scenario-contract').RecordedScenarioConfig = {
+    context: 'Scene',
+    mode: 'fake',
+    video: { path: '/original/scene.mp4' },
+    audio: [
+      {
+        id: 'recorded-audio-1',
+        kind: 'file',
+        path: '/audio/mic.wav',
+        label: 'Mic',
+        enabled: true,
+        offsetMs: 175,
+        embeddedTrackIndex: null,
+      },
+      {
+        id: 'soundtrack',
+        kind: 'video',
+        path: null,
+        label: 'Soundtrack',
+        enabled: true,
+        offsetMs: -100,
+        embeddedTrackIndex: 0,
+      },
+    ],
+    segment: { startMs: 1000, endMs: 4000 },
+    transcriptMode: 'transcribe',
+    publishToOverlay: false,
+    seed: null,
+    presetId: null,
+    presetRevision: null,
+    modelId: null,
+    settingsSnapshot: {} as import('../../shared/session-contract').SessionPreferences,
+    settingsPolicy: 'saved',
+  };
+  const ref = createRef<RecordedAudioHandle>();
+  const props = {
+    running: false,
+    onSelectionChange: vi.fn(),
+    ref,
+    restore: { key: 'moved-video-scenario', config },
+  };
+  const page = render(<RecordedAudioInput {...props} video={null} />);
+  await waitFor(() => expect(open).toHaveBeenCalledWith('/audio/mic.wav'));
+  await waitFor(() => expect(screen.getAllByLabelText('Source label')).toHaveLength(2));
+  expect(ref.current!.snapshot()).toMatchObject({
+    segment: { startMs: 1000, endMs: 4000 },
+    audio: [
+      { id: 'recorded-audio-1', offsetMs: 175 },
+      { id: 'soundtrack', enabled: true },
+    ],
+  });
+  expect(screen.getByText(/Saved video soundtrack unavailable/)).toBeTruthy();
+  const replacement: RecordedVideoMedia = {
+    url: 'lonely-media:/replacement/scene.mp4',
+    path: '/replacement/scene.mp4',
+    name: 'scene.mp4',
+  };
+  page.rerender(<RecordedAudioInput {...props} video={replacement} />);
+  await waitFor(() => expect(document.querySelectorAll('audio')).toHaveLength(2));
+  expect(document.querySelectorAll('audio')[1].getAttribute('src')).toBe(replacement.url);
+  expect(ref.current!.snapshot().segment).toEqual({ startMs: 1000, endMs: 4000 });
+  expect(ref.current!.snapshot().audio.map((entry) => entry.id)).toEqual([
+    'recorded-audio-1',
+    'soundtrack',
+  ]);
+});
+
+it('creates unique new source IDs after restoring legacy Scenario tracks', async () => {
+  Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: create });
+  Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revoke });
+  window.lonelyChat = {
+    openRecordedMedia: async () => 'lonely-media:old.wav',
+  } as unknown as DesktopAPI;
+  const config: import('../../shared/recorded-scenario-contract').RecordedScenarioConfig = {
+    context: 'Scene',
+    mode: 'fake',
+    video: null,
+    audio: [
+      {
+        id: 'recorded-audio-1',
+        kind: 'file',
+        path: '/audio/old.wav',
+        label: 'Old',
+        enabled: true,
+        offsetMs: 0,
+        embeddedTrackIndex: null,
+      },
+    ],
+    segment: { startMs: 0, endMs: null },
+    transcriptMode: 'transcribe',
+    publishToOverlay: false,
+    seed: null,
+    presetId: null,
+    presetRevision: null,
+    modelId: null,
+    settingsSnapshot: {} as import('../../shared/session-contract').SessionPreferences,
+    settingsPolicy: 'saved',
+  };
+  const ref = createRef<RecordedAudioHandle>();
+  render(
+    <RecordedAudioInput
+      ref={ref}
+      restore={{ key: 'legacy-id', config }}
+      running={false}
+      onSelectionChange={vi.fn()}
+    />,
+  );
+  await waitFor(() => expect(screen.getAllByLabelText('Source label')).toHaveLength(1));
+  fireEvent.change(screen.getByLabelText('Add audio files'), {
+    target: { files: [new File(['b'], 'new.wav', { type: 'audio/wav' })] },
+  });
+  const ids = ref.current!.snapshot().audio.map((entry) => entry.id);
+  expect(new Set(ids).size).toBe(2);
+  fireEvent.change(screen.getAllByLabelText('Source label')[1], { target: { value: 'New' } });
+  expect(ref.current!.snapshot().audio.map((entry) => entry.label)).toEqual(['Old', 'New']);
+});
+
 it('configures multiple independent file tracks, labels, offsets, enabled state and decoder readiness', async () => {
   Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: create });
   Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revoke });

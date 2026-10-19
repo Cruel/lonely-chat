@@ -485,6 +485,123 @@ describe('opt-in compact inference evidence', () => {
     expect(reopened.status().warning).toMatch(/memory limit/i);
   });
 
+  it('accounts for late presentations written to an older recording and enforces aggregate disk limits', async () => {
+    const { recorder, trace } = await fixture();
+    await recorder.configure(true);
+    const old = start(trace);
+    trace.update(old, { stage: 'scheduled' });
+    await recorder.flush();
+    const oldRecording = recorder.status().recordingId!;
+    await recorder.configure(false);
+    await recorder.flush();
+    await recorder.configure(true);
+    const currentBytes = recorder.status().bytes;
+    const totalBefore = recorder.status().totalBytes!;
+    trace.present(old, { id: 'late-1', author: 'viewer', text: 'first', presentedAt: 1300 }, 0);
+    await recorder.flush();
+    expect(recorder.status().totalBytes).toBeGreaterThan(totalBefore);
+    expect(recorder.status().bytes).toBe(currentBytes);
+    expect((await recorder.reconstruct(old, oldRecording))?.attempt.id).toBe(old);
+    const totalAfter = recorder.status().totalBytes!;
+    await recorder.setLimits({ diskBytes: totalAfter + 1, memoryBytes: 1024 * 1024 });
+    trace.present(
+      old,
+      { id: 'late-2', author: 'viewer', text: 'must not fit', presentedAt: 1350 },
+      1,
+    );
+    await recorder.flush();
+    expect(recorder.status()).toMatchObject({
+      enabled: false,
+      totalBytes: totalAfter,
+      bytes: currentBytes,
+    });
+    expect(recorder.status().warning).toMatch(/disk recording limit/i);
+    expect((await recorder.reconstruct(old, oldRecording))?.attempt.id).toBe(old);
+  });
+
+  it('retains terminal attempt memory reservations while disk writes are queued', async () => {
+    const { recorder, trace } = await fixture();
+    await recorder.configure(true, 'exact');
+    let unblock!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      unblock = resolve;
+    });
+    // Simulate a stalled disk operation without relying on wall-clock sleeps.
+    (recorder as unknown as { chain: Promise<void> }).chain = gate;
+    const first = start(trace);
+    trace.update(first, { stage: 'transport', request: { prompt: 'z'.repeat(5000) } });
+    trace.update(first, { stage: 'scheduled' });
+    const heldBytes = recorder.status().memoryBytes!;
+    expect(heldBytes).toBeGreaterThan(10_000);
+    expect(recorder.status().enabled).toBe(true);
+    await recorder.setLimits({
+      diskBytes: 1024 * 1024,
+      memoryBytes: heldBytes + 1000,
+    });
+    const excluded = start(trace, 2, { context: 'y'.repeat(3000) });
+    trace.update(excluded, { stage: 'scheduled' });
+    expect(recorder.status().enabled).toBe(false);
+    expect(recorder.status().warning).toMatch(/memory limit/i);
+    expect(recorder.status().memoryBytes).toBeGreaterThanOrEqual(heldBytes);
+    unblock();
+    await recorder.flush();
+    expect((await recorder.list()).map((item) => item.id)).toEqual([first]);
+    expect(recorder.status().memoryBytes).toBeLessThan(heldBytes);
+  });
+
+  it('releases publication bookkeeping when a run closes and keeps deduplication caches bounded', async () => {
+    const { recorder, trace } = await fixture();
+    await recorder.configure(true);
+    for (let cycle = 1; cycle <= 20; cycle++) {
+      const id = start(trace, cycle, {
+        captureSelection: {
+          observations: [cycle],
+          transcripts: [cycle],
+          events: [`event-${cycle}`],
+          chat: [`chat-${cycle}`],
+          frames: [`frame-${cycle}`],
+        },
+        recentEvents: [{ kind: 'context', summary: 'event', observedAt: cycle }],
+      });
+      trace.update(id, { stage: 'scheduled' });
+    }
+    await recorder.flush();
+    const before = recorder.status().memoryBytes!;
+    expect(before).toBeGreaterThan(2000);
+    trace.closePresentation(3);
+    await recorder.flush();
+    expect(recorder.status().memoryBytes).toBeLessThan(before);
+  });
+
+  it('stops accumulating per-attempt index and deduplication state at the memory budget', async () => {
+    const { recorder, trace } = await fixture();
+    await recorder.configure(true);
+    await recorder.setLimits({ diskBytes: 8 * 1024 * 1024, memoryBytes: 22 * 1024 });
+    let last = '';
+    for (let cycle = 1; cycle <= 60 && recorder.status().enabled; cycle++) {
+      last = start(trace, cycle, {
+        captureSelection: {
+          observations: [cycle],
+          transcripts: [cycle],
+          events: [`event-${cycle}`],
+          chat: [`chat-${cycle}`],
+          frames: [`frame-${cycle}`],
+        },
+        recentEvents: [{ kind: 'context', summary: `unique-${cycle}`, observedAt: cycle }],
+      });
+      trace.update(last, { stage: 'scheduled' });
+      await recorder.flush();
+    }
+    expect(recorder.status().enabled).toBe(false);
+    expect(recorder.status().warning).toMatch(/memory limit/i);
+    expect(recorder.status().attempts).toBeLessThan(60);
+    const remaining = start(trace, 61);
+    trace.update(remaining, { stage: 'scheduled' });
+    expect(trace.get(remaining)).not.toBeNull();
+    await recorder.flush();
+    expect((await recorder.list()).some((item) => item.id === remaining)).toBe(false);
+  });
+
   it('keeps stable event identities under timestamp ties and history pruning', () => {
     const history = new InferenceHistory({ historyMaxCount: 2, historyMaxAgeMs: 1000 });
     history.reset(100);

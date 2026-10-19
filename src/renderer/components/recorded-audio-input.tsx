@@ -65,7 +65,6 @@ export interface RecordedAudioHandle {
   snapshot(): { audio: RecordedScenarioConfig['audio']; segment: RecordedSegment };
 }
 
-let nextTrack = 0;
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 /** File-backed producers; independent of the VLM, native inference cadence, and monitor output. */
@@ -105,7 +104,7 @@ export const RecordedAudioInput = forwardRef<
   const [previewOpen, setPreviewOpen] = useState(false);
   // A soundtrack is attached to one specific video selection, never its replacement.
   const activeTracks = useMemo(
-    () => tracks.filter((track) => track.kind === 'file' || track.url === video?.url),
+    () => tracks.filter((track) => track.kind === 'file' || !track.url || track.url === video?.url),
     [tracks, video?.url],
   );
   const previewTracks = useMemo(
@@ -141,12 +140,35 @@ export const RecordedAudioInput = forwardRef<
   }, [transcriptMode]);
   const restoredKey = useRef<string | null>(null);
   const tracksRef = useRef(tracks);
+  const selectedVideoRef = useRef(video);
+  selectedVideoRef.current = video;
   tracksRef.current = activeTracks;
   useEffect(() => {
     setTracks((previous) =>
-      previous.filter((track) => track.kind === 'file' || track.url === video?.url),
+      previous.filter((track) => track.kind === 'file' || !track.url || track.url === video?.url),
     );
   }, [video?.url]);
+  // A saved soundtrack with no usable video remains visible and invalid until the user
+  // relinks a replacement. An explicitly selected replacement binds the saved soundtrack;
+  // independently saved audio and the segment never wait for it.
+  useEffect(() => {
+    if (!video?.url || !restore?.config.video) return;
+    setTracks((previous) =>
+      previous.map((track) =>
+        track.kind === 'video' && !track.url
+          ? {
+              ...track,
+              file: video.file ?? null,
+              url: video.url,
+              name: `Audio from ${video.name}`,
+              durationMs: null,
+              decoded: false,
+              error: null,
+            }
+          : track,
+      ),
+    );
+  }, [video?.url, restore?.key]);
   useEffect(() => setPreviewOpen(false), [video?.url]);
   useEffect(() => {
     if (running) setPreviewOpen(false);
@@ -785,7 +807,6 @@ export const RecordedAudioInput = forwardRef<
 
   useEffect(() => {
     if (!restore || restoredKey.current === restore.key) return;
-    if (restore.config.video && restore.config.video.path !== video?.path) return;
     restoredKey.current = restore.key;
     setRestoring(true);
     const key = restore.key;
@@ -795,13 +816,13 @@ export const RecordedAudioInput = forwardRef<
         if (item.kind === 'video')
           return {
             ...item,
-            file: video?.file ?? null,
+            file: null,
             embeddedTracks: null,
-            url: video?.url ?? '',
-            name: `Audio from ${video?.name ?? 'video'}`,
+            url: '',
+            name: 'Audio from saved video',
             durationMs: null,
             decoded: false,
-            error: null,
+            error: 'Saved video soundtrack unavailable. Relink the video or disable this source.',
           } as RecordedAudioTrack;
         try {
           const url = await window.lonelyChat!.openRecordedMedia!(item.path!);
@@ -830,11 +851,24 @@ export const RecordedAudioInput = forwardRef<
       }),
     ).then((restored) => {
       if (restoredKey.current === key) {
-        setTracks(restored);
+        const selected = selectedVideoRef.current;
+        setTracks(
+          restored.map((track) =>
+            track.kind === 'video' && selected?.url
+              ? {
+                  ...track,
+                  file: selected.file ?? null,
+                  url: selected.url,
+                  name: `Audio from ${selected.name}`,
+                  error: null,
+                }
+              : track,
+          ),
+        );
         setRestoring(false);
       }
     });
-  }, [restore?.key, video?.path, video?.url]);
+  }, [restore?.key]);
 
   const relinkTrack = async (track: RecordedAudioTrack) => {
     const filePath = await window.lonelyChat?.chooseRecordedMedia?.('audio');
@@ -864,7 +898,7 @@ export const RecordedAudioInput = forwardRef<
     const additions = Array.from(files).map((file) => {
       const url = URL.createObjectURL(file);
       urls.current.add(url);
-      const id = `recorded-audio-${++nextTrack}`;
+      const id = `recorded-audio-${crypto.randomUUID()}`;
       return {
         kind: 'file' as const,
         file,
@@ -895,7 +929,7 @@ export const RecordedAudioInput = forwardRef<
         path: null,
         embeddedTrackIndex: null,
         embeddedTracks: null,
-        id: `recorded-audio-${++nextTrack}`,
+        id: `recorded-audio-${crypto.randomUUID()}`,
         url: video.url,
         name: `Audio from ${video.name}`,
         label: 'Video soundtrack',

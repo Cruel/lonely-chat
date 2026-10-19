@@ -105,6 +105,9 @@ const DEFAULT_LIMITS: RecordingLimits = { diskBytes: 1024 ** 3, memoryBytes: 64 
 const MAX_INDEX_BYTES = 128 * 1024 * 1024;
 const MAX_RECOVERY_CHUNKS = 8192;
 const MAX_CHUNK_BYTES = 16 * 1024 * 1024;
+// Recent deduplication is only an optimization. Old IDs remain discoverable on disk.
+const MAX_CACHED_EVIDENCE_IDS = 2048;
+const MAX_CACHED_FRAME_HASHES = 512;
 class RecordingLimitExceeded extends Error {}
 
 function snapshotBytes(value: unknown): number {
@@ -136,13 +139,18 @@ export class CompactInferenceRecorder {
   private limits: RecordingLimits = { ...DEFAULT_LIMITS };
   private frames = new Set<string>();
   private overLimitDirectories = new Set<string>();
+  private captureLimited = false;
   private pending = new Map<string, Capture>();
+  /** Terminal snapshots remain reserved until their actual asynchronous write settles. */
+  private queued = new Map<string, Capture>();
+  private queuedPresentationBytes = 0;
   private seen = new Set<string>();
   private indexedDirs = new Map<string, string>();
   private indexedRun = new Map<string, number>();
   private indexedStage = new Map<string, TraceAttempt['stage']>();
   private presented = new Set<string>();
-  private closedRuns = new Set<number>();
+  // Run IDs increase monotonically within one process; no growing tombstone set is needed.
+  private closedThroughRunId = -1;
   private broken = false;
   private chain: Promise<void> = Promise.resolve();
 
@@ -165,7 +173,7 @@ export class CompactInferenceRecorder {
       partial: this.partial,
       finalizing: this.finalizingDirectory ? this.pending.size : 0,
       limits: { ...this.limits },
-      memoryBytes: [...this.pending.values()].reduce((total, capture) => total + capture.bytes, 0),
+      memoryBytes: this.memoryUsed(),
     };
   }
 
@@ -240,7 +248,11 @@ export class CompactInferenceRecorder {
     await writeFile(path.join(dir, 'limits.json'), JSON.stringify(limits), { mode: 0o600 });
     this.limits = { ...limits };
     if (this.enabled && this.totalBytes >= limits.diskBytes)
-      this.limitReached('Disk recording limit reached; further recording is disabled.');
+      this.limitReached(
+        'Disk recording limit reached; further recording is disabled.',
+        this.directory,
+        true,
+      );
     return this.status();
   }
 
@@ -258,7 +270,7 @@ export class CompactInferenceRecorder {
       return this.status();
     }
     if (enabled) {
-      if (this.pending.size)
+      if (this.pending.size || this.queued.size)
         throw new Error(
           'Cannot start a new recording until the previous captured attempts finish.',
         );
@@ -286,6 +298,12 @@ export class CompactInferenceRecorder {
         mode: 0o600,
       });
       this.mode = mode;
+      this.overLimitDirectories.clear();
+      this.captureLimited = false;
+      // Keep sequence state only for older runs with chat still eligible to publish.
+      const liveDirs = new Set(this.indexedDirs.values());
+      for (const old of this.serialByDirectory.keys())
+        if (!liveDirs.has(old)) this.serialByDirectory.delete(old);
       this.serialByDirectory.set(this.directory, 0);
       this.attempts = 0;
       this.bytes = Buffer.byteLength(manifest);
@@ -314,7 +332,7 @@ export class CompactInferenceRecorder {
     try {
       const frozen = structuredClone(metadata);
       const bytes = snapshotBytes(frozen);
-      if (this.memoryUsed() + bytes > this.limits.memoryBytes) {
+      if (this.memoryUsed() + bytes * 2 + 256 > this.limits.memoryBytes) {
         this.limitReached('Recording memory limit reached; later attempts are excluded.');
         return;
       }
@@ -363,8 +381,18 @@ export class CompactInferenceRecorder {
     }
     if (patch.stage === 'scheduled' || patch.stage === 'failed' || patch.stage === 'cancelled') {
       this.pending.delete(id);
+      // Transfer the reservation without a gap: the promise chain still owns these values.
+      this.queued.set(id, item);
       const snapshot = { ...item.metadata, ...item.patch, id } as unknown as TraceAttempt;
-      this.enqueue(() => this.saveAttempt(snapshot, item));
+      this.enqueue(async () => {
+        try {
+          await this.saveAttempt(snapshot, item);
+        } finally {
+          this.queued.delete(id);
+          if (this.enabled && this.memoryUsed() > this.limits.memoryBytes)
+            this.limitReached('Recording memory limit reached while retaining attempt references.');
+        }
+      });
       this.finalizeIfDrained();
     }
   }
@@ -383,14 +411,34 @@ export class CompactInferenceRecorder {
     if (!ATTEMPT_ID.test(id) || !Number.isInteger(scheduledIndex) || scheduledIndex < 0) return;
     const run = this.indexedRun.get(id);
     // Close is synchronous; a presentation already queued before Close still belongs in the record.
-    if (run === undefined || this.closedRuns.has(run)) return;
+    if (run === undefined || run <= this.closedThroughRunId || this.captureLimited || this.broken)
+      return;
+    const reservedBytes = snapshotBytes(message) * 2 + 256;
+    if (this.memoryUsed() + reservedBytes > this.limits.memoryBytes) {
+      this.limitReached('Recording memory limit reached while queuing chat presentations.');
+      return;
+    }
+    this.queuedPresentationBytes += reservedBytes;
     this.enqueue(async () => {
-      const dir = this.indexedDirs.get(id);
-      const key = `${id}:${scheduledIndex}`;
-      if (!dir || this.indexedStage.get(id) !== 'scheduled' || this.presented.has(key)) return;
-      const row: Presentation = { type: 'presentation', attemptId: id, scheduledIndex, ...message };
-      await this.chunk(dir, [row], { type: 'presentation', attemptId: id, chunk: '' });
-      this.presented.add(key);
+      try {
+        const dir = this.indexedDirs.get(id);
+        const key = `${id}:${scheduledIndex}`;
+        if (!dir || this.indexedStage.get(id) !== 'scheduled' || this.presented.has(key)) return;
+        const row: Presentation = {
+          type: 'presentation',
+          attemptId: id,
+          scheduledIndex,
+          ...message,
+        };
+        await this.chunk(dir, [row], { type: 'presentation', attemptId: id, chunk: '' });
+        this.presented.add(key);
+      } finally {
+        this.queuedPresentationBytes = Math.max(0, this.queuedPresentationBytes - reservedBytes);
+        if (this.memoryUsed() > this.limits.memoryBytes)
+          this.limitReached(
+            'Recording memory limit reached while retaining presentation references.',
+          );
+      }
     });
   }
 
@@ -408,8 +456,10 @@ export class CompactInferenceRecorder {
 
   /** Explicitly mark queued chat as closed when the Run ends, even after trace eviction. */
   closePresentation(runId: number): void {
-    if (this.closedRuns.has(runId)) return;
-    this.closedRuns.add(runId);
+    if (runId <= this.closedThroughRunId) return;
+    this.closedThroughRunId = runId;
+    // Sessions without any recorded inference must not grow the write queue.
+    if (![...this.indexedRun.values()].includes(runId)) return;
     this.enqueue(async () => {
       const grouped = new Map<string, string[]>();
       for (const [id, dir] of this.indexedDirs) {
@@ -418,12 +468,28 @@ export class CompactInferenceRecorder {
         ids.push(id);
         grouped.set(dir, ids);
       }
-      for (const [dir, attemptIds] of grouped) {
-        await this.chunk(dir, [{ type: 'presentation-closed', runId, attemptIds }], {
-          type: 'presentation-closed',
-          attemptId: `run-${runId}`,
-          chunk: '',
-        });
+      try {
+        for (const [dir, attemptIds] of grouped) {
+          await this.chunk(dir, [{ type: 'presentation-closed', runId, attemptIds }], {
+            type: 'presentation-closed',
+            attemptId: `run-${runId}`,
+            chunk: '',
+          });
+        }
+      } finally {
+        // Presentation identity state is needed only while a Run can publish chat.
+        for (const [id, owner] of this.indexedRun) {
+          if (owner !== runId) continue;
+          this.indexedRun.delete(id);
+          this.indexedDirs.delete(id);
+          this.indexedStage.delete(id);
+          for (const key of this.presented)
+            if (key.startsWith(`${id}:`)) this.presented.delete(key);
+        }
+        for (const dir of grouped.keys()) {
+          if (dir !== this.directory && ![...this.indexedDirs.values()].includes(dir))
+            this.serialByDirectory.delete(dir);
+        }
       }
     });
   }
@@ -433,7 +499,26 @@ export class CompactInferenceRecorder {
   }
 
   private memoryUsed(): number {
-    return [...this.pending.values()].reduce((total, item) => total + item.bytes, 0);
+    // JSON byte lengths approximate encoded capture size; 2x covers UTF-16 strings.
+    // Reserve for queued terminal snapshots as well as still-running inference.
+    let used = this.queuedPresentationBytes;
+    for (const item of this.pending.values()) used += item.bytes * 2 + 256;
+    for (const item of this.queued.values()) used += item.bytes * 2 + 256;
+    // Retained deduplication and publication identities are part of the budget too.
+    for (const id of this.seen) used += id.length * 2 + 128;
+    for (const hash of this.frames) used += hash.length * 2 + 128;
+    for (const id of this.indexedRun.keys()) used += id.length * 2 + 192;
+    for (const [id, dir] of this.indexedDirs) used += (id.length + dir.length) * 2 + 192;
+    for (const id of this.indexedStage.keys()) used += id.length * 2 + 128;
+    for (const id of this.presented) used += id.length * 2 + 128;
+    for (const dir of this.serialByDirectory.keys()) used += dir.length * 2 + 128;
+    return used;
+  }
+
+  private remember(set: Set<string>, key: string, max: number): void {
+    if (set.has(key)) return;
+    set.add(key);
+    if (set.size > max) set.delete(set.values().next().value!);
   }
 
   private summaryForStart(
@@ -464,27 +549,38 @@ export class CompactInferenceRecorder {
       if (this.overLimitDirectories.has(dir)) return;
       // A marker written only after every queued chunk makes interrupted shutdowns recognizable.
       const marker = JSON.stringify({ finalizedAt: new Date().toISOString() });
+      this.ensureDiskBudget(dir, Buffer.byteLength(marker));
       await writeFile(path.join(dir, 'complete.json'), marker, { flag: 'wx', mode: 0o600 });
-      if (dir === this.directory) {
-        this.bytes += Buffer.byteLength(marker);
-        this.totalBytes += Buffer.byteLength(marker);
-      }
+      if (dir === this.directory) this.bytes += Buffer.byteLength(marker);
+      this.totalBytes += Buffer.byteLength(marker);
     });
   }
 
-  private limitReached(message: string): void {
+  private limitReached(
+    message: string,
+    affectedDirectory = this.directory,
+    blockWrites = false,
+  ): void {
     if (!this.warning || !this.warning.includes('limit')) this.warning = message;
     this.enabled = false;
-    if (this.directory) this.overLimitDirectories.add(this.directory);
+    this.captureLimited = true;
+    // A memory backlog stops admission but must not throw away already accepted
+    // terminal outcomes. Only exhausted disk capacity prohibits queued writes.
+    if (blockWrites) {
+      if (this.directory) this.overLimitDirectories.add(this.directory);
+      if (affectedDirectory) this.overLimitDirectories.add(affectedDirectory);
+    }
     // Do not mark this archive complete: pending/outstanding evidence may not fit.
     this.finalizingDirectory = null;
   }
 
   private ensureDiskBudget(dir: string, additionalBytes: number): void {
-    if (dir !== this.directory) return;
+    if (this.overLimitDirectories.has(dir)) throw new RecordingLimitExceeded();
     if (this.totalBytes + additionalBytes > this.limits.diskBytes) {
       this.limitReached(
         'Disk recording limit reached; further evidence is not captured. Saved cases are untouched.',
+        dir,
+        true,
       );
       throw new RecordingLimitExceeded();
     }
@@ -506,6 +602,8 @@ export class CompactInferenceRecorder {
     this.enabled = false;
     this.broken = true;
     this.pending.clear();
+    this.queued.clear();
+    this.queuedPresentationBytes = 0;
     this.finalizingDirectory = null;
     this.onError(new Error(message));
   }
@@ -516,7 +614,11 @@ export class CompactInferenceRecorder {
     const name = `${String(serial).padStart(8, '0')}.jsonl.gz`;
     const bytes = gzipSync(rows.map(jsonLine).join(''), { level: 6 });
     if (bytes.byteLength > MAX_CHUNK_BYTES) {
-      this.limitReached('One compressed chunk exceeds the archive size limit; recording stopped.');
+      this.limitReached(
+        'One compressed chunk exceeds the archive size limit; recording stopped.',
+        dir,
+        true,
+      );
       throw new RecordingLimitExceeded();
     }
     const indexLine = jsonLine({ ...index, chunk: name, sha256: sha(bytes) });
@@ -526,8 +628,8 @@ export class CompactInferenceRecorder {
     if (dir === this.directory) {
       this.chunks++;
       this.bytes += bytes.byteLength + Buffer.byteLength(indexLine);
-      this.totalBytes += bytes.byteLength + Buffer.byteLength(indexLine);
     }
+    this.totalBytes += bytes.byteLength + Buffer.byteLength(indexLine);
   }
 
   private async saveAttempt(attempt: TraceAttempt, capture: Capture): Promise<void> {
@@ -540,7 +642,7 @@ export class CompactInferenceRecorder {
     const emit = (kind: EvidenceKind, id: string, data: Record<string, unknown>): void => {
       if (!this.seen.has(id)) {
         entries.push({ type: 'evidence', kind, id, data });
-        this.seen.add(id);
+        this.remember(this.seen, id, MAX_CACHED_EVIDENCE_IDS);
       }
     };
     const run = attempt.runId;
@@ -638,6 +740,19 @@ export class CompactInferenceRecorder {
       details: { ...rest, originalSelection: selection, builderVersion: BUILDER_VERSION },
       ...(exact ? { exact } : {}),
     } as AttemptRecord);
+    // The bounded in-memory frame hash cache may have evicted an older digest.
+    // Check disk before reserving quota; an existing blob costs zero new bytes.
+    for (const digest of pendingFrames.keys()) {
+      const file = path.join(dir, 'frames', `${digest}.jpg`);
+      try {
+        if ((await stat(file)).isFile()) {
+          pendingFrames.delete(digest);
+          this.remember(this.frames, digest, MAX_CACHED_FRAME_HASHES);
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+    }
     const projectedChunk = gzipSync(entries.map(jsonLine).join(''), { level: 6 });
     const serial = (this.serialByDirectory.get(dir) ?? 0) + 1;
     const name = `${String(serial).padStart(8, '0')}.jsonl.gz`;
@@ -660,20 +775,24 @@ export class CompactInferenceRecorder {
           flag: 'wx',
           mode: 0o600,
         });
-        if (dir === this.directory) {
-          this.bytes += buffer.byteLength;
-          this.totalBytes += buffer.byteLength;
-        }
+        if (dir === this.directory) this.bytes += buffer.byteLength;
+        this.totalBytes += buffer.byteLength;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
       }
-      this.frames.add(digest);
+      this.remember(this.frames, digest, MAX_CACHED_FRAME_HASHES);
     }
     await this.chunk(dir, entries, { type: 'attempt', attemptId: attempt.id, chunk: '', summary });
-    this.indexedDirs.set(attempt.id, dir);
-    this.indexedRun.set(attempt.id, attempt.runId);
-    this.indexedStage.set(attempt.id, attempt.stage);
-    this.attempts++;
+    if (attempt.stage === 'scheduled' && attempt.runId > this.closedThroughRunId) {
+      this.indexedDirs.set(attempt.id, dir);
+      this.indexedRun.set(attempt.id, attempt.runId);
+      this.indexedStage.set(attempt.id, attempt.stage);
+    } else {
+      this.indexedRun.delete(attempt.id);
+      this.indexedDirs.delete(attempt.id);
+      this.indexedStage.delete(attempt.id);
+    }
+    if (dir === this.directory) this.attempts++;
   }
 
   /** All previously completed recordings remain discoverable after an application restart. */
