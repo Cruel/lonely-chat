@@ -13,6 +13,7 @@ const VIDEO_CATCHUP_DRIFT_MS = 450;
 export interface RecordedVideoMedia {
   url: string;
   file?: File;
+  path?: string;
   name: string;
   durationMs?: number | null;
 }
@@ -26,6 +27,7 @@ export interface RecordedVideoHandle {
   stop(): void;
   pause(): void;
   resume(): Promise<void>;
+  snapshot(): { path: string } | null;
 }
 
 export const RecordedVideoInput = forwardRef<
@@ -35,10 +37,15 @@ export const RecordedVideoInput = forwardRef<
     onSelectionChange: (state: { hasFile: boolean; ready: boolean }) => void;
     onMediaChange?: (media: RecordedVideoMedia | null) => void;
     onEnded?: () => void;
+    restore?: { key: string; path: string | null };
   }
->(function RecordedVideoInput({ running, onSelectionChange, onMediaChange, onEnded }, ref) {
+>(function RecordedVideoInput(
+  { running, onSelectionChange, onMediaChange, onEnded, restore },
+  ref,
+) {
   const video = useRef<HTMLVideoElement>(null);
   const selectedFile = useRef<File | null>(null);
+  const selectedPath = useRef<string | null>(null);
   const [url, setUrl] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
@@ -64,6 +71,7 @@ export const RecordedVideoInput = forwardRef<
     ref,
     () => ({
       stop,
+      snapshot: () => (selectedPath.current ? { path: selectedPath.current } : null),
       pause() {
         if (suspendedAt.current !== null || !resumePlayback.current) return;
         suspendedAt.current = performance.now();
@@ -220,7 +228,10 @@ export const RecordedVideoInput = forwardRef<
   );
 
   useEffect(() => {
-    onSelectionChange({ hasFile: url !== null, ready: !url || ready });
+    onSelectionChange({
+      hasFile: url !== null || selectedPath.current !== null,
+      ready: (!url && selectedPath.current === null) || ready,
+    });
   }, [url, ready, onSelectionChange]);
 
   // The URL is owned by this component. Consumers must discard it on unmount,
@@ -235,7 +246,7 @@ export const RecordedVideoInput = forwardRef<
   useEffect(
     () => () => {
       stop();
-      if (url) URL.revokeObjectURL(url);
+      if (url?.startsWith('blob:')) URL.revokeObjectURL(url);
     },
     [url],
   );
@@ -243,6 +254,7 @@ export const RecordedVideoInput = forwardRef<
   const selectFile = (file: File | undefined) => {
     stop();
     selectedFile.current = file ?? null;
+    selectedPath.current = file ? (window.lonelyChat?.pathForRecordedFile?.(file) ?? null) : null;
     setReady(false);
     setError(null);
     if (!file) {
@@ -254,11 +266,52 @@ export const RecordedVideoInput = forwardRef<
       return;
     }
     const nextUrl = URL.createObjectURL(file);
-    onMediaChange?.({ url: nextUrl, name: file.name, file });
+    onMediaChange?.({
+      url: nextUrl,
+      name: file.name,
+      file,
+      ...(selectedPath.current ? { path: selectedPath.current } : {}),
+    });
     setFileName(file.name);
     setUrl(nextUrl);
     setStatus('Checking Chromium video decoder…');
   };
+
+  const selectPath = async (filePath: string | null) => {
+    stop();
+    selectedFile.current = null;
+    selectedPath.current = filePath;
+    setReady(false);
+    setError(null);
+    if (!filePath) {
+      setUrl(null);
+      setFileName(null);
+      setReady(true);
+      onMediaChange?.(null);
+      setStatus('No file (video optional)');
+      return;
+    }
+    const name = filePath.split(/[\\/]/).at(-1) ?? 'Video';
+    setFileName(name);
+    setStatus('Checking saved video source…');
+    try {
+      const authorized = await window.lonelyChat!.openRecordedMedia!(filePath);
+      if (selectedPath.current !== filePath) return;
+      setUrl(authorized);
+      onMediaChange?.({ url: authorized, name, path: filePath });
+    } catch (reason) {
+      if (selectedPath.current !== filePath) return;
+      setUrl(null);
+      setError(
+        `Source unavailable: ${reason instanceof Error ? reason.message : String(reason)}. Relink or remove it.`,
+      );
+      setStatus('Missing or unreadable file');
+    }
+  };
+
+  useEffect(() => {
+    if (restore) void selectPath(restore.path);
+  }, [restore?.key]);
 
   const decoderError = () => {
     const mediaError = video.current?.error;
@@ -292,6 +345,31 @@ export const RecordedVideoInput = forwardRef<
         onChange={(event) => selectFile(event.currentTarget.files?.[0])}
         className="mt-2 block w-full text-sm text-zinc-300 file:mr-3 file:rounded-md file:border-0 file:bg-secondary file:px-3 file:py-2 file:text-secondary-foreground"
       />
+      <button
+        type="button"
+        disabled={running}
+        className="mt-2 block text-xs text-sky-300 hover:underline"
+        onClick={async () => {
+          try {
+            const chosen = await window.lonelyChat?.chooseRecordedMedia?.('video');
+            if (chosen) await selectPath(chosen);
+          } catch (reason) {
+            setError(String(reason));
+          }
+        }}
+      >
+        Choose / relink video file…
+      </button>
+      {(url || selectedPath.current) && (
+        <button
+          type="button"
+          disabled={running}
+          className="mt-2 ml-3 text-xs text-zinc-400 hover:underline"
+          onClick={() => void selectPath(null)}
+        >
+          Remove video source
+        </button>
+      )}
       {url && (
         <video
           ref={video}
@@ -303,14 +381,14 @@ export const RecordedVideoInput = forwardRef<
           onCanPlay={() => {
             if (video.current?.videoWidth && video.current.videoHeight) {
               const seconds = video.current.duration;
-              if (selectedFile.current)
-                onMediaChange?.({
-                  url,
-                  file: selectedFile.current,
-                  name: fileName ?? 'Video',
-                  durationMs:
-                    Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1000) : null,
-                });
+              onMediaChange?.({
+                url,
+                ...(selectedFile.current ? { file: selectedFile.current } : {}),
+                ...(selectedPath.current ? { path: selectedPath.current } : {}),
+                name: fileName ?? 'Video',
+                durationMs:
+                  Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1000) : null,
+              });
               setReady(true);
               setError(null);
               if (!running) setStatus('Ready');

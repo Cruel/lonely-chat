@@ -210,6 +210,7 @@ export class SessionController {
       revision: number;
       chatActivity: SessionPreferences['chatActivity'];
     },
+    settingsOverride?: SessionPreferences,
   ): SessionSnapshot {
     if (this.switchBusy) throw new Error('Wait for model switching to finish before restarting.');
     if (
@@ -253,7 +254,7 @@ export class SessionController {
     this.activeInference = mode === 'native' ? this.nativeInference! : this.inference;
     this.context = context;
     this.runPreferences = {
-      ...this.preferences,
+      ...(settingsOverride ? validatePreferences(settingsOverride) : this.preferences),
       ...(preset ? { chatActivity: preset.chatActivity } : {}),
     };
     this.pauseIntervals = [];
@@ -280,6 +281,7 @@ export class SessionController {
     this.processedTranscriptRevision = 0;
     this.scheduler.start();
     this.setState({
+      runId: this.runId,
       phase: mode === 'native' ? 'starting' : 'running',
       recordedPlayback: options.inputMode === 'recorded' ? 'playing' : null,
       mode,

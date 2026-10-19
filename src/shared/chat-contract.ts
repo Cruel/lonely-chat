@@ -61,6 +61,11 @@ import type {
   SimulationExperimentResult,
 } from './playground-contract';
 import type { PromptPreset } from './prompt-preset-contract';
+import type {
+  RecordedScenario,
+  RecordedScenarioConfig,
+  RecordedRun,
+} from './recorded-scenario-contract';
 import type { SimulationExperimentValues } from './playground-contract';
 import type { SpeechTestStart, SpeechTestSnapshot } from './speech-playground-contract';
 import type {
@@ -118,6 +123,13 @@ export interface DesktopInvocations {
   'case:run': SavedCaseForkResult;
   'case:export': boolean;
   'case:import': SavedCaseSummary | null;
+  'scenario:list': RecordedScenario[];
+  'scenario:save': RecordedScenario;
+  'scenario:delete': void;
+  'scenario:runs': RecordedRun[];
+  'recorded:media:open': string;
+  'recorded:media:choose': string | null;
+  'recorded:media:fingerprint': string;
   'session:snapshot': SessionSnapshot;
   'session:start': SessionSnapshot;
   'session:stop': SessionSnapshot;
@@ -208,6 +220,13 @@ export interface DesktopArguments {
   'case:run': [fork: SavedCaseFork];
   'case:export': [id: string];
   'case:import': [];
+  'scenario:list': [];
+  'scenario:save': [name: string, config: RecordedScenarioConfig, id?: string];
+  'scenario:delete': [id: string];
+  'scenario:runs': [];
+  'recorded:media:open': [path: string];
+  'recorded:media:choose': [kind: 'video' | 'audio'];
+  'recorded:media:fingerprint': [path: string];
   'session:snapshot': [];
   'session:start': [manualContext: string, mode?: InferenceMode, options?: SimulationInputOptions];
   'session:stop': [];
@@ -311,6 +330,19 @@ export interface DesktopAPI {
   runSavedCase?(fork: SavedCaseFork): Promise<SavedCaseForkResult>;
   exportSavedCase?(id: string): Promise<boolean>;
   importSavedCase?(): Promise<SavedCaseSummary | null>;
+  listRecordedScenarios?(): Promise<RecordedScenario[]>;
+  saveRecordedScenario?(
+    name: string,
+    config: RecordedScenarioConfig,
+    id?: string,
+  ): Promise<RecordedScenario>;
+  deleteRecordedScenario?(id: string): Promise<void>;
+  listRecordedRuns?(): Promise<RecordedRun[]>;
+  /** File paths are returned only for File objects explicitly selected in the desktop window. */
+  pathForRecordedFile?(file: File): string | null;
+  openRecordedMedia?(path: string): Promise<string>;
+  chooseRecordedMedia?(kind: 'video' | 'audio'): Promise<string | null>;
+  fingerprintRecordedMedia?(path: string): Promise<string>;
   onInferenceTraces(listener: (snapshot: TraceList) => void): () => void;
   getSessionSnapshot(): Promise<SessionSnapshot>;
   onSessionChange(listener: (status: SessionSnapshot) => void): () => void;

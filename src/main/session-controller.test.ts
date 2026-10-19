@@ -3,7 +3,11 @@ import { ChatService } from './chat-service';
 import { SessionController } from './session-controller';
 import { AudienceService } from './audience-service';
 import { deriveInferenceSeed } from './inference-seeds';
-import { allowsRecordedSessionMedia, isRecordedVideoFailure } from '../shared/session-contract';
+import {
+  allowsRecordedSessionMedia,
+  isRecordedVideoFailure,
+  DEFAULT_PREFERENCES,
+} from '../shared/session-contract';
 import { FakeClock, flushMicrotasks as flush } from './test-support/fake-clock';
 import type { InferenceProvider } from './fake-inference';
 
@@ -40,6 +44,37 @@ describe('session lifecycle with deterministic clock', () => {
     expect(session.getRunPreferences().cycleIntervalMs).toBe(5000);
     session.stop();
   });
+  it('freezes a saved Scenario settings snapshot independently of current global settings', () => {
+    const clock = new FakeClock();
+    const session = new SessionController(new ChatService(), undefined, clock, {
+      cycleIntervalMs: 1500,
+      chatActivity: 'quiet',
+    });
+    const frozen = { ...DEFAULT_PREFERENCES, cycleIntervalMs: 5000, chatActivity: 'busy' as const };
+    const a = session.start(
+      'context',
+      'fake',
+      null,
+      { inputMode: 'recorded', publishToOverlay: false, seed: 9 },
+      undefined,
+      frozen,
+    );
+    expect(a.runId).toBe(1);
+    expect(a.playbackWindowMs).toBe(5000);
+    expect(session.getRunPreferences()).toEqual(frozen);
+    session.setPreferences({ ...DEFAULT_PREFERENCES, cycleIntervalMs: 3000 });
+    expect(session.getRunPreferences()).toEqual(frozen);
+    session.stop();
+    const b = session.start('context', 'fake', null, {
+      inputMode: 'recorded',
+      publishToOverlay: true,
+      seed: 9,
+    });
+    expect(b.runId).toBe(2);
+    expect(b.playbackWindowMs).toBe(3000);
+    session.stop();
+  });
+
   it('preserves recorded history and capture cadence while inference is retriable', async () => {
     const clock = new FakeClock();
     const counts: number[] = [];

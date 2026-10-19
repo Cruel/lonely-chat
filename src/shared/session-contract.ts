@@ -1,6 +1,7 @@
 export type SessionPhase = 'stopped' | 'starting' | 'running' | 'switching' | 'error';
 export type InferenceMode = 'fake' | 'native';
 import type { RecordedTranscriptMode } from './recorded-transcript-cache';
+import type { RecordedScenarioConfig } from './recorded-scenario-contract';
 export interface SimulationInputOptions {
   readonly inputMode: 'live' | 'recorded';
   /** Recorded chat stays in desktop preview unless explicitly published. */
@@ -13,6 +14,9 @@ export interface SimulationInputOptions {
   /** Revision resolved atomically by main at Start; never follow subsequent edits. */
   readonly presetId?: string;
   readonly presetRevision?: number;
+  /** Desktop-only frozen source selections; absent for legacy/manual invocations. */
+  readonly recordedConfig?: RecordedScenarioConfig;
+  readonly recordedScenarioId?: string;
 }
 export type VideoSamplingStrategy = 'uniform' | 'recent-weighted';
 export type ComputeBackend = 'auto' | 'cpu' | 'cuda' | 'vulkan' | 'metal';
@@ -42,6 +46,8 @@ export interface LabeledTranscript {
 /** Private desktop-only lifecycle information. Never served through /overlay. */
 export interface SessionSnapshot {
   readonly revision: number;
+  /** Distinct session execution number (not the persistent Run UUID). */
+  readonly runId?: number;
   readonly phase: SessionPhase;
   readonly error: string | null;
   /** Stable machine-readable failure identity, independent of the displayed message. */

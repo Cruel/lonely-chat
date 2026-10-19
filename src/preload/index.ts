@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type {
   ChatEvent,
   DesktopAPI,
@@ -98,6 +98,14 @@ const api: DesktopAPI = {
   listInferenceTraces: () => invoke('trace:list'),
   getInferenceTrace: (id) => invoke('trace:get', id),
   searchInferenceTraces: (filter) => invoke('trace:search', filter),
+  listRecordedScenarios: () => invoke('scenario:list'),
+  saveRecordedScenario: (name, config, id) => invoke('scenario:save', name, config, id),
+  deleteRecordedScenario: (id) => invoke('scenario:delete', id),
+  listRecordedRuns: () => invoke('scenario:runs'),
+  pathForRecordedFile: (file) => webUtils.getPathForFile(file) || null,
+  openRecordedMedia: (path) => invoke('recorded:media:open', path),
+  chooseRecordedMedia: (kind) => invoke('recorded:media:choose', kind),
+  fingerprintRecordedMedia: (path) => invoke('recorded:media:fingerprint', path),
   listSavedCases: () => invoke('case:list'),
   getSavedCase: (id) => invoke('case:get', id),
   saveInferenceCase: (id) => invoke('case:save', id),

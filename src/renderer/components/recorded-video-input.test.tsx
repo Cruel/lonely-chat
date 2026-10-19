@@ -13,6 +13,42 @@ afterEach(() => {
   delete window.lonelyChat;
 });
 
+it('restores an authorized video path and blocks missing files until relink or removal', async () => {
+  vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
+  const selection = vi.fn();
+  const open = vi.fn(async (path: string) => {
+    if (path.includes('missing')) throw new Error('ENOENT');
+    return 'lonely-recorded-media://desktop/authorized';
+  });
+  window.lonelyChat = { openRecordedMedia: open } as unknown as DesktopAPI;
+  const ref = createRef<RecordedVideoHandle>();
+  const { rerender } = render(
+    <RecordedVideoInput
+      running={false}
+      ref={ref}
+      onSelectionChange={selection}
+      restore={{ key: 'first', path: '/archive/video.mp4' }}
+    />,
+  );
+  await waitFor(() =>
+    expect(document.querySelector('video')?.getAttribute('src')).toContain('authorized'),
+  );
+  expect(ref.current?.snapshot()).toEqual({ path: '/archive/video.mp4' });
+  rerender(
+    <RecordedVideoInput
+      running={false}
+      ref={ref}
+      onSelectionChange={selection}
+      restore={{ key: 'missing', path: '/archive/missing.mp4' }}
+    />,
+  );
+  await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Relink or remove'));
+  expect(selection).toHaveBeenLastCalledWith({ hasFile: true, ready: false });
+  fireEvent.click(screen.getByRole('button', { name: 'Remove video source' }));
+  await waitFor(() => expect(selection).toHaveBeenLastCalledWith({ hasFile: false, ready: true }));
+  expect(ref.current?.snapshot()).toBeNull();
+});
+
 it('validates a local file, plays at 1× and sends decoded JPEGs through trusted capture without touching inference', async () => {
   const select = vi.fn();
   const submit = vi.fn(async (_frame: import('../../shared/video-contract').VideoFrame) => {});

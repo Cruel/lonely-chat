@@ -1,6 +1,13 @@
 import path from 'node:path';
 import { readFile, stat, writeFile } from 'node:fs/promises';
 import { SavedInferenceCases } from './saved-inference-cases';
+import {
+  RecordedScenarioStore,
+  validateScenarioConfig,
+  verifyRecordedSources,
+} from './recorded-scenarios';
+import { RecordedMediaAccess, MEDIA_SCHEME } from './recorded-media-access';
+import type { RecordedRun } from '../shared/recorded-scenario-contract';
 import { DiagnosticCapture } from './diagnostic-capture';
 import { CompactInferenceRecorder } from './compact-inference-recorder';
 import { OperationalLogger } from './operational-logger';
@@ -22,6 +29,7 @@ import {
   Tray,
   Menu,
   nativeImage,
+  protocol,
 } from 'electron';
 import { ChatService, publishSample } from './chat-service';
 import { SessionController } from './session-controller';
@@ -61,6 +69,19 @@ import { validateTranscriptCacheQuery } from '../shared/recorded-transcript-cach
 import { AudioConfigStore } from './audio-config-store';
 import type { ChatEvent, DesktopInvocations, DesktopArguments } from '../shared/chat-contract';
 
+// Register before Electron ready. Only the private desktop renderer receives opaque media URLs.
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: MEDIA_SCHEME,
+    privileges: {
+      standard: true,
+      secure: true,
+      stream: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+    },
+  },
+]);
 const rendererDirectory = path.join(__dirname, '../renderer');
 const preloadPath = path.join(__dirname, '../preload/preload.cjs');
 const devOrigin = process.env.LONELY_CHAT_RENDERER_URL;
@@ -129,6 +150,10 @@ const promptPresets = new PromptPresetStore(app.getPath('userData'));
 const audioConfig = new AudioConfigStore(app.getPath('userData'));
 const transcriptCache = new RecordedTranscriptCache(app.getPath('userData'));
 const savedCases = new SavedInferenceCases(app.getPath('userData'));
+const recordedScenarios = new RecordedScenarioStore(app.getPath('userData'));
+const recordedMediaAccess = new RecordedMediaAccess();
+let activeRecordedRun: { id: string; sessionRunId: number } | null = null;
+let pendingRecordedFinish: Promise<void> = Promise.resolve();
 const windowStore = new WindowPreferencesStore(app.getPath('userData'));
 let windowPrefs: WindowPreferences = DEFAULT_WINDOW_PREFERENCES;
 let pendingWindowSave: ReturnType<typeof setTimeout> | null = null;
@@ -364,6 +389,37 @@ function registerHandlers(): void {
       return windowStatus();
     },
     'trace:list': () => session.trace.list(),
+    'scenario:list': () => recordedScenarios.list(),
+    'scenario:save': (
+      name: string,
+      config: import('../shared/recorded-scenario-contract').RecordedScenarioConfig,
+      id?: string,
+    ) => recordedScenarios.save(name, config, id),
+    'scenario:delete': (id: string) => recordedScenarios.delete(id),
+    'scenario:runs': async () => {
+      await pendingRecordedFinish;
+      return recordedScenarios.runs();
+    },
+    'recorded:media:open': (file: string) => recordedMediaAccess.open(file),
+    'recorded:media:fingerprint': (file: string) => recordedMediaAccess.fingerprint(file),
+    'recorded:media:choose': async (kind: 'video' | 'audio') => {
+      if (kind !== 'video' && kind !== 'audio') throw new Error('Invalid recorded media type.');
+      if (!mainWindow || mainWindow.isDestroyed()) throw new Error('Desktop window unavailable.');
+      const choice = await dialog.showOpenDialog(mainWindow, {
+        title: kind === 'video' ? 'Select recorded video' : 'Select recorded audio',
+        properties: ['openFile'],
+        filters: [
+          {
+            name: kind === 'video' ? 'Video files' : 'Audio files',
+            extensions:
+              kind === 'video'
+                ? ['mp4', 'mkv', 'mov', 'webm', 'm4v']
+                : ['wav', 'flac', 'mp3', 'ogg', 'oga', 'm4a', 'aac'],
+          },
+        ],
+      });
+      return choice.canceled ? null : (choice.filePaths[0] ?? null);
+    },
     'case:list': () => savedCases.list(),
     'case:get': (id: string) => savedCases.get(id),
     'case:save': (id: string) => {
@@ -416,30 +472,84 @@ function registerHandlers(): void {
       if (rosterRegenerating) throw new Error('Roster regeneration is in progress.');
       if (playground.busy || speechTest.busy)
         throw new Error('Stop Playground experiments before starting Simulation.');
+      if (['running', 'starting', 'switching'].includes(session.snapshot().phase))
+        throw new Error('The simulation is already running.');
+      const recordedConfig =
+        options?.inputMode === 'recorded' && options.recordedConfig
+          ? validateScenarioConfig(options.recordedConfig)
+          : null;
+      if (recordedConfig) {
+        if (mode !== recordedConfig.mode) throw new Error('Run mode does not match Scenario.');
+        await verifyRecordedSources(recordedConfig);
+        if (
+          options?.recordedScenarioId &&
+          !(await recordedScenarios.list()).some((item) => item.id === options.recordedScenarioId)
+        )
+          throw new Error('Selected Scenario no longer exists.');
+      }
       if (options?.inputMode === 'recorded') {
         ++videoSelectionGeneration;
         if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('media:stop');
-        session.selectVideoSource(options.hasVideoFile ? 'recorded:video' : null);
+        session.selectVideoSource(
+          (recordedConfig ? !!recordedConfig.video : options.hasVideoFile)
+            ? 'recorded:video'
+            : null,
+        );
       } else if (options?.inputMode === 'live' || !options) {
         // The live capture producer retains ownership of its existing source.
       } else {
         throw new Error('Unknown simulation media mode.');
       }
-      const preset = options?.presetId
-        ? (await promptPresets.revisions(options.presetId))
+      const presetId = recordedConfig?.presetId ?? options?.presetId;
+      const presetRevision = recordedConfig?.presetRevision ?? options?.presetRevision;
+      const preset = presetId
+        ? (await promptPresets.revisions(presetId))
             .slice()
             .reverse()
             .find(
               (item) =>
-                options.presetRevision === undefined || item.revision === options.presetRevision,
+                presetRevision === undefined ||
+                presetRevision === null ||
+                item.revision === presetRevision,
             )
         : undefined;
-      if (options?.presetId && !preset) throw new Error('Selected prompt preset was not found.');
-      return session.start(
-        preset ? preset.values.context : context,
+      if (presetId && !preset) throw new Error('Selected prompt preset was not found.');
+      const activeModel = mode === 'native' ? installs.snapshot().active['vision-language'] : null;
+      if (
+        recordedConfig?.settingsPolicy === 'saved' &&
+        mode === 'native' &&
+        recordedConfig.modelId !== activeModel
+      )
+        throw new Error('Activate the model saved in this Scenario before starting the Run.');
+      const effectiveSettings =
+        recordedConfig?.settingsPolicy === 'saved'
+          ? recordedConfig.settingsSnapshot
+          : session.getPreferences();
+      // Audience size is managed outside SessionController; align it with the
+      // frozen Run settings before inference (without rewriting global prefs).
+      if (effectiveSettings.audienceCount !== audience.snapshot().targetCount)
+        await audience.setTarget(effectiveSettings.audienceCount);
+      // Validation and file checks above are async: reject starts superseded by
+      // another caller before mutating an already active simulation.
+      if (['running', 'starting', 'switching'].includes(session.snapshot().phase))
+        throw new Error('The simulation is already running.');
+      const effectiveOptions = recordedConfig
+        ? {
+            ...options!,
+            publishToOverlay: recordedConfig.publishToOverlay,
+            hasVideoFile: Boolean(recordedConfig.video),
+            hasAudioFiles: recordedConfig.audio.some((source) => source.enabled),
+            transcriptMode: recordedConfig.transcriptMode,
+            ...(recordedConfig.seed === null ? { seed: undefined } : { seed: recordedConfig.seed }),
+            presetId: presetId ?? undefined,
+            presetRevision: presetRevision ?? undefined,
+          }
+        : options;
+      const started = session.start(
+        preset ? preset.values.context : (recordedConfig?.context ?? context),
         mode,
-        mode === 'native' ? installs.snapshot().active['vision-language'] : null,
-        options,
+        activeModel,
+        effectiveOptions,
         preset
           ? {
               id: preset.id,
@@ -448,9 +558,42 @@ function registerHandlers(): void {
               chatActivity: preset.values.chatActivity,
             }
           : undefined,
+        recordedConfig ? effectiveSettings : undefined,
       );
+      if (recordedConfig) {
+        try {
+          await pendingRecordedFinish;
+          const saved = await recordedScenarios.begin({
+            scenarioId: options?.recordedScenarioId ?? null,
+            name: options?.recordedScenarioId
+              ? ((await recordedScenarios.list()).find(
+                  (item) => item.id === options.recordedScenarioId,
+                )?.name ?? 'Scenario Run')
+              : 'Ad hoc recorded Run',
+            sessionRunId: started.runId!,
+            effective: recordedConfig,
+            effectiveSettings: session.getRunPreferences(),
+            effectiveModelId: activeModel,
+            effectivePreset: started.promptPreset ?? null,
+            effectivePrompt: {
+              context: preset ? preset.values.context : recordedConfig.context,
+              chatActivity: preset?.values.chatActivity ?? session.getRunPreferences().chatActivity,
+            },
+            effectiveSeed: started.sessionSeed!,
+          });
+          activeRecordedRun = { id: saved.id, sessionRunId: started.runId! };
+        } catch (error) {
+          stopSession();
+          throw error;
+        }
+      }
+      return started;
     },
-    'session:stop': () => stopSession(),
+    'session:stop': async () => {
+      const result = stopSession();
+      await pendingRecordedFinish;
+      return result;
+    },
     'session:pause': () => {
       const state = session.pauseRecorded();
       audio.pauseRecorded();
@@ -472,7 +615,7 @@ function registerHandlers(): void {
       preferences: import('../shared/session-contract').SessionPreferences,
     ) => {
       const next = validatePreferences(preferences);
-      if (next.audienceCount !== session.getPreferences().audienceCount) {
+      if (next.audienceCount !== audience.snapshot().targetCount) {
         if (
           ['starting', 'running', 'switching'].includes(session.snapshot().phase) ||
           (session.snapshot().phase === 'error' &&
@@ -803,6 +946,7 @@ function openMainWindow(): void {
 }
 
 async function boot(): Promise<void> {
+  protocol.handle(MEDIA_SCHEME, (request) => recordedMediaAccess.serve(request));
   try {
     windowPrefs = await windowStore.read();
   } catch (error) {
@@ -975,6 +1119,26 @@ async function boot(): Promise<void> {
   });
   let previousSessionPhase = '';
   session.subscribe((status) => {
+    if (
+      activeRecordedRun &&
+      status.runId === activeRecordedRun.sessionRunId &&
+      (status.phase === 'stopped' ||
+        (status.phase === 'error' && status.failureKind === 'recorded-video'))
+    ) {
+      const completed = activeRecordedRun;
+      activeRecordedRun = null;
+      const outcome: RecordedRun['status'] =
+        status.failureKind === 'recorded-video'
+          ? 'failed'
+          : status.recordedPlayback === 'completed'
+            ? 'completed'
+            : 'stopped';
+      pendingRecordedFinish = recordedScenarios
+        .finish(completed.id, outcome, status.cycle, status.error)
+        .catch((error: unknown) =>
+          logger.error('scenario', 'Unable to finalize recorded Run', error),
+        );
+    }
     if (status.phase !== previousSessionPhase) {
       previousSessionPhase = status.phase;
       if (status.phase === 'error') logger.error('session', 'Simulation entered error state');
@@ -1062,6 +1226,7 @@ const shutdown = new ManagedShutdown(
     () => speechTest?.stop().then(() => {}) ?? Promise.resolve(),
     () => overlay.stop(),
     () => flushWindowSave(),
+    () => pendingRecordedFinish,
   ],
   (error) => logger.error('application', 'Managed shutdown failed', error),
 );
@@ -1121,6 +1286,17 @@ app.on('will-quit', () => {
   ipcMain.removeHandler('trace:list');
   ipcMain.removeHandler('trace:get');
   ipcMain.removeHandler('trace:search');
+  for (const channel of [
+    'scenario:list',
+    'scenario:save',
+    'scenario:delete',
+    'scenario:runs',
+    'recorded:media:open',
+    'recorded:media:choose',
+    'recorded:media:fingerprint',
+  ])
+    ipcMain.removeHandler(channel);
+  protocol.unhandle(MEDIA_SCHEME);
   for (const channel of [
     'case:list',
     'case:get',

@@ -33,10 +33,12 @@ import { RecordedMediaPreview } from './recorded-media-preview';
 import { recordedCacheQuery, verifyRecordedCaches } from '../recorded-transcript-cache-client';
 import { closeRecordedAudioRuntime, type RecordedAudioRuntime } from '../recorded-audio-runtime';
 import type { RecordedTranscriptMode } from '../../shared/recorded-transcript-cache';
+import type { RecordedScenarioConfig } from '../../shared/recorded-scenario-contract';
 
 interface RecordedAudioTrack {
   kind: 'file' | 'video';
   file: File | null;
+  path: string | null;
   embeddedTrackIndex: number | null;
   embeddedTracks: EmbeddedTrackChoice[] | null;
   id: string;
@@ -59,6 +61,7 @@ export interface RecordedAudioHandle {
   stop(): void;
   pause(): void;
   resume(): Promise<void>;
+  snapshot(): { audio: RecordedScenarioConfig['audio']; segment: RecordedSegment };
 }
 
 let nextTrack = 0;
@@ -75,6 +78,7 @@ export const RecordedAudioInput = forwardRef<
     onSegmentChange?: (state: { segment: RecordedSegment; valid: boolean }) => void;
     onTrackEnded?: (id: string) => void;
     onFailure?: (message: string) => void;
+    restore?: { key: string; config: RecordedScenarioConfig };
   }
 >(function RecordedAudioInput(
   {
@@ -85,10 +89,12 @@ export const RecordedAudioInput = forwardRef<
     onSegmentChange,
     onTrackEnded,
     onFailure,
+    restore,
   },
   ref,
 ) {
   const [tracks, setTracks] = useState<RecordedAudioTrack[]>([]);
+  const [restoring, setRestoring] = useState(false);
   const [addType, setAddType] = useState<'file' | 'video'>('file');
   const [segment, setSegment] = useState<RecordedSegment>({ startMs: 0, endMs: null });
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -128,6 +134,7 @@ export const RecordedAudioInput = forwardRef<
       setSpeechModelRevision((revision) => revision + 1),
     );
   }, [transcriptMode]);
+  const restoredKey = useRef<string | null>(null);
   const tracksRef = useRef(tracks);
   tracksRef.current = activeTracks;
   useEffect(() => {
@@ -167,7 +174,12 @@ export const RecordedAudioInput = forwardRef<
 
   const cacheDuration = () => recordedPreviewDuration(video?.durationMs ?? null, tracksRef.current);
   const makeCacheQuery = (track: RecordedAudioTrack, sampleRate: number) =>
-    recordedCacheQuery(track, sampleRate, segmentRef.current, cacheDuration());
+    recordedCacheQuery(
+      { ...track, path: track.kind === 'video' ? (video?.path ?? null) : track.path },
+      sampleRate,
+      segmentRef.current,
+      cacheDuration(),
+    );
 
   const verifyCache = async (): Promise<void> => {
     if (transcriptMode === 'transcribe') return;
@@ -175,7 +187,10 @@ export const RecordedAudioInput = forwardRef<
     if (!api) throw new Error('Desktop transcript cache integration is unavailable.');
     await verifyRecordedCaches(
       transcriptMode,
-      tracksRef.current,
+      tracksRef.current.map((track) => ({
+        ...track,
+        path: track.kind === 'video' ? (video?.path ?? null) : track.path,
+      })),
       segmentRef.current,
       cacheDuration(),
       (query) => api.checkRecordedAudioCache(query),
@@ -208,6 +223,20 @@ export const RecordedAudioInput = forwardRef<
 
   useImperativeHandle(ref, () => ({
     stop,
+    snapshot: () => ({
+      audio: tracksRef.current.map(
+        ({ id, kind, path, label, enabled, offsetMs, embeddedTrackIndex }) => ({
+          id,
+          kind,
+          path: kind === 'file' ? path : null,
+          label,
+          enabled,
+          offsetMs,
+          embeddedTrackIndex,
+        }),
+      ),
+      segment: segmentRef.current,
+    }),
     pause: () => playbackControls.current?.pause(),
     resume: async () => playbackControls.current?.resume(),
     verifyCache,
@@ -692,6 +721,7 @@ export const RecordedAudioInput = forwardRef<
   useEffect(() => {
     onSelectionChange({
       ready:
+        !restoring &&
         segmentValid &&
         (transcriptMode === 'transcribe' || cacheState.ready) &&
         activeTracks.every(
@@ -701,7 +731,7 @@ export const RecordedAudioInput = forwardRef<
         ),
       count: activeTracks.filter((track) => track.enabled).length,
     });
-  }, [activeTracks, onSelectionChange, segmentValid, transcriptMode, cacheState.ready]);
+  }, [activeTracks, onSelectionChange, restoring, segmentValid, transcriptMode, cacheState.ready]);
 
   useEffect(() => {
     if (!running) stop();
@@ -716,6 +746,78 @@ export const RecordedAudioInput = forwardRef<
     [],
   );
 
+  useEffect(() => {
+    if (!restore || restoredKey.current === restore.key) return;
+    if (restore.config.video && restore.config.video.path !== video?.path) return;
+    restoredKey.current = restore.key;
+    setRestoring(true);
+    const key = restore.key;
+    setSegment(restore.config.segment);
+    void Promise.all(
+      restore.config.audio.map(async (item) => {
+        if (item.kind === 'video')
+          return {
+            ...item,
+            file: video?.file ?? null,
+            embeddedTracks: null,
+            url: video?.url ?? '',
+            name: `Audio from ${video?.name ?? 'video'}`,
+            durationMs: null,
+            error: null,
+          } as RecordedAudioTrack;
+        try {
+          const url = await window.lonelyChat!.openRecordedMedia!(item.path!);
+          return {
+            ...item,
+            file: null,
+            embeddedTracks: null,
+            url,
+            name: item.path!.split(/[\\/]/).at(-1) ?? 'Audio',
+            durationMs: null,
+            error: null,
+          } as RecordedAudioTrack;
+        } catch (reason) {
+          return {
+            ...item,
+            file: null,
+            embeddedTracks: null,
+            url: '',
+            name: item.path!.split(/[\\/]/).at(-1) ?? 'Audio',
+            durationMs: null,
+            error: `Missing file: ${String(reason)}. Relink or disable this source.`,
+          } as RecordedAudioTrack;
+        }
+      }),
+    ).then((restored) => {
+      if (restoredKey.current === key) {
+        setTracks(restored);
+        setRestoring(false);
+      }
+    });
+  }, [restore?.key, video?.path, video?.url]);
+
+  const relinkTrack = async (track: RecordedAudioTrack) => {
+    const filePath = await window.lonelyChat?.chooseRecordedMedia?.('audio');
+    if (!filePath) return;
+    try {
+      const url = await window.lonelyChat!.openRecordedMedia!(filePath);
+      if (track.url.startsWith('blob:')) {
+        URL.revokeObjectURL(track.url);
+        urls.current.delete(track.url);
+      }
+      patch(track.id, {
+        file: null,
+        path: filePath,
+        url,
+        name: filePath.split(/[\\/]/).at(-1) ?? 'Audio',
+        durationMs: null,
+        error: null,
+      });
+    } catch (reason) {
+      patch(track.id, { error: `Unable to relink: ${String(reason)}` });
+    }
+  };
+
   const addFiles = (files: FileList | null) => {
     if (!files) return;
     const additions = Array.from(files).map((file) => {
@@ -725,6 +827,7 @@ export const RecordedAudioInput = forwardRef<
       return {
         kind: 'file' as const,
         file,
+        path: window.lonelyChat?.pathForRecordedFile?.(file) ?? null,
         embeddedTrackIndex: null,
         embeddedTracks: null,
         id,
@@ -747,6 +850,7 @@ export const RecordedAudioInput = forwardRef<
       {
         kind: 'video',
         file: video.file ?? null,
+        path: null,
         embeddedTrackIndex: null,
         embeddedTracks: null,
         id: `recorded-audio-${++nextTrack}`,
@@ -831,40 +935,42 @@ export const RecordedAudioInput = forwardRef<
       <div className="mt-3 space-y-3">
         {activeTracks.map((track) => (
           <div key={track.id} className="rounded-md border border-border p-3">
-            <audio
-              preload="metadata"
-              src={track.url}
-              className="hidden"
-              onLoadedMetadata={(event) => {
-                const durationMs = Math.round(event.currentTarget.duration * 1000);
-                const embedded =
-                  track.kind === 'video' ? inspectEmbeddedAudio(event.currentTarget) : null;
-                const valid = Number.isFinite(durationMs) && durationMs > 0;
-                const index = track.embeddedTrackIndex;
-                const missingTrack =
-                  embedded?.tracks &&
-                  index !== null &&
-                  !embedded.tracks.some((item) => item.index === index);
-                patch(track.id, {
-                  durationMs: valid ? durationMs : null,
-                  embeddedTracks: embedded?.tracks ?? null,
-                  embeddedTrackIndex: embedded?.tracks?.length && index === null ? 0 : index,
-                  error: !valid
-                    ? 'Audio duration is unavailable or invalid.'
-                    : (embedded?.error ??
-                      (missingTrack ? 'Selected embedded audio track is unavailable.' : null)),
-                });
-              }}
-              onError={() =>
-                patch(track.id, {
-                  durationMs: null,
-                  error:
-                    track.kind === 'video'
-                      ? 'Embedded soundtrack cannot be decoded by Chromium.'
-                      : 'File cannot be decoded by Chromium. Choose a supported audio format.',
-                })
-              }
-            />
+            {track.url && (
+              <audio
+                preload="metadata"
+                src={track.url}
+                className="hidden"
+                onLoadedMetadata={(event) => {
+                  const durationMs = Math.round(event.currentTarget.duration * 1000);
+                  const embedded =
+                    track.kind === 'video' ? inspectEmbeddedAudio(event.currentTarget) : null;
+                  const valid = Number.isFinite(durationMs) && durationMs > 0;
+                  const index = track.embeddedTrackIndex;
+                  const missingTrack =
+                    embedded?.tracks &&
+                    index !== null &&
+                    !embedded.tracks.some((item) => item.index === index);
+                  patch(track.id, {
+                    durationMs: valid ? durationMs : null,
+                    embeddedTracks: embedded?.tracks ?? null,
+                    embeddedTrackIndex: embedded?.tracks?.length && index === null ? 0 : index,
+                    error: !valid
+                      ? 'Audio duration is unavailable or invalid.'
+                      : (embedded?.error ??
+                        (missingTrack ? 'Selected embedded audio track is unavailable.' : null)),
+                  });
+                }}
+                onError={() =>
+                  patch(track.id, {
+                    durationMs: null,
+                    error:
+                      track.kind === 'video'
+                        ? 'Embedded soundtrack cannot be decoded by Chromium.'
+                        : 'File cannot be decoded by Chromium. Choose a supported audio format.',
+                  })
+                }
+              />
+            )}
             <div className="flex items-center justify-between gap-2">
               <label className="flex items-center gap-2 text-sm">
                 <input
@@ -916,6 +1022,16 @@ export const RecordedAudioInput = forwardRef<
                   </SelectContent>
                 </Select>
               </div>
+            )}
+            {track.kind === 'file' && (
+              <Button
+                size="xs"
+                variant="ghost"
+                disabled={running}
+                onClick={() => void relinkTrack(track)}
+              >
+                Relink audio file…
+              </Button>
             )}
             <div className="mt-3 grid gap-3 sm:grid-cols-2">
               <div>

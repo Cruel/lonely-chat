@@ -33,6 +33,75 @@ afterEach(() => {
   delete window.lonelyChat;
 });
 
+it('reopens saved audio references, retains offsets and permits a missing track to be disabled', async () => {
+  const open = vi.fn(async (filePath: string) => {
+    if (filePath.includes('missing')) throw new Error('File was moved');
+    return 'lonely-recorded-media://desktop/authorized';
+  });
+  window.lonelyChat = { openRecordedMedia: open } as unknown as DesktopAPI;
+  const config: import('../../shared/recorded-scenario-contract').RecordedScenarioConfig = {
+    context: 'Scene',
+    mode: 'fake',
+    video: null,
+    audio: [
+      {
+        id: 'mic',
+        kind: 'file',
+        path: '/archive/mic.wav',
+        label: 'Mic',
+        enabled: true,
+        offsetMs: -150,
+        embeddedTrackIndex: null,
+      },
+      {
+        id: 'guest',
+        kind: 'file',
+        path: '/archive/missing.wav',
+        label: 'Guest',
+        enabled: true,
+        offsetMs: 300,
+        embeddedTrackIndex: null,
+      },
+    ],
+    segment: { startMs: 500, endMs: 3000 },
+    transcriptMode: 'transcribe',
+    publishToOverlay: false,
+    seed: null,
+    presetId: null,
+    presetRevision: null,
+    modelId: null,
+    settingsSnapshot: {} as import('../../shared/session-contract').SessionPreferences,
+    settingsPolicy: 'saved',
+  };
+  const selected = vi.fn();
+  const ref = createRef<RecordedAudioHandle>();
+  render(
+    <RecordedAudioInput
+      ref={ref}
+      running={false}
+      onSelectionChange={selected}
+      restore={{ key: 'saved-1', config }}
+    />,
+  );
+  await waitFor(() => expect(screen.getAllByLabelText('Source label')).toHaveLength(2));
+  expect((screen.getByLabelText('Start (ms)') as HTMLInputElement).value).toBe('500');
+  expect((screen.getAllByLabelText('Offset (ms, signed)')[0] as HTMLInputElement).value).toBe(
+    '-150',
+  );
+  expect(ref.current!.snapshot().audio[1]).toMatchObject({
+    path: '/archive/missing.wav',
+    enabled: true,
+  });
+  expect(screen.getByText(/File was moved/)).toBeTruthy();
+  const firstAudio = document.querySelector('audio')!;
+  Object.defineProperty(firstAudio, 'duration', { configurable: true, value: 3.5 });
+  fireEvent.loadedMetadata(firstAudio);
+  await waitFor(() => expect(selected).toHaveBeenLastCalledWith({ ready: false, count: 2 }));
+  fireEvent.click(screen.getByLabelText('missing.wav'));
+  await waitFor(() => expect(selected).toHaveBeenLastCalledWith({ ready: true, count: 1 }));
+  expect(ref.current!.snapshot().audio[1].enabled).toBe(false);
+});
+
 it('configures multiple independent file tracks, labels, offsets, enabled state and decoder readiness', async () => {
   Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: create });
   Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revoke });

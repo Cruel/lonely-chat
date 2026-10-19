@@ -43,6 +43,12 @@ import { DiagnosticCaptureControls } from '@/components/diagnostic-capture-contr
 import { CompactRecordingControls } from '@/components/compact-recording-controls';
 import { OperationalLogs } from '@/components/operational-logs';
 import { InferenceRunInspector } from '@/components/inference-run-inspector';
+import { JsonInspector } from '@/components/json-inspector';
+import type {
+  RecordedScenario,
+  RecordedScenarioConfig,
+  RecordedRun,
+} from '../../shared/recorded-scenario-contract';
 import { useUnreadLogErrors } from '../use-unread-log-errors';
 import { reportRendererFailure } from '../renderer-error-reporting';
 import { FreeformPlayground } from '@/components/freeform-playground';
@@ -162,6 +168,19 @@ export function DesktopPage() {
   const [transcriptMode, setTranscriptMode] = useState<RecordedTranscriptMode>('transcribe');
   const [recordedSelection, setRecordedSelection] = useState({ hasFile: false, ready: true });
   const [recordedVideoMedia, setRecordedVideoMedia] = useState<RecordedVideoMedia | null>(null);
+  const [recordedScenarios, setRecordedScenarios] = useState<RecordedScenario[]>([]);
+  const [recordedRuns, setRecordedRuns] = useState<RecordedRun[]>([]);
+  const [scenarioName, setScenarioName] = useState('');
+  const [scenarioId, setScenarioId] = useState<string | null>(null);
+  const [scenarioPolicy, setScenarioPolicy] = useState<'saved' | 'current'>('saved');
+  const [scenarioSettings, setScenarioSettings] = useState<SessionPreferences | null>(null);
+  const [scenarioModelId, setScenarioModelId] = useState<string | null>(null);
+  const [scenarioRestore, setScenarioRestore] = useState<{
+    key: string;
+    config: RecordedScenarioConfig;
+  } | null>(null);
+  const [scenarioBusy, setScenarioBusy] = useState(false);
+  const [scenarioError, setScenarioError] = useState<string | null>(null);
   const [mediaError, setMediaError] = useState<string | null>(null);
   const recordedPlayer = useRef<RecordedVideoHandle>(null);
   const recordedAudio = useRef<RecordedAudioHandle>(null);
@@ -191,6 +210,20 @@ export function DesktopPage() {
   const updateRecordedSegment = useCallback(setRecordedSegmentState, []);
   const updateRecordedSelection = useCallback(setRecordedSelection, []);
   const updateRecordedVideoMedia = useCallback(setRecordedVideoMedia, []);
+  const refreshRecordedScenarios = async () => {
+    const api = window.lonelyChat;
+    if (!api) return;
+    const [scenarios, runs] = await Promise.all([
+      api.listRecordedScenarios?.(),
+      api.listRecordedRuns?.(),
+    ]);
+    if (scenarios) setRecordedScenarios(scenarios);
+    if (runs) setRecordedRuns(runs);
+  };
+  useEffect(() => {
+    if (section === 'simulation' && inputMode === 'recorded')
+      void refreshRecordedScenarios().catch((error: unknown) => setScenarioError(String(error)));
+  }, [section, inputMode]);
   const [sampleBusy, setSampleBusy] = useState(false);
   const [audioStatus, setAudioStatus] = useState<AudioStatus | null>(null);
   const [nativeStatus, setNativeStatus] = useState<NativeServiceStatus | null>(null);
@@ -284,6 +317,93 @@ export function DesktopPage() {
   const update = (changes: Partial<SessionPreferences>) =>
     void session.updatePreferences({ ...session.preferences, ...changes });
 
+  const buildScenarioConfig = async (): Promise<RecordedScenarioConfig> => {
+    const video = recordedPlayer.current?.snapshot() ?? null;
+    const { audio, segment } = recordedAudio.current?.snapshot() ?? {
+      audio: [],
+      segment: recordedSegmentState.segment,
+    };
+    if (recordedSelection.hasFile && !video)
+      throw new Error(
+        'Selected video has no persistent local path. Use “Choose / relink video file” to select it.',
+      );
+    if (audio.some((source) => source.kind === 'file' && !source.path))
+      throw new Error(
+        'An audio source has no persistent local path. Use “Relink audio file” before saving or starting.',
+      );
+    const model =
+      inferenceMode === 'native'
+        ? ((await window.lonelyChat?.getModelsSnapshot())?.active['vision-language'] ?? null)
+        : null;
+    return {
+      context: manualContext,
+      mode: inferenceMode,
+      video,
+      audio,
+      segment,
+      transcriptMode,
+      publishToOverlay: publishRecorded,
+      seed: configuredSeed ?? null,
+      presetId: selectedPresetId || null,
+      presetRevision: selectedPresetId ? selectedPresetRevision : null,
+      modelId: scenarioPolicy === 'saved' && scenarioId ? scenarioModelId : model,
+      settingsSnapshot: scenarioSettings ?? session.preferences,
+      settingsPolicy: scenarioPolicy,
+    };
+  };
+
+  const saveScenario = async () => {
+    setScenarioBusy(true);
+    setScenarioError(null);
+    try {
+      const config = await buildScenarioConfig();
+      const saved = await window.lonelyChat!.saveRecordedScenario!(
+        scenarioName,
+        config,
+        scenarioId ?? undefined,
+      );
+      setScenarioId(saved.id);
+      setScenarioSettings(saved.config.settingsSnapshot);
+      setScenarioModelId(saved.config.modelId);
+      await refreshRecordedScenarios();
+    } catch (error) {
+      setScenarioError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setScenarioBusy(false);
+    }
+  };
+
+  const loadScenario = (scenario: RecordedScenario) => {
+    if (mediaActive) return;
+    // Invalidate the previous media attachment immediately. Two Scenarios may
+    // reference the same video path but must not inherit each other's temporary URL.
+    setRecordedVideoMedia(null);
+    setRecordedSelection({
+      hasFile: Boolean(scenario.config.video),
+      ready: !scenario.config.video,
+    });
+    setRecordedAudioSelection({
+      ready: false,
+      count: scenario.config.audio.filter((source) => source.enabled).length,
+    });
+    setRecordedSegmentState({ segment: scenario.config.segment, valid: false });
+    setScenarioId(scenario.id);
+    setScenarioName(scenario.name);
+    setManualContext(scenario.config.context);
+    setInferenceMode(scenario.config.mode);
+    setSelectedPresetId(scenario.config.presetId ?? '');
+    setSelectedPresetRevision(scenario.config.presetRevision);
+    setSessionSeedText(scenario.config.seed === null ? '' : String(scenario.config.seed));
+    setTranscriptMode(scenario.config.transcriptMode);
+    setPublishRecorded(scenario.config.publishToOverlay);
+    setScenarioPolicy(scenario.config.settingsPolicy);
+    setScenarioSettings(scenario.config.settingsSnapshot);
+    setScenarioModelId(scenario.config.modelId);
+    setScenarioError(null);
+    setInputMode('recorded');
+    setScenarioRestore({ key: `${scenario.id}:${Date.now()}`, config: scenario.config });
+  };
+
   const startSimulation = async () => {
     const generation = ++mediaStartGeneration.current;
     expectedRecordedEnds.current = 0;
@@ -298,12 +418,29 @@ export function DesktopPage() {
       }
       if (generation !== mediaStartGeneration.current) return;
     }
+    let recordedConfig: RecordedScenarioConfig | null = null;
+    if (inputMode === 'recorded') {
+      try {
+        recordedConfig = await buildScenarioConfig();
+      } catch (error) {
+        setMediaError(error instanceof Error ? error.message : String(error));
+        return;
+      }
+      if (generation !== mediaStartGeneration.current) return;
+    }
     const started = await session.start(manualContext, inferenceMode, {
       inputMode,
       publishToOverlay: inputMode === 'live' || publishRecorded,
       hasVideoFile: inputMode === 'recorded' && recordedSelection.hasFile,
       hasAudioFiles: inputMode === 'recorded' && recordedAudioSelection.count > 0,
-      ...(inputMode === 'recorded' ? { transcriptMode } : {}),
+      ...(inputMode === 'recorded'
+        ? {
+            transcriptMode,
+            ...(recordedConfig
+              ? { recordedConfig, ...(scenarioId ? { recordedScenarioId: scenarioId } : {}) }
+              : {}),
+          }
+        : {}),
       ...(configuredSeed === undefined ? {} : { seed: configuredSeed }),
       ...(selectedPresetId ? { presetId: selectedPresetId } : {}),
       ...(selectedPresetId && selectedPresetRevision
@@ -311,6 +448,7 @@ export function DesktopPage() {
         : {}),
     });
     if (!started || inputMode !== 'recorded') return;
+    void refreshRecordedScenarios().catch((error: unknown) => setScenarioError(String(error)));
     expectedRecordedEnds.current = recordedAudioSelection.count + Number(recordedSelection.hasFile);
     try {
       await recordedAudio.current?.prepare();
@@ -346,7 +484,10 @@ export function DesktopPage() {
     completedRecordedSources.current.clear();
     recordedPlayer.current?.stop();
     recordedAudio.current?.stop();
-    void session.stop();
+    void session
+      .stop()
+      .then(() => refreshRecordedScenarios())
+      .catch((error: unknown) => setScenarioError(String(error)));
   };
 
   const pauseSimulation = async () => {
@@ -634,7 +775,193 @@ export function DesktopPage() {
                 )}
                 {inputMode === 'recorded' && (
                   <>
+                    <section
+                      aria-label="Recorded Scenarios and Runs"
+                      className="mt-5 space-y-3 border-t border-border pt-4"
+                    >
+                      <h3 className="font-medium">Saved Scenarios and Runs</h3>
+                      <p className="text-xs text-zinc-400">
+                        Scenarios reference local media paths, not copies of the recordings. Each
+                        Start freezes its own Run configuration. Content-bearing output persists
+                        only if Compact inference recording is explicitly enabled.
+                      </p>
+                      <div className="flex flex-wrap items-end gap-2">
+                        <label className="min-w-56 flex-1 text-xs">
+                          Choose Scenario
+                          <select
+                            aria-label="Choose recorded Scenario"
+                            value={scenarioId ?? ''}
+                            disabled={mediaActive}
+                            className="mt-1 w-full rounded border border-border bg-background px-2 py-2"
+                            onChange={(event) => {
+                              const selected = recordedScenarios.find(
+                                (item) => item.id === event.target.value,
+                              );
+                              if (selected) loadScenario(selected);
+                              else {
+                                setScenarioId(null);
+                                setScenarioName('');
+                                setScenarioSettings(null);
+                                setScenarioModelId(null);
+                              }
+                            }}
+                          >
+                            <option value="">New / unsaved Scenario</option>
+                            {recordedScenarios.map((scenario) => (
+                              <option key={scenario.id} value={scenario.id}>
+                                {scenario.name}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          disabled={scenarioBusy || mediaActive}
+                          onClick={() =>
+                            void refreshRecordedScenarios().catch((error: unknown) =>
+                              setScenarioError(String(error)),
+                            )
+                          }
+                        >
+                          Refresh
+                        </Button>
+                      </div>
+                      <div className="flex flex-wrap items-end gap-2">
+                        <label className="min-w-48 flex-1 text-xs">
+                          Scenario name
+                          <Input
+                            className="mt-1"
+                            aria-label="Recorded Scenario name"
+                            value={scenarioName}
+                            maxLength={80}
+                            disabled={mediaActive}
+                            onChange={(event) => setScenarioName(event.target.value)}
+                          />
+                        </label>
+                        <Button
+                          size="sm"
+                          disabled={
+                            scenarioBusy ||
+                            mediaActive ||
+                            !scenarioName.trim() ||
+                            !recordedSelection.ready ||
+                            !recordedAudioSelection.ready ||
+                            !recordedSegmentState.valid
+                          }
+                          onClick={() => void saveScenario()}
+                        >
+                          Save Scenario
+                        </Button>
+                        {scenarioId && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={mediaActive || scenarioBusy}
+                            onClick={async () => {
+                              try {
+                                await window.lonelyChat!.deleteRecordedScenario!(scenarioId);
+                                setScenarioId(null);
+                                setScenarioName('');
+                                setScenarioSettings(null);
+                                setScenarioModelId(null);
+                                await refreshRecordedScenarios();
+                              } catch (error) {
+                                setScenarioError(String(error));
+                              }
+                            }}
+                          >
+                            Delete Scenario
+                          </Button>
+                        )}
+                      </div>
+                      <label className="block text-xs">
+                        Global settings for next Run
+                        <select
+                          aria-label="Scenario settings policy"
+                          disabled={mediaActive}
+                          value={scenarioPolicy}
+                          onChange={(event) =>
+                            setScenarioPolicy(event.target.value as 'saved' | 'current')
+                          }
+                          className="mt-1 block w-full max-w-md rounded border border-border bg-background px-2 py-2"
+                        >
+                          <option value="saved">Use saved Scenario settings and model</option>
+                          <option value="current">
+                            Use current global settings and active model
+                          </option>
+                        </select>
+                      </label>
+                      {scenarioPolicy === 'saved' && scenarioId && (
+                        <p className="text-xs text-zinc-400">
+                          Saved model: {scenarioModelId ?? 'fixture/no model'}. Activate this model
+                          in Model Manager or choose current settings before starting.
+                        </p>
+                      )}
+                      {scenarioPolicy === 'saved' && (
+                        <Button
+                          size="xs"
+                          variant="ghost"
+                          disabled={mediaActive}
+                          onClick={() => {
+                            setScenarioSettings({ ...session.preferences });
+                            void window.lonelyChat
+                              ?.getModelsSnapshot()
+                              .then((snapshot) =>
+                                setScenarioModelId(snapshot.active['vision-language'] ?? null),
+                              );
+                          }}
+                        >
+                          Capture current global settings for this Scenario
+                        </Button>
+                      )}
+                      {scenarioError && (
+                        <p role="alert" className="text-xs text-rose-300">
+                          {scenarioError}
+                        </p>
+                      )}
+                      {recordedRuns.length > 0 && (
+                        <details className="text-xs">
+                          <summary className="cursor-pointer">
+                            Previous Runs ({recordedRuns.length})
+                          </summary>
+                          <div className="mt-2 max-h-80 space-y-2 overflow-y-auto">
+                            {[...recordedRuns].reverse().map((run) => (
+                              <details key={run.id} className="border-l-2 border-border px-3 py-2">
+                                <summary className="cursor-pointer">
+                                  {run.name} · {run.startedAt} · {run.status} · {run.cycles} cycles
+                                </summary>
+                                <p className="mt-2 text-zinc-400">
+                                  Model {run.effectiveModelId ?? 'fixture'} · seed{' '}
+                                  {run.effectiveSeed} · {run.effectiveSettings.cycleIntervalMs} ms
+                                  cadence
+                                </p>
+                                {run.error && <p className="text-rose-300">{run.error}</p>}
+                                <JsonInspector
+                                  title={`Run ${run.id} frozen configuration`}
+                                  value={{
+                                    scenario: run.effective,
+                                    settings: run.effectiveSettings,
+                                    preset: run.effectivePreset,
+                                    startedAt: run.startedAt,
+                                    endedAt: run.endedAt,
+                                  }}
+                                />
+                              </details>
+                            ))}
+                          </div>
+                        </details>
+                      )}
+                    </section>
                     <RecordedVideoInput
+                      restore={
+                        scenarioRestore
+                          ? {
+                              key: scenarioRestore.key,
+                              path: scenarioRestore.config.video?.path ?? null,
+                            }
+                          : undefined
+                      }
                       ref={recordedPlayer}
                       running={mediaActive}
                       onSelectionChange={updateRecordedSelection}
@@ -682,6 +1009,7 @@ export function DesktopPage() {
                       </p>
                     </div>
                     <RecordedAudioInput
+                      restore={scenarioRestore ?? undefined}
                       ref={recordedAudio}
                       transcriptMode={transcriptMode}
                       running={mediaActive}

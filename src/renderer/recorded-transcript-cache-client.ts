@@ -8,6 +8,7 @@ import { mediaFingerprint } from './media-fingerprint';
 export interface CacheSource {
   readonly kind: 'file' | 'video';
   readonly file: File | null;
+  readonly path?: string | null;
   readonly enabled: boolean;
   readonly durationMs: number | null;
   readonly label: string;
@@ -23,9 +24,13 @@ export async function recordedCacheQuery(
 ): Promise<TranscriptCacheQuery> {
   const range = resolveRecordedSegment(segment, durationMs);
   if (!range) throw new Error('Select a valid recorded segment before using transcript caching.');
-  if (!source.file) throw new Error('Recorded media file is unavailable for caching.');
+  if (!source.file && !source.path)
+    throw new Error('Recorded media file is unavailable for caching.');
+  const fingerprint = source.file
+    ? await mediaFingerprint(source.file)
+    : await window.lonelyChat!.fingerprintRecordedMedia!(source.path!);
   return {
-    fingerprint: await mediaFingerprint(source.file),
+    fingerprint,
     sampleRate,
     offsetMs: source.offsetMs,
     startMs: range.startMs,
