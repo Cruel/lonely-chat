@@ -184,6 +184,8 @@ export function DesktopPage() {
   } | null>(null);
   const [scenarioBusy, setScenarioBusy] = useState(false);
   const [scenarioError, setScenarioError] = useState<string | null>(null);
+  const [scenarioNotice, setScenarioNotice] = useState<string | null>(null);
+  const [includeScenarioMedia, setIncludeScenarioMedia] = useState(false);
   const [mediaError, setMediaError] = useState<string | null>(null);
   const recordedPlayer = useRef<RecordedVideoHandle>(null);
   const recordedAudio = useRef<RecordedAudioHandle>(null);
@@ -952,11 +954,104 @@ export function DesktopPage() {
                           Capture current global settings for this Scenario
                         </Button>
                       )}
+                      {scenarioNotice && (
+                        <p role="status" className="text-xs text-zinc-400">
+                          {scenarioNotice}
+                        </p>
+                      )}
                       {scenarioError && (
                         <p role="alert" className="text-xs text-rose-300">
                           {scenarioError}
                         </p>
                       )}
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          disabled={mediaActive || scenarioBusy}
+                          onClick={async () => {
+                            setScenarioBusy(true);
+                            setScenarioError(null);
+                            try {
+                              const result = await window.lonelyChat?.importRecordedScenario?.();
+                              if (result) {
+                                await refreshRecordedScenarios();
+                                loadScenario(result.scenario);
+                                setScenarioNotice(
+                                  result.missing.length
+                                    ? 'Imported. Relink missing media before Start: ' +
+                                        result.missing.join(', ')
+                                    : 'Imported Scenario with local media. Review its configuration before Start.',
+                                );
+                              }
+                            } catch (error) {
+                              setScenarioError(String(error));
+                            } finally {
+                              setScenarioBusy(false);
+                            }
+                          }}
+                        >
+                          Import Scenario…
+                        </Button>
+                        {scenarioId && (
+                          <>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={scenarioBusy}
+                              onClick={async () => {
+                                setScenarioError(null);
+                                try {
+                                  await window.lonelyChat?.exportRecordedScenario?.(
+                                    scenarioId,
+                                    includeScenarioMedia,
+                                  );
+                                } catch (error) {
+                                  setScenarioError(String(error));
+                                }
+                              }}
+                            >
+                              Export Scenario…
+                            </Button>
+                            <label className="flex items-center gap-2">
+                              <input
+                                type="checkbox"
+                                checked={includeScenarioMedia}
+                                onChange={(event) => setIncludeScenarioMedia(event.target.checked)}
+                              />
+                              Include original video/audio (may be large)
+                            </label>
+                          </>
+                        )}
+                      </div>
+                      <p className="text-xs text-zinc-400">
+                        Portable archives include sensitive prompts and settings. Media is excluded
+                        by default. Imports remain private and never publish to the overlay
+                        automatically.
+                      </p>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        disabled={scenarioBusy || mediaActive}
+                        onClick={async () => {
+                          setScenarioError(null);
+                          try {
+                            const run = await window.lonelyChat?.importRecordedRun?.();
+                            if (run) {
+                              await refreshRecordedScenarios();
+                              setScenarioNotice(
+                                'Imported Run ' +
+                                  run.name +
+                                  '. Frozen settings are inspectable below; sources require relinking.',
+                              );
+                            }
+                          } catch (error) {
+                            setScenarioError(String(error));
+                          }
+                        }}
+                      >
+                        Import Run…
+                      </Button>
                       {recordedRuns.length > 0 && (
                         <details className="text-xs">
                           <summary className="cursor-pointer">
@@ -974,6 +1069,21 @@ export function DesktopPage() {
                                   cadence
                                 </p>
                                 {run.error && <p className="text-rose-300">{run.error}</p>}
+                                <Button
+                                  size="xs"
+                                  variant="outline"
+                                  disabled={run.status === 'running'}
+                                  onClick={async () => {
+                                    setScenarioError(null);
+                                    try {
+                                      await window.lonelyChat?.exportRecordedRun?.(run.id);
+                                    } catch (error) {
+                                      setScenarioError(String(error));
+                                    }
+                                  }}
+                                >
+                                  Export Run and diagnostics…
+                                </Button>
                                 <Button
                                   size="xs"
                                   variant="link"

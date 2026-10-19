@@ -136,6 +136,10 @@ export interface DesktopInvocations {
   'scenario:save': RecordedScenario;
   'scenario:delete': void;
   'scenario:runs': RecordedRun[];
+  'scenario:export': boolean;
+  'scenario:import': { scenario: RecordedScenario; missing: string[] } | null;
+  'run:export': boolean;
+  'run:import': RecordedRun | null;
   'recorded:media:open': string;
   'recorded:media:choose': string | null;
   'recorded:media:fingerprint': string;
@@ -245,6 +249,10 @@ export interface DesktopArguments {
   'scenario:save': [name: string, config: RecordedScenarioConfig, id?: string];
   'scenario:delete': [id: string];
   'scenario:runs': [];
+  'scenario:export': [id: string, includeMedia: boolean];
+  'scenario:import': [];
+  'run:export': [id: string];
+  'run:import': [];
   'recorded:media:open': [path: string];
   'recorded:media:choose': [kind: 'video' | 'audio'];
   'recorded:media:fingerprint': [path: string];
@@ -374,6 +382,10 @@ export interface DesktopAPI {
   ): Promise<RecordedScenario>;
   deleteRecordedScenario?(id: string): Promise<void>;
   listRecordedRuns?(): Promise<RecordedRun[]>;
+  exportRecordedScenario?(id: string, includeMedia: boolean): Promise<boolean>;
+  importRecordedScenario?(): Promise<{ scenario: RecordedScenario; missing: string[] } | null>;
+  exportRecordedRun?(id: string): Promise<boolean>;
+  importRecordedRun?(): Promise<RecordedRun | null>;
   /** File paths are returned only for File objects explicitly selected in the desktop window. */
   pathForRecordedFile?(file: File): string | null;
   openRecordedMedia?(path: string): Promise<string>;

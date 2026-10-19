@@ -177,7 +177,14 @@ export class RecordedScenarioStore {
           String(value.status),
         ) ||
         typeof value.startedAt !== 'string' ||
-        !integer(value.effectiveSeed, 0, 2147483647)
+        !integer(value.effectiveSeed, 0, 2147483647) ||
+        (value.recordingIds !== undefined &&
+          (!Array.isArray(value.recordingIds) ||
+            value.recordingIds.length > 64 ||
+            value.recordingIds.some(
+              (id: unknown) =>
+                typeof id !== 'string' || !/^recording-[A-Za-z0-9-]{15,110}$/.test(id),
+            )))
       )
         throw new Error('Invalid saved Run metadata.');
       const prompt = object(value.effectivePrompt);
@@ -229,6 +236,25 @@ export class RecordedScenarioStore {
       ),
     );
   }
+  /** Imported Run snapshots have new identities and cannot modify or resume existing Runs. */
+  async importRun(snapshot: RecordedRun): Promise<RecordedRun> {
+    return this.serialize(async () => {
+      const data = await this.read();
+      if (data.runs.length >= MAX_RUNS) throw new Error('Run history limit reached.');
+      const run: RecordedRun = {
+        ...structuredClone(snapshot),
+        id: randomUUID(),
+        scenarioId: null,
+        status: snapshot.status === 'running' ? 'interrupted' : snapshot.status,
+        effective: validateScenarioConfig(snapshot.effective),
+        effectiveSettings: validatePreferences(snapshot.effectiveSettings),
+      };
+      data.runs.push(run);
+      await this.publish(data);
+      return structuredClone(run);
+    });
+  }
+
   async save(name: string, input: unknown, id?: string): Promise<RecordedScenario> {
     if (!text(name, 80) || !name.trim() || (id !== undefined && !uuid.test(id)))
       throw new Error('Scenario name must be 1–80 characters and the selected ID must be valid.');
@@ -293,6 +319,7 @@ export class RecordedScenarioStore {
     status: RecordedRun['status'],
     cycles: number,
     error: string | null,
+    recordingIds?: readonly string[],
   ): Promise<void> {
     if (
       !uuid.test(id) ||
@@ -311,6 +338,7 @@ export class RecordedScenarioStore {
         cycles,
         error: error?.slice(0, 400) ?? null,
         endedAt: new Date().toISOString(),
+        ...(recordingIds ? { recordingIds: [...recordingIds] } : {}),
       };
       await this.publish(data);
       this.activeRunIds.delete(id);

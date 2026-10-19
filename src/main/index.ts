@@ -1,6 +1,8 @@
 import path from 'node:path';
-import { readFile, stat, writeFile } from 'node:fs/promises';
+import { readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { SavedInferenceCases } from './saved-inference-cases';
+import { makeArchive, openArchive } from './portable-archive';
+import { packageScenario, importScenario, portableRun, restoreRun } from './portable-scenarios';
 import {
   RecordedScenarioStore,
   validateScenarioConfig,
@@ -438,6 +440,103 @@ function registerHandlers(): void {
       await pendingRecordedFinish;
       return recordedScenarios.runs();
     },
+    'scenario:export': async (id: string, includeMedia: boolean) => {
+      if (!mainWindow) throw new Error('Desktop window unavailable.');
+      if (typeof includeMedia !== 'boolean') throw new Error('Invalid media export option.');
+      const scenario = (await recordedScenarios.list()).find((item) => item.id === id);
+      if (!scenario) throw new Error('Recorded Scenario not found.');
+      const choice = await dialog.showSaveDialog(mainWindow, {
+        title: 'Export private Scenario (prompts, settings and optional original media)',
+        defaultPath: 'lonely-chat-scenario.lcscenario',
+        filters: [{ name: 'Portable Scenario', extensions: ['lcscenario'] }],
+      });
+      if (choice.canceled || !choice.filePath) return false;
+      const archive = await packageScenario(scenario, includeMedia);
+      await writeFile(choice.filePath, archive, { mode: 0o600 });
+      return true;
+    },
+    'scenario:import': async () => {
+      if (!mainWindow) throw new Error('Desktop window unavailable.');
+      const choice = await dialog.showOpenDialog(mainWindow, {
+        title: 'Import portable Scenario (review and relink media before Start)',
+        properties: ['openFile'],
+        filters: [{ name: 'Portable Scenario', extensions: ['lcscenario'] }],
+      });
+      if (choice.canceled || !choice.filePaths[0]) return null;
+      if ((await stat(choice.filePaths[0])).size > 192 * 1024 * 1024)
+        throw new Error('Portable Scenario exceeds size limit.');
+      return importScenario(
+        await readFile(choice.filePaths[0], 'utf8'),
+        recordedScenarios,
+        app.getPath('userData'),
+      );
+    },
+    'run:export': async (id: string) => {
+      if (!mainWindow) throw new Error('Desktop window unavailable.');
+      await pendingRecordedFinish;
+      const run = (await recordedScenarios.runs()).find((item) => item.id === id);
+      if (!run) throw new Error('Recorded Run not found.');
+      if (run.status === 'running') throw new Error('Stop this Run before exporting its evidence.');
+      const choice = await dialog.showSaveDialog(mainWindow, {
+        title: 'Export private Run (prompts, transcripts, JPEGs, retries, responses)',
+        defaultPath: 'lonely-chat-run.lcrun',
+        filters: [{ name: 'Portable recorded Run', extensions: ['lcrun'] }],
+      });
+      if (choice.canceled || !choice.filePath) return false;
+      const evidence = await compactRecorder.exportRunEvidence(
+        run.sessionRunId,
+        run.recordingIds,
+        Date.parse(run.startedAt),
+        run.endedAt ? Date.parse(run.endedAt) : undefined,
+      );
+      await writeFile(
+        choice.filePath,
+        makeArchive(
+          'run',
+          {
+            run: portableRun(run),
+            recordings: evidence.recordings,
+          },
+          evidence.files,
+        ),
+        { mode: 0o600 },
+      );
+      return true;
+    },
+    'run:import': async () => {
+      if (!mainWindow) throw new Error('Desktop window unavailable.');
+      const choice = await dialog.showOpenDialog(mainWindow, {
+        title: 'Import private recorded Run (never publishes to overlay)',
+        properties: ['openFile'],
+        filters: [{ name: 'Portable recorded Run', extensions: ['lcrun'] }],
+      });
+      if (choice.canceled || !choice.filePaths[0]) return null;
+      if ((await stat(choice.filePaths[0])).size > 192 * 1024 * 1024)
+        throw new Error('Portable Run exceeds size limit.');
+      const { metadata, files } = openArchive(await readFile(choice.filePaths[0], 'utf8'), 'run');
+      if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata))
+        throw new Error('Invalid Run archive metadata.');
+      const info = metadata as { run: unknown; recordings: unknown };
+      const restored = await restoreRun(info.run, app.getPath('userData'));
+      let imported: string[] = [];
+      try {
+        imported = await compactRecorder.importRunEvidence(
+          restored.run.sessionRunId,
+          info.recordings,
+          files,
+        );
+        return await recordedScenarios.importRun({ ...restored.run, recordingIds: imported });
+      } catch (error) {
+        await rm(restored.directory, { recursive: true, force: true });
+        for (const recording of imported)
+          await rm(path.join(app.getPath('userData'), 'compact-inference', recording), {
+            recursive: true,
+            force: true,
+          });
+        await compactRecorder.loadLimits();
+        throw error;
+      }
+    },
     'recorded:media:open': (file: string) => recordedMediaAccess.open(file),
     'recorded:media:fingerprint': (file: string) => recordedMediaAccess.fingerprint(file),
     'recorded:media:choose': async (kind: 'video' | 'audio') => {
@@ -490,7 +589,7 @@ function registerHandlers(): void {
       });
       if (choice.canceled || !choice.filePaths[0]) return null;
       const selected = choice.filePaths[0];
-      if ((await stat(selected)).size > 18 * 1024 * 1024)
+      if ((await stat(selected)).size > 96 * 1024 * 1024)
         throw new Error('Inference case archive exceeds the import size limit.');
       return savedCases.importPortable(await readFile(selected, 'utf8'));
     },
@@ -1195,7 +1294,13 @@ async function boot(): Promise<void> {
             ? 'completed'
             : 'stopped';
       pendingRecordedFinish = recordedScenarios
-        .finish(completed.id, outcome, status.cycle, status.error)
+        .finish(
+          completed.id,
+          outcome,
+          status.cycle,
+          status.error,
+          compactRecorder.takeRunRecordingIds(completed.sessionRunId),
+        )
         .catch((error: unknown) =>
           logger.error('scenario', 'Unable to finalize recorded Run', error),
         );
@@ -1369,6 +1474,10 @@ app.on('will-quit', () => {
     'scenario:save',
     'scenario:delete',
     'scenario:runs',
+    'scenario:export',
+    'scenario:import',
+    'run:export',
+    'run:import',
     'recorded:media:open',
     'recorded:media:choose',
     'recorded:media:fingerprint',

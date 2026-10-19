@@ -146,6 +146,7 @@ export class CompactInferenceRecorder {
   private queuedPresentationBytes = 0;
   private seen = new Set<string>();
   private indexedDirs = new Map<string, string>();
+  private runRecordingIds = new Map<number, Set<string>>();
   private indexedRun = new Map<string, number>();
   private indexedStage = new Map<string, TraceAttempt['stage']>();
   private presented = new Set<string>();
@@ -340,6 +341,9 @@ export class CompactInferenceRecorder {
         return;
       }
       this.pending.set(id, { metadata: frozen, patch: {}, mode: this.mode, bytes });
+      const recordings = this.runRecordingIds.get(metadata.runId) ?? new Set<string>();
+      recordings.add(this.recordingId!);
+      this.runRecordingIds.set(metadata.runId, recordings);
       this.indexedRun.set(id, metadata.runId);
       const summary = this.summaryForStart(id, metadata);
       const dir = this.directory;
@@ -798,6 +802,376 @@ export class CompactInferenceRecorder {
       this.indexedStage.delete(attempt.id);
     }
     if (dir === this.directory) this.attempts++;
+  }
+
+  /**
+   * Export the actual on-disk evidence for one Run only. A recording can span several
+   * Runs, and selected evidence can be deduplicated across attempts within one Run.
+   * Preserve every preceding attempt chunk from that Run, never neighboring Runs.
+   */
+  takeRunRecordingIds(runId: number): string[] {
+    const recordings = [...(this.runRecordingIds.get(runId) ?? [])];
+    this.runRecordingIds.delete(runId);
+    return recordings;
+  }
+
+  async exportRunEvidence(
+    runId: number,
+    recordingIds?: readonly string[],
+    startedAt?: number,
+    endedAt?: number,
+  ): Promise<{
+    recordings: {
+      mode: InferenceRecordingMode;
+      partial: boolean;
+      index: IndexRow[];
+      folder: string;
+    }[];
+    files: Map<string, Buffer>;
+  }> {
+    if (!Number.isSafeInteger(runId) || runId < 1) throw new Error('Invalid Run ID.');
+    await this.flush();
+    const files = new Map<string, Buffer>();
+    const recordings: {
+      mode: InferenceRecordingMode;
+      partial: boolean;
+      index: IndexRow[];
+      folder: string;
+    }[] = [];
+    const base = path.join(this.root, 'compact-inference');
+    const dirs = await readdir(base, { withFileTypes: true }).catch(
+      (error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return [];
+        throw error;
+      },
+    );
+    for (const dirent of dirs) {
+      if (
+        !dirent.isDirectory() ||
+        !RECORDING_ID.test(dirent.name) ||
+        (recordingIds && !recordingIds.includes(dirent.name))
+      )
+        continue;
+      const dir = path.join(base, dirent.name);
+      const index = await this.readIndex(dir);
+      const attempts = new Set(
+        index
+          .filter(
+            (row) =>
+              (row.type === 'attempt' || row.type === 'attempt-start') &&
+              row.summary?.runId === runId &&
+              (recordingIds !== undefined ||
+                (typeof row.summary.startedAt === 'number' &&
+                  (startedAt === undefined || row.summary.startedAt >= startedAt - 5000) &&
+                  (endedAt === undefined || row.summary.startedAt <= endedAt + 5000))),
+          )
+          .map((row) => row.attemptId),
+      );
+      if (!attempts.size) continue;
+      if (recordings.length >= 64) throw new Error('Run spans too many recordings to export.');
+      const manifest = JSON.parse(await readFile(path.join(dir, 'manifest.json'), 'utf8')) as {
+        format?: string;
+        version?: number;
+        mode?: string;
+        partial?: boolean;
+      };
+      if (
+        manifest.format !== 'lonely-chat-compact' ||
+        manifest.version !== 1 ||
+        !['compact', 'exact'].includes(String(manifest.mode))
+      )
+        throw new Error('Unsupported source recording format.');
+      const folder = 'recordings/' + String(recordings.length).padStart(2, '0');
+      const selected: IndexRow[] = [];
+      const frameNames = new Set<string>();
+      for (const row of index) {
+        if (
+          !(
+            ((row.type === 'attempt' || row.type === 'attempt-start') &&
+              attempts.has(row.attemptId)) ||
+            (row.type === 'presentation' && attempts.has(row.attemptId)) ||
+            (row.type === 'presentation-closed' && row.attemptId === 'run-' + runId)
+          )
+        )
+          continue;
+        const rows = await this.readChunk(dir, row.chunk, row.sha256);
+        const retained = rows.filter(
+          (item) =>
+            ((item.type === 'attempt' || item.type === 'attempt-start') &&
+              item.summary.runId === runId &&
+              attempts.has(item.summary.id)) ||
+            (item.type === 'evidence' && item.id.startsWith(runId + ':')) ||
+            (item.type === 'presentation' && attempts.has(item.attemptId)) ||
+            (item.type === 'presentation-closed' && item.runId === runId),
+        );
+        if (!retained.length) throw new Error('Selected recording chunk has no Run evidence.');
+        for (const item of retained) {
+          if (item.type !== 'evidence' || item.kind !== 'frame') continue;
+          const jpeg = item.data.jpeg;
+          if (
+            typeof jpeg !== 'string' ||
+            !/^[a-f0-9]{64}\.jpg$/.test(jpeg) ||
+            !Number.isInteger(item.data.width) ||
+            !Number.isInteger(item.data.height) ||
+            (item.data.width as number) < 1 ||
+            (item.data.width as number) > 640 ||
+            (item.data.height as number) < 1 ||
+            (item.data.height as number) > 360
+          )
+            throw new Error('Invalid recorded JPEG reference or dimensions.');
+          frameNames.add(jpeg);
+        }
+        const bytes = gzipSync(retained.map(jsonLine).join(''), { level: 6 });
+        const name = folder + '/chunks/' + row.chunk;
+        if (files.has(name)) throw new Error('Duplicate recorded chunk index.');
+        files.set(name, bytes);
+        selected.push({ ...row, sha256: sha(bytes) });
+      }
+      for (const name of frameNames) {
+        const bytes = await readFile(path.join(dir, 'frames', name));
+        if (bytes.length > 2 * 1024 * 1024 || sha(bytes) + '.jpg' !== name)
+          throw new Error('Recorded JPEG failed integrity verification.');
+        files.set(folder + '/frames/' + name, bytes);
+      }
+      recordings.push({
+        mode: manifest.mode as InferenceRecordingMode,
+        partial: manifest.partial === true,
+        index: selected,
+        folder,
+      });
+    }
+    return { recordings, files };
+  }
+
+  /** Commit validated Run evidence into fresh recording directories, never existing ones. */
+  async importRunEvidence(
+    runId: number,
+    value: unknown,
+    files: Map<string, Buffer>,
+  ): Promise<string[]> {
+    if (!Number.isSafeInteger(runId) || runId < 1 || !Array.isArray(value) || value.length > 64)
+      throw new Error('Invalid imported Run evidence.');
+    if (this.enabled || this.pending.size || this.queued.size)
+      throw new Error(
+        'Stop inference recording and finish pending attempts before importing a Run.',
+      );
+    await this.flush();
+    const consumed = new Set<string>();
+    const folders = new Set<string>();
+    const prepared: {
+      id: string;
+      chunks: { name: string; bytes: Buffer; index: IndexRow }[];
+      frames: Map<string, Buffer>;
+      mode: InferenceRecordingMode;
+      partial: boolean;
+    }[] = [];
+    for (const entry of value) {
+      const part = object(entry);
+      if (
+        (part.mode !== 'compact' && part.mode !== 'exact') ||
+        typeof part.partial !== 'boolean' ||
+        typeof part.folder !== 'string' ||
+        !/^recordings\/\d{2}$/.test(part.folder) ||
+        !Array.isArray(part.index) ||
+        part.index.length > 4096 ||
+        folders.has(part.folder as string)
+      )
+        throw new Error('Invalid imported recording manifest.');
+      folders.add(part.folder as string);
+      const id = 'recording-' + new Date().toISOString().replace(/[:.]/g, '-') + '-' + randomUUID();
+      const chunks: { name: string; bytes: Buffer; index: IndexRow }[] = [];
+      const frames = new Map<string, Buffer>();
+      const attemptIds = new Set<string>();
+      for (const rowValue of part.index) {
+        const row = object(rowValue);
+        if (
+          typeof row.chunk !== 'string' ||
+          !CHUNK_FILE.test(row.chunk) ||
+          !['attempt', 'attempt-start', 'presentation', 'presentation-closed'].includes(
+            String(row.type),
+          ) ||
+          typeof row.attemptId !== 'string'
+        )
+          throw new Error('Unsafe imported recording index.');
+        const name = part.folder + '/chunks/' + row.chunk;
+        if (consumed.has(name)) throw new Error('Duplicate imported recording chunk.');
+        consumed.add(name);
+        const zipped = files.get(name);
+        if (!zipped || zipped.length > MAX_CHUNK_BYTES)
+          throw new Error('Missing or oversized recorded chunk.');
+        if (typeof row.sha256 !== 'string' || sha(zipped) !== row.sha256)
+          throw new Error('Recorded chunk checksum mismatch.');
+        const rows = gunzipSync(zipped, { maxOutputLength: 64 * 1024 * 1024 })
+          .toString('utf8')
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as Row);
+        if (!rows.length) throw new Error('Empty imported recording chunk.');
+        const matching = rows.filter((item) => item.type === row.type);
+        if (matching.length !== 1) throw new Error('Recorded chunk index does not match payload.');
+        const terminal = matching[0];
+        if (terminal.type === 'attempt' || terminal.type === 'attempt-start') {
+          if (
+            terminal.summary.runId !== runId ||
+            terminal.summary.id !== row.attemptId ||
+            object(row.summary).runId !== runId
+          )
+            throw new Error('Imported attempt does not belong to the selected Run.');
+          attemptIds.add(row.attemptId);
+        } else if (terminal.type === 'presentation') {
+          if (terminal.attemptId !== row.attemptId)
+            throw new Error('Imported presentation attempt mismatch.');
+        } else if (terminal.type === 'presentation-closed') {
+          if (terminal.runId !== runId || row.attemptId !== 'run-' + runId)
+            throw new Error('Imported Run closure mismatch.');
+        }
+        for (const item of rows) {
+          if (item.type === 'evidence') {
+            if (!item.id.startsWith(runId + ':'))
+              throw new Error('Imported evidence belongs to another Run.');
+            if (item.kind === 'frame') {
+              const filename = item.data.jpeg;
+              if (
+                typeof filename !== 'string' ||
+                !/^[a-f0-9]{64}\.jpg$/.test(filename) ||
+                !Number.isInteger(item.data.width) ||
+                !Number.isInteger(item.data.height) ||
+                (item.data.width as number) < 1 ||
+                (item.data.width as number) > 640 ||
+                (item.data.height as number) < 1 ||
+                (item.data.height as number) > 360
+              )
+                throw new Error('Invalid imported frame metadata.');
+              const frameName = part.folder + '/frames/' + filename;
+              const bytes = files.get(frameName);
+              if (!bytes || bytes.length > 2 * 1024 * 1024 || sha(bytes) + '.jpg' !== filename)
+                throw new Error('Missing or corrupt selected JPEG.');
+              consumed.add(frameName);
+              frames.set(filename, bytes);
+            }
+          } else if (item.type === 'attempt' || item.type === 'attempt-start') {
+            if (item.summary.runId !== runId || item.summary.id !== row.attemptId)
+              throw new Error('Foreign attempt inside imported Run.');
+          } else if (item.type === 'presentation-closed' && item.runId !== runId) {
+            throw new Error('Foreign closure inside imported Run.');
+          }
+        }
+        const adjusted = rows.map((item) =>
+          item.type === 'attempt' || item.type === 'attempt-start'
+            ? { ...item, summary: { ...item.summary, recordingId: id } }
+            : item,
+        );
+        const bytes = gzipSync(adjusted.map(jsonLine).join(''), { level: 6 });
+        if (bytes.length > MAX_CHUNK_BYTES) throw new Error('Imported recording chunk too large.');
+        chunks.push({
+          name: row.chunk as string,
+          bytes,
+          index: {
+            ...(row as IndexRow),
+            sha256: sha(bytes),
+            summary: row.summary
+              ? { ...(row.summary as CompactAttemptSummary), recordingId: id }
+              : undefined,
+          },
+        });
+      }
+      for (const chunk of chunks) {
+        const rows = gunzipSync(chunk.bytes, { maxOutputLength: 64 * 1024 * 1024 })
+          .toString('utf8')
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as Row);
+        for (const item of rows) {
+          if (item.type === 'presentation' && !attemptIds.has(item.attemptId))
+            throw new Error('Imported presentation references an unknown attempt.');
+          if (
+            item.type === 'attempt' &&
+            Object.values(item.selection).some((ids) =>
+              ids.some((ref) => typeof ref !== 'string' || !ref.startsWith(runId + ':')),
+            )
+          )
+            throw new Error('Imported selection contains foreign evidence.');
+        }
+      }
+      prepared.push({ id, chunks, frames, mode: part.mode, partial: part.partial });
+    }
+    if (consumed.size !== files.size) throw new Error('Portable Run contains unreferenced files.');
+    const base = path.join(this.root, 'compact-inference');
+    const imported: string[] = [];
+    let additional = 0;
+    for (const part of prepared)
+      additional +=
+        [...part.frames.values()].reduce((n, b) => n + b.length, 0) +
+        part.chunks.reduce((n, chunk) => n + chunk.bytes.length + 700, 0);
+    await this.loadLimits();
+    if (this.totalBytes + additional > this.limits.diskBytes)
+      throw new Error('Recording disk limit reached; cannot import Run evidence.');
+    await mkdir(base, { recursive: true, mode: 0o700 });
+    try {
+      for (const part of prepared) {
+        const temporary = path.join(base, '.import-' + randomUUID());
+        await mkdir(temporary, { mode: 0o700 });
+        try {
+          await mkdir(path.join(temporary, 'chunks'), { mode: 0o700 });
+          await mkdir(path.join(temporary, 'frames'), { mode: 0o700 });
+          await writeFile(
+            path.join(temporary, 'manifest.json'),
+            JSON.stringify({
+              format: 'lonely-chat-compact',
+              version: 1,
+              mode: part.mode,
+              partial: part.partial,
+              builderVersion: 'imported-portable',
+            }),
+            { flag: 'wx', mode: 0o600 },
+          );
+          for (const [name, bytes] of part.frames)
+            await writeFile(path.join(temporary, 'frames', name), bytes, {
+              flag: 'wx',
+              mode: 0o600,
+            });
+          for (const chunk of part.chunks)
+            await writeFile(path.join(temporary, 'chunks', chunk.name), chunk.bytes, {
+              flag: 'wx',
+              mode: 0o600,
+            });
+          await writeFile(
+            path.join(temporary, 'index.jsonl'),
+            part.chunks.map((chunk) => jsonLine(chunk.index)).join(''),
+            { flag: 'wx', mode: 0o600 },
+          );
+          await writeFile(
+            path.join(temporary, 'complete.json'),
+            JSON.stringify({ imported: true }),
+            { flag: 'wx', mode: 0o600 },
+          );
+          await import('node:fs/promises').then(({ rename }) =>
+            rename(temporary, path.join(base, part.id)),
+          );
+          imported.push(part.id);
+        } finally {
+          await import('node:fs/promises').then(({ rm }) =>
+            rm(temporary, { recursive: true, force: true }),
+          );
+        }
+      }
+      // Refuse an archive that passes hashing but cannot rebuild its claimed
+      // selected inputs or Exact native request. Roll back every imported folder.
+      for (const part of prepared) {
+        for (const chunk of part.chunks) {
+          if (chunk.index.type === 'attempt')
+            await this.reconstruct(chunk.index.attemptId, part.id);
+        }
+      }
+      this.totalBytes = await this.measureArchiveUsage();
+      return imported;
+    } catch (error) {
+      for (const id of imported)
+        await import('node:fs/promises').then(({ rm }) =>
+          rm(path.join(base, id), { recursive: true, force: true }),
+        );
+      throw error;
+    }
   }
 
   /** All previously completed recordings remain discoverable after an application restart. */

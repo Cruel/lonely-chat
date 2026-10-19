@@ -374,10 +374,18 @@ export class SavedInferenceCases {
     };
     return this.commit(manifest, candidate.blobs);
   }
-  private commit(manifest: Manifest, blobs: Map<string, Buffer>): Promise<SavedCaseSummary> {
+  private commit(
+    manifest: Manifest,
+    blobs: Map<string, Buffer>,
+    children: SavedCaseChild[] = [],
+  ): Promise<SavedCaseSummary> {
     return this.withWriteLock(async () => {
       const manifestBytes = Buffer.from(json(manifest));
-      const added = manifestBytes.length + [...blobs.values()].reduce((n, b) => n + b.length, 0);
+      const childBytes = children.map((child) => Buffer.from(json(child)));
+      const added =
+        manifestBytes.length +
+        [...blobs.values()].reduce((n, b) => n + b.length, 0) +
+        childBytes.reduce((n, b) => n + b.length, 0);
       const usage = await this.total();
       if (
         added > MAX_CASE_BYTES ||
@@ -391,6 +399,11 @@ export class SavedInferenceCases {
         for (const [hash, bytes] of blobs) {
           await writeFile(path.join(temporary, hash + '.jpg'), bytes, { mode: 0o600, flag: 'wx' });
         }
+        for (const [index, child] of children.entries())
+          await writeFile(path.join(temporary, 'child-' + child.id + '.json'), childBytes[index], {
+            mode: 0o600,
+            flag: 'wx',
+          });
         await writeFile(path.join(temporary, 'case.json'), manifestBytes, {
           mode: 0o600,
           flag: 'wx',
@@ -600,18 +613,19 @@ export class SavedInferenceCases {
   async exportPortable(id: string): Promise<string> {
     const manifest = await this.read(id);
     const blobs = await this.loadImages(manifest);
+    const children = await this.children(id);
     return json({
       format: 'lonely-chat-exact-case',
       version: VERSION,
       manifest,
+      children,
       images: Object.fromEntries(
         [...blobs].map(([hash, bytes]) => [hash, bytes.toString('base64')]),
       ),
     });
   }
   async importPortable(raw: string): Promise<SavedCaseSummary> {
-    if (Buffer.byteLength(raw) > MAX_CASE_BYTES * 1.5)
-      throw new Error('Imported case is too large.');
+    if (Buffer.byteLength(raw) > 96 * 1024 * 1024) throw new Error('Imported case is too large.');
     const archive = obj(JSON.parse(raw));
     if (archive.format !== 'lonely-chat-exact-case' || archive.version !== VERSION)
       throw new Error('Unknown saved case archive version.');
@@ -640,12 +654,55 @@ export class SavedInferenceCases {
     validateRawSimulationRequest(json(expanded), frames);
     const original = manifest.summary;
     const nextId = randomUUID();
+    const childrenRaw = archive.children ?? [];
+    if (!Array.isArray(childrenRaw) || childrenRaw.length > MAX_CHILDREN)
+      throw new Error('Invalid imported case child list.');
+    const seenChildren = new Set<string>();
+    const children: SavedCaseChild[] = childrenRaw.map((item) => {
+      const child = obj(item);
+      validId(child.id);
+      if (
+        seenChildren.has(child.id) ||
+        child.parentCaseId !== original.id ||
+        typeof child.createdAt !== 'string' ||
+        typeof child.modelId !== 'string' ||
+        child.modelId.length > 200 ||
+        !Number.isSafeInteger(child.seed) ||
+        !Number.isFinite(child.durationMs) ||
+        (child.durationMs as number) < 0 ||
+        (child.error !== null && typeof child.error !== 'string') ||
+        (child.errorStage !== null && typeof child.errorStage !== 'string') ||
+        (child.frameIndices !== undefined &&
+          (!Array.isArray(child.frameIndices) ||
+            child.frameIndices.some(
+              (index: unknown) =>
+                !Number.isInteger(index) ||
+                (index as number) < 0 ||
+                (index as number) >= manifest.frames.length,
+            )))
+      )
+        throw new Error('Corrupt imported case child.');
+      if (child.outcome !== undefined) {
+        const outcome = obj(child.outcome);
+        if (
+          Buffer.byteLength(json(outcome)) > 2 * 1024 * 1024 + 1024 ||
+          !Object.hasOwn(outcome, 'submittedRequest') ||
+          imageUrls(outcome.submittedRequest).some(
+            (ref) => !REF.test(ref) || !blobs.has(ref.slice(12)),
+          )
+        )
+          throw new Error('Invalid imported child request or evidence.');
+      }
+      seenChildren.add(child.id as string);
+      return { ...child, id: randomUUID(), parentCaseId: nextId } as unknown as SavedCaseChild;
+    });
     return this.commit(
       {
         ...manifest,
         summary: { ...original, id: nextId, savedAt: new Date().toISOString(), childCount: 0 },
       },
       blobs,
+      children,
     );
   }
 }

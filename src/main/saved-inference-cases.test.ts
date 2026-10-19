@@ -1,4 +1,5 @@
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
@@ -304,6 +305,51 @@ describe('immutable exact inference cases', () => {
     expect(JSON.stringify(content)).not.toContain(image.slice(25));
     expect(content.some((part) => part.text?.startsWith('Visual frame 1,'))).toBe(false);
     expect((await cases.get(saved.id)).frames).toHaveLength(2);
+  });
+
+  it('exports and imports frozen child experiment results without changing the immutable source', async () => {
+    const { root, cases } = await setup();
+    const original = await cases.save(attempt);
+    const detail = await cases.get(original.id);
+    const child = {
+      id: randomUUID(),
+      parentCaseId: original.id,
+      createdAt: new Date().toISOString(),
+      modelId: 'forked-model',
+      seed: 42,
+      errorStage: null,
+      error: null,
+      durationMs: 55,
+      frameIndices: [0],
+      outcome: {
+        submittedRequest: detail.request,
+        rawNativeOutput: { content: 'child response' },
+        normalizedResult: { content: 'child response' },
+        parsedResult: null,
+        accepted: { chat: ['hello'] },
+        usage: null,
+      },
+    };
+    await writeFile(
+      path.join(root, 'saved-inference-cases', original.id, 'child-' + child.id + '.json'),
+      JSON.stringify(child),
+    );
+    const archive = await cases.exportPortable(original.id);
+    const imported = await cases.importPortable(archive);
+    const roundtrip = await cases.get(imported.id);
+    expect(roundtrip.children).toHaveLength(1);
+    expect(roundtrip.children[0]).toMatchObject({
+      parentCaseId: imported.id,
+      frameIndices: [0],
+      outcome: child.outcome,
+    });
+    expect(roundtrip.children[0].id).not.toBe(child.id);
+    expect((await cases.get(original.id)).children[0].id).toBe(child.id);
+    const tampered = JSON.parse(archive);
+    tampered.children[0].parentCaseId = '../other';
+    await expect(cases.importPortable(JSON.stringify(tampered))).rejects.toThrow(
+      /Corrupt imported case child/,
+    );
   });
 
   it('rejects incomplete/interrupted attempts and missing model, seed, or selected media instead of saving partial archives', async () => {

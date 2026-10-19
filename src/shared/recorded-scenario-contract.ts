@@ -43,6 +43,8 @@ export interface RecordedRun {
   readonly startedAt: string;
   readonly endedAt: string | null;
   readonly sessionRunId: number;
+  /** Exact local private recording directories associated with this Run. */
+  readonly recordingIds?: readonly string[];
   readonly status: 'running' | 'completed' | 'stopped' | 'failed' | 'interrupted';
   readonly cycles: number;
   readonly error: string | null;
