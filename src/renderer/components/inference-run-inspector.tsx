@@ -410,9 +410,11 @@ export function InferenceRunInspector({
               >
                 <h4 className="mb-2 text-sm font-medium">Observation → inference → presentation</h4>
                 <p className="mb-3 text-xs text-zinc-400">
-                  Source timestamps, accepted output and actual publication share a chronological
-                  axis. A pending message has not been displayed; its time is only a planned
-                  deadline.
+                  {record(current.scheduled)?.clockDomain === 'pause-adjusted'
+                    ? 'Recorded playback uses a pause-adjusted observation and presentation clock. Physical wall times are shown separately when different.'
+                    : 'Source timestamps, accepted output and publication share a chronological axis.'}{' '}
+                  A pending message has not been displayed; its time is only a planned deadline on
+                  that same clock.
                 </p>
                 {timeline.length === 0 && (
                   <p className="text-xs text-zinc-400">
@@ -430,6 +432,13 @@ export function InferenceRunInspector({
                         title={item.timestamp === null ? '' : String(item.timestamp)}
                       >
                         {clockTime(item.timestamp)}
+                        {item.physicalTimestamp !== undefined &&
+                          item.physicalTimestamp !== null &&
+                          item.physicalTimestamp !== item.timestamp && (
+                            <span className="block text-zinc-500">
+                              Wall: {clockTime(item.physicalTimestamp)}
+                            </span>
+                          )}
                       </time>
                       <div className="min-w-0">
                         <p

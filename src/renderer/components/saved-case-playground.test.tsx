@@ -112,6 +112,65 @@ it('opens saved case in Simulation Playground and forks editable content without
   expect(screen.getByText(/1 child experiments/)).toBeTruthy();
 });
 
+it('does not display an in-flight result under a newly selected saved case', async () => {
+  const second: SavedCaseDetail = {
+    ...structuredClone(original),
+    summary: { ...original.summary, id: 'case-2', attemptId: 'attempt-5' },
+  };
+  let complete!: (value: unknown) => void;
+  const run = vi.fn(
+    () =>
+      new Promise((resolve) => {
+        complete = resolve;
+      }),
+  );
+  window.lonelyChat = {
+    listSavedCases: async () => [original.summary, second.summary],
+    getSavedCase: async (id: string) => structuredClone(id === 'case-1' ? original : second),
+    getModelsSnapshot: async () => ({
+      installations: [
+        {
+          id: 'installed-model',
+          role: 'vision-language',
+          repo: 'fixture/repo',
+          candidateId: 'f16',
+        },
+      ],
+      active: { 'vision-language': 'installed-model' },
+    }),
+    runSavedCase: run,
+  } as unknown as DesktopAPI;
+  render(<SavedCasePlayground focusId="case-1" simulationActive={false} busy={false} />);
+  expect(await screen.findByLabelText('Saved case request JSON')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Run independent child experiment' }));
+  await waitFor(() =>
+    expect(run).toHaveBeenCalledWith(expect.objectContaining({ caseId: 'case-1' })),
+  );
+  fireEvent.change(screen.getByLabelText('Choose saved case'), { target: { value: 'case-2' } });
+  await waitFor(() => expect(screen.getByText(/source attempt-5/)).toBeTruthy());
+  complete({
+    child: {
+      id: 'child-of-A',
+      parentCaseId: 'case-1',
+      modelId: 'installed-model',
+      seed: 88,
+      createdAt: '2026-10-18T01:01:00Z',
+      errorStage: null,
+      error: null,
+      durationMs: 18,
+    },
+    result: { submittedRequest: {}, rawNativeOutput: {}, accepted: { events: [], messages: [] } },
+  });
+  await waitFor(() =>
+    expect(screen.getByRole('button', { name: 'Run independent child experiment' })).toHaveProperty(
+      'disabled',
+      false,
+    ),
+  );
+  expect(screen.getByText(/source attempt-5/).textContent).toContain('0 child experiments');
+  expect(screen.queryByText(/Child child-of-A/)).toBeNull();
+});
+
 it('reopens persisted child outcomes without requiring a running model', async () => {
   const saved: SavedCaseDetail = {
     ...original,

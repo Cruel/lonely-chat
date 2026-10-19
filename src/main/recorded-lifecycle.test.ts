@@ -5,6 +5,8 @@ import { SessionMedia } from './session-media';
 import type { NativeSpeech } from './native-speech';
 import { DEFAULT_PREFERENCES } from '../shared/session-contract';
 import { SessionController } from './session-controller';
+import { InferenceTrace } from './inference-trace';
+import { attemptTimeline } from '../renderer/run-timeline';
 import type { InferenceProvider } from './fake-inference';
 import { FakeClock, flushMicrotasks } from './test-support/fake-clock';
 
@@ -33,6 +35,67 @@ describe('recorded Run pause, Stop and EOF', () => {
     clock.advance(600);
     await flushMicrotasks();
     expect(session.snapshot().cycle).toBe(2);
+    session.stop();
+  });
+
+  it('uses one pause-adjusted Inspector clock for observations, deadlines and publications', async () => {
+    const clock = new FakeClock();
+    const chat = new ChatService();
+    const trace = new InferenceTrace();
+    const provider: InferenceProvider = {
+      generate: async () => ({
+        events: [],
+        messages: [{ author: 'pixelpilot', color: '#bba5ff', text: 'later', offsetMs: 1500 }],
+      }),
+    };
+    const session = new SessionController(
+      chat,
+      provider,
+      clock,
+      { cycleIntervalMs: 5000 },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      trace,
+    );
+    const physicalStart = clock.wallNow();
+    session.start('scene', 'fake', null, recorded);
+    await flushMicrotasks();
+    const traceId = trace.list().attempts[0].id;
+    const pendingBeforePause = attemptTimeline(trace.get(traceId)!).find(
+      (item) => item.key === 'message-0',
+    );
+    expect(pendingBeforePause?.timestamp).toBe(physicalStart + 1500);
+    expect(pendingBeforePause?.state).toBe('pending');
+    clock.advance(400);
+    session.pauseRecorded();
+    clock.advance(10000);
+    const pendingDuringPause = attemptTimeline(trace.get(traceId)!).find(
+      (item) => item.key === 'message-0',
+    );
+    expect(pendingDuringPause?.timestamp).toBe(physicalStart + 1500);
+    expect(pendingDuringPause?.state).toBe('pending');
+    session.resumeRecorded();
+    clock.advance(1100);
+    await flushMicrotasks();
+    const attempt = trace.get(traceId)!;
+    const scheduled = attempt.scheduled as {
+      enqueuedAt: number;
+      enqueuedPhysicalAt: number;
+      clockDomain: string;
+    };
+    expect(scheduled.clockDomain).toBe('pause-adjusted');
+    expect(scheduled.enqueuedAt).toBe(physicalStart);
+    expect(scheduled.enqueuedPhysicalAt).toBe(physicalStart);
+    expect(attempt.presented).toMatchObject([
+      { presentedAt: physicalStart + 11500, timelineAt: physicalStart + 1500 },
+    ]);
+    const entries = attemptTimeline(attempt);
+    const planned = entries.find((item) => item.key === 'message-0');
+    expect(planned?.timestamp).toBe(physicalStart + 1500);
+    expect(planned?.state).toBe('shown');
+    expect(planned?.physicalTimestamp).toBe(physicalStart + 11500);
     session.stop();
   });
 

@@ -121,7 +121,7 @@ export class InferenceTrace {
   /** Correlate a presentation to the exact attempt that queued it. */
   present(
     id: string,
-    message: { id: string; author: string; text: string; presentedAt: number },
+    message: { id: string; author: string; text: string; presentedAt: number; timelineAt?: number },
     scheduledIndex: number,
   ): void {
     // Persist actual presentation even after the bounded inspector evicts the attempt.

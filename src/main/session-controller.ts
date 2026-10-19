@@ -110,7 +110,12 @@ export class SessionController {
       clock,
       () => this.updatePending(),
       () => this.recordedChatPublication,
-      (attemptId, message, index) => this.trace.present(attemptId, message, index),
+      (attemptId, message, index) =>
+        this.trace.present(
+          attemptId,
+          { ...message, timelineAt: this.observationTime(message.presentedAt) },
+          index,
+        ),
     );
   }
 
@@ -818,14 +823,18 @@ export class SessionController {
                 offsetMs: Math.min(item.offsetMs, windowMs),
               }))
             : resolved;
-        const enqueuedAt = this.clock.wallNow();
+        const enqueuedPhysicalAt = this.clock.wallNow();
         this.trace.update(traceId, {
           stage: 'scheduled',
           scheduled: {
             events: result.events,
             messages,
             windowMs,
-            enqueuedAt,
+            // Observation, scheduled and publication entries on the Inspector
+            // axis all use virtual time for recorded playback.
+            enqueuedAt: this.observationTime(enqueuedPhysicalAt),
+            enqueuedPhysicalAt,
+            clockDomain: this.state.inputMode === 'recorded' ? 'pause-adjusted' : 'physical',
           },
           durationMs: Math.max(0, this.clock.now() - traceStarted),
         });

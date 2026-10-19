@@ -3,6 +3,8 @@ import type { TraceAttempt } from '../shared/inference-trace-contract';
 export interface TimelineItem {
   readonly key: string;
   readonly timestamp: number | null;
+  /** Original physical time when the primary Inspector timestamp is pause-adjusted. */
+  readonly physicalTimestamp?: number | null;
   readonly kind: 'boundary' | 'observation' | 'frame' | 'transcript' | 'event' | 'batch' | 'chat';
   readonly title: string;
   readonly description: string;
@@ -107,6 +109,7 @@ export function attemptTimeline(attempt: TraceAttempt): TimelineItem[] {
         key: `new-event-${index}`,
         kind: 'event',
         timestamp: enqueued,
+        physicalTimestamp: number(scheduled.enqueuedPhysicalAt),
         title: `Generated Event · ${string(item.kind)}`,
         description: `${string(item.summary)}${number(item.observedAt) === null ? '' : ` · observed ${item.observedAt} ms`}`,
       }),
@@ -115,6 +118,7 @@ export function attemptTimeline(attempt: TraceAttempt): TimelineItem[] {
       key: 'batch',
       kind: 'batch',
       timestamp: enqueued,
+      physicalTimestamp: number(scheduled.enqueuedPhysicalAt),
       title: 'Chat batch accepted',
       description: `Playback window ${scheduled.windowMs ?? 'unknown'} ms`,
     });
@@ -127,7 +131,8 @@ export function attemptTimeline(attempt: TraceAttempt): TimelineItem[] {
       add({
         key: `message-${index}`,
         kind: 'chat',
-        timestamp: visible?.presentedAt ?? due,
+        timestamp: (visible ? (number(visible.timelineAt) ?? visible.presentedAt) : null) ?? due,
+        physicalTimestamp: visible?.presentedAt,
         title: `${visible ? 'Displayed' : attempt.presentationClosed ? 'Not displayed' : 'Pending'} · ${string(item.author)}`,
         description: `${string(item.text)} · offset ${item.offsetMs ?? '?'} ms${visible ? ` · ${visible.id}` : ''}`,
         state: visible ? 'shown' : attempt.presentationClosed ? 'not-shown' : 'pending',

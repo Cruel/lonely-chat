@@ -29,6 +29,8 @@ type Presentation = {
   author: string;
   text: string;
   presentedAt: number;
+  /** Recorded playback publication time with pause intervals excluded. */
+  timelineAt?: number;
 };
 type PresentationClosed = { type: 'presentation-closed'; runId: number; attemptIds: string[] };
 type Row = Evidence | AttemptRecord | Presentation | PresentationClosed;
@@ -183,7 +185,13 @@ export class CompactInferenceRecorder {
 
   present(
     id: string,
-    message: { id: string; author: string; text: string; presentedAt: number },
+    message: {
+      id: string;
+      author: string;
+      text: string;
+      presentedAt: number;
+      timelineAt?: number;
+    },
     scheduledIndex: number,
   ): void {
     if (!ATTEMPT_ID.test(id) || !Number.isInteger(scheduledIndex) || scheduledIndex < 0) return;

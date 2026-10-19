@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { JsonInspector } from './json-inspector';
@@ -22,6 +22,11 @@ export function SavedCasePlayground({
 }) {
   const [cases, setCases] = useState<SavedCaseSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(focusId ?? null);
+  const selectedIdRef = useRef<string | null>(focusId ?? null);
+  const chooseCase = (id: string | null) => {
+    selectedIdRef.current = id;
+    setSelectedId(id);
+  };
   const [source, setSource] = useState<SavedCaseDetail | null>(null);
   const [modelId, setModelId] = useState('');
   const [models, setModels] = useState<ModelManagerSnapshot | null>(null);
@@ -36,7 +41,7 @@ export function SavedCasePlayground({
     if (list) setCases(list);
   };
   useEffect(() => {
-    if (focusId) setSelectedId(focusId);
+    if (focusId) chooseCase(focusId);
   }, [focusId]);
 
   useEffect(() => {
@@ -85,18 +90,24 @@ export function SavedCasePlayground({
 
   const run = async () => {
     if (!source || running || busy || simulationActive || !window.lonelyChat?.runSavedCase) return;
+    const originatingCaseId = source.summary.id;
     setRunning(true);
     setError(null);
     try {
       const outcome = await window.lonelyChat?.runSavedCase({
-        caseId: source.summary.id,
+        caseId: originatingCaseId,
         modelId,
         rawRequestJson: raw,
         frameIndices: indices,
       });
-      setChildren((prev) => [outcome, ...prev]);
+      // The user may inspect another saved case while the native call is in flight.
+      // Persisted children already belong to originatingCaseId; never attribute
+      // their temporary results or counts to whichever case is now displayed.
+      setChildren((prev) =>
+        selectedIdRef.current === originatingCaseId ? [outcome, ...prev] : prev,
+      );
       setSource((prev) =>
-        prev
+        selectedIdRef.current === originatingCaseId && prev?.summary.id === originatingCaseId
           ? {
               ...prev,
               summary: { ...prev.summary, childCount: prev.summary.childCount + 1 },
@@ -106,7 +117,8 @@ export function SavedCasePlayground({
       );
       await refresh();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      if (selectedIdRef.current === originatingCaseId)
+        setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setRunning(false);
     }
@@ -117,7 +129,7 @@ export function SavedCasePlayground({
       const saved = await window.lonelyChat?.importSavedCase?.();
       if (saved) {
         await refresh();
-        setSelectedId(saved.id);
+        chooseCase(saved.id);
       }
     } catch (reason) {
       setError(String(reason));
@@ -150,7 +162,7 @@ export function SavedCasePlayground({
           aria-label="Choose saved case"
           className="min-w-48 rounded border border-border bg-background px-2 py-1.5 text-xs"
           value={selectedId ?? ''}
-          onChange={(event) => setSelectedId(event.target.value || null)}
+          onChange={(event) => chooseCase(event.target.value || null)}
         >
           <option value="">Choose a saved case</option>
           {cases.map((item) => (
@@ -298,35 +310,37 @@ export function SavedCasePlayground({
               ))}
             </div>
           )}
-          {children.map(({ child, result }) => (
-            <div key={child.id} className="space-y-2 border-t border-border pt-3">
-              <h4 className="text-sm font-medium">
-                Child {child.id} · {result.errorStage ?? 'accepted'}
-              </h4>
-              {result.error && (
-                <p role="alert" className="text-xs text-rose-300">
-                  {result.error}
-                </p>
-              )}
-              {result.errorStage && onViewLogs && (
-                <Button variant="link" size="sm" onClick={onViewLogs}>
-                  View failure in Logs
-                </Button>
-              )}
-              <JsonInspector
-                title={`Child ${child.id} submitted request`}
-                value={result.submittedRequest}
-              />
-              <JsonInspector
-                title={`Child ${child.id} native output`}
-                value={result.rawNativeOutput}
-              />
-              <JsonInspector
-                title={`Child ${child.id} accepted events and chat`}
-                value={result.accepted}
-              />
-            </div>
-          ))}
+          {children
+            .filter(({ child }) => child.parentCaseId === selected.id)
+            .map(({ child, result }) => (
+              <div key={child.id} className="space-y-2 border-t border-border pt-3">
+                <h4 className="text-sm font-medium">
+                  Child {child.id} · {result.errorStage ?? 'accepted'}
+                </h4>
+                {result.error && (
+                  <p role="alert" className="text-xs text-rose-300">
+                    {result.error}
+                  </p>
+                )}
+                {result.errorStage && onViewLogs && (
+                  <Button variant="link" size="sm" onClick={onViewLogs}>
+                    View failure in Logs
+                  </Button>
+                )}
+                <JsonInspector
+                  title={`Child ${child.id} submitted request`}
+                  value={result.submittedRequest}
+                />
+                <JsonInspector
+                  title={`Child ${child.id} native output`}
+                  value={result.rawNativeOutput}
+                />
+                <JsonInspector
+                  title={`Child ${child.id} accepted events and chat`}
+                  value={result.accepted}
+                />
+              </div>
+            ))}
         </div>
       )}
       {error && (

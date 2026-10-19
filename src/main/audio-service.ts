@@ -242,7 +242,7 @@ export class AudioService {
       const track = source.recorded;
       if (
         !track ||
-        (track.finished && track.cacheMode !== 'cached') ||
+        (track.finished && track.cacheMode !== 'cached' && track.pending.size === 0) ||
         track.cachedPausedAt !== null
       )
         continue;
@@ -489,6 +489,10 @@ export class AudioService {
     source.lastObservedAt = observedAt;
     this.patch(source, { pendingSegments: source.status.pendingSegments + 1 });
     const track = source.recorded;
+    // An in-flight Whisper request retains its original speech time even if a
+    // later resume shifts the physical origin of recorded playback.
+    const observedMs =
+      track?.cacheMode === 'save' && track.originMs !== null ? observedAt - track.originMs : null;
     const pending = source.worker
       .transcribe(value.samples)
       .then(
@@ -500,9 +504,12 @@ export class AudioService {
             text: text.trim().slice(0, 2000),
             observedAt,
           };
-          if (track?.cacheMode === 'save' && track.originMs !== null) {
-            const observedMs = entry.observedAt - track.originMs;
-            const availableMs = Math.max(observedMs, this.now() - track.originMs);
+          if (track?.cacheMode === 'save' && track.originMs !== null && observedMs !== null) {
+            // A reply completing during pause becomes available at the frozen
+            // media-clock position; after resume, the shifted origin excludes
+            // all paused time. Neither case changes the submitted speech time.
+            const availabilityNow = track.cachedPausedAt ?? this.now();
+            const availableMs = Math.max(observedMs, availabilityNow - track.originMs);
             track.captured.push({ text: entry.text, observedMs, availableMs });
           }
           this.emitTranscript(source, entry);

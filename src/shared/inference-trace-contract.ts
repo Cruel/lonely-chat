@@ -57,7 +57,10 @@ export interface TraceAttempt extends TraceSummary {
     readonly id: string;
     readonly author: string;
     readonly text: string;
+    /** Actual publication time on the physical observation clock. */
     readonly presentedAt: number;
+    /** Inspector-axis time, excluding recorded Run pauses. */
+    readonly timelineAt?: number;
     readonly scheduledIndex: number;
   }[];
   /** True once unsent scheduled messages can no longer be published. */

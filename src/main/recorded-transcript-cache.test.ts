@@ -177,6 +177,77 @@ describe('opt-in recorded transcript caching', () => {
     await cached.terminate();
   });
 
+  it('preserves submitted media timestamps and pause-aware availability for pending Whisper replies', async () => {
+    for (const [resolvesDuringPause, eofBeforePause] of [
+      [true, false],
+      [false, false],
+      [true, true],
+      [false, true],
+    ] as const) {
+      const cache = new RecordedTranscriptCache(temporary());
+      const clock = new FakeClock();
+      const received: Array<{ observedAt: number }> = [];
+      let completeSpeech!: (text: string) => void;
+      const worker = {
+        start: async () => {},
+        stop: () => {},
+        transcribe: vi.fn(
+          () =>
+            new Promise<string>((resolve) => {
+              completeSpeech = resolve;
+            }),
+        ),
+      };
+      const audio = new AudioService(
+        () => worker as unknown as NativeSpeech,
+        (entry) => received.push(entry),
+        clock.wallNow,
+        clock,
+        undefined,
+        cache,
+        () => 'whisper-A',
+      );
+      await audio.startRecorded({
+        id: 'guest',
+        captureId: 'pause-capture',
+        label: 'Guest',
+        sampleRate: 16000,
+        offsetMs: -250,
+        seekMs: 1250,
+        cache: { ...query, mode: 'save' },
+      });
+      const origin = clock.wallNow() - 1000;
+      audio.armRecorded('pause-capture', origin, 1250);
+      for (let n = 0; n < 18; n++) {
+        clock.advance(100);
+        audio.pushRecorded(new Float32Array(1600).fill(n < 9 ? 0.2 : 0), 'pause-capture');
+      }
+      expect(worker.transcribe).toHaveBeenCalled();
+      const mediaAtPause = clock.wallNow() - origin;
+      const draining = eofBeforePause ? audio.finishRecorded('pause-capture') : null;
+      audio.pauseRecorded();
+      clock.advance(10000);
+      if (resolvesDuringPause) {
+        completeSpeech('delayed speech');
+        await flushMicrotasks();
+      }
+      audio.resumeRecorded();
+      if (!resolvesDuringPause) {
+        clock.advance(500);
+        completeSpeech('delayed speech');
+        await flushMicrotasks();
+      }
+      await (draining ?? audio.finishRecorded('pause-capture'));
+      const cached = cache.read(query, 'whisper-A');
+      expect(cached).toHaveLength(1);
+      expect(cached[0].observedMs).toBe(received[0].observedAt - origin);
+      expect(cached[0].observedMs).toBeGreaterThanOrEqual(0);
+      expect(cached[0].observedMs).toBeLessThanOrEqual(mediaAtPause);
+      expect(cached[0].availableMs).toBe(mediaAtPause + (resolvesDuringPause ? 0 : 500));
+      await audio.terminate();
+    }
+  });
+
   it('replays independent labeled sources at their actual availability times and orders the history by observation', async () => {
     const cache = new RecordedTranscriptCache(temporary());
     const laterObserved = { ...query, fingerprint: 'ef'.repeat(32) };
