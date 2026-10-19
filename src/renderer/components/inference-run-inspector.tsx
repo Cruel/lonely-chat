@@ -113,9 +113,11 @@ function FilterSelect({
 export function InferenceRunInspector({
   focus,
   onViewLogs,
+  onOpenCase,
 }: {
   focus?: { attemptId: string; nonce: number } | null;
   onViewLogs?: (attemptId: string) => void;
+  onOpenCase?: (caseId: string) => void;
 }) {
   const [listing, setListing] = useState<TraceList>(EMPTY);
   const [selected, setSelected] = useState<string | null>(focus?.attemptId ?? null);
@@ -123,6 +125,8 @@ export function InferenceRunInspector({
   const [filter, setFilter] = useState<TraceFilter>(DEFAULT_FILTER);
   const [matches, setMatches] = useState<readonly string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState<{ attemptId: string; id: string } | null>(null);
 
   useEffect(() => {
     if (focus?.attemptId) setSelected(focus.attemptId);
@@ -352,6 +356,42 @@ export function InferenceRunInspector({
                     {current.usage.completionTokens ?? '—'}, total{' '}
                     {current.usage.totalTokens ?? '—'}
                   </p>
+                )}
+                {current.mode === 'native' && (
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={saving || !current.request || !current.modelId}
+                      onClick={async () => {
+                        if (!window.lonelyChat?.saveInferenceCase) return;
+                        setSaving(true);
+                        setError(null);
+                        try {
+                          const caseSummary = await window.lonelyChat?.saveInferenceCase(
+                            current.id,
+                          );
+                          setSaved({ attemptId: current.id, id: caseSummary.id });
+                        } catch (failure) {
+                          setError(failure instanceof Error ? failure.message : String(failure));
+                        } finally {
+                          setSaving(false);
+                        }
+                      }}
+                    >
+                      {saving ? 'Saving case…' : 'Save exact inference case'}
+                    </Button>
+                    {saved?.attemptId === current.id && (
+                      <Button
+                        size="sm"
+                        variant="link"
+                        onClick={() => onOpenCase?.(saved.id)}
+                        disabled={!onOpenCase}
+                      >
+                        Open saved case in Playground
+                      </Button>
+                    )}
+                  </div>
                 )}
                 {onViewLogs && (
                   <Button

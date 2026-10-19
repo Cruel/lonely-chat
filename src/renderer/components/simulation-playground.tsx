@@ -12,6 +12,7 @@ import {
 } from '@/components/ui/select';
 import { JsonInspector } from './json-inspector';
 import { PlaygroundMediaPicker } from './playground-media-picker';
+import { SavedCasePlayground } from './saved-case-playground';
 import type { PlaygroundFrame } from '../../shared/playground-media-contract';
 import type {
   SimulationExperimentRequest,
@@ -33,7 +34,9 @@ const defaultRoster: ChatterIdentity[] = [
 export function SimulationPlayground({
   simulationActive,
   onViewLogs,
+  caseFocus,
 }: {
+  readonly caseFocus?: string | null;
   readonly simulationActive: boolean;
   readonly onViewLogs?: (source: 'ipc' | 'playground') => void;
 }) {
@@ -278,6 +281,12 @@ export function SimulationPlayground({
           chat.
         </p>
       </div>
+      <SavedCasePlayground
+        focusId={caseFocus}
+        busy={busy}
+        simulationActive={simulationActive}
+        onViewLogs={onViewLogs ? () => onViewLogs('playground') : undefined}
+      />
       <div className="space-y-4 rounded-xl border border-border bg-card p-5">
         <Label htmlFor="simulation-preset">Named prompt preset</Label>
         <Select

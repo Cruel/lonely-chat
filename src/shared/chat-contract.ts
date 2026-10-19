@@ -41,6 +41,12 @@ import type {
 import type { DiagnosticStatus, PrivateWorkerLine } from './diagnostic-contract';
 import type { LogEntry, LogRetention, LogSnapshot } from './log-contract';
 import type { TraceAttempt, TraceFilter, TraceList } from './inference-trace-contract';
+import type {
+  SavedCaseDetail,
+  SavedCaseFork,
+  SavedCaseForkResult,
+  SavedCaseSummary,
+} from './saved-case-contract';
 import type { RendererFailure } from './renderer-log-contract';
 import type {
   FreeformRequest,
@@ -97,6 +103,12 @@ export interface DesktopInvocations {
   'trace:list': TraceList;
   'trace:get': TraceAttempt | null;
   'trace:search': readonly string[];
+  'case:list': SavedCaseSummary[];
+  'case:get': SavedCaseDetail;
+  'case:save': SavedCaseSummary;
+  'case:run': SavedCaseForkResult;
+  'case:export': boolean;
+  'case:import': SavedCaseSummary | null;
   'session:snapshot': SessionSnapshot;
   'session:start': SessionSnapshot;
   'session:stop': SessionSnapshot;
@@ -174,6 +186,12 @@ export interface DesktopArguments {
   'trace:list': [];
   'trace:get': [id: string];
   'trace:search': [filter: TraceFilter];
+  'case:list': [];
+  'case:get': [id: string];
+  'case:save': [attemptId: string];
+  'case:run': [fork: SavedCaseFork];
+  'case:export': [id: string];
+  'case:import': [];
   'session:snapshot': [];
   'session:start': [manualContext: string, mode?: InferenceMode, options?: SimulationInputOptions];
   'session:stop': [];
@@ -264,6 +282,12 @@ export interface DesktopAPI {
   listInferenceTraces(): Promise<TraceList>;
   getInferenceTrace(id: string): Promise<TraceAttempt | null>;
   searchInferenceTraces?(filter: TraceFilter): Promise<readonly string[]>;
+  listSavedCases?(): Promise<SavedCaseSummary[]>;
+  getSavedCase?(id: string): Promise<SavedCaseDetail>;
+  saveInferenceCase?(attemptId: string): Promise<SavedCaseSummary>;
+  runSavedCase?(fork: SavedCaseFork): Promise<SavedCaseForkResult>;
+  exportSavedCase?(id: string): Promise<boolean>;
+  importSavedCase?(): Promise<SavedCaseSummary | null>;
   onInferenceTraces(listener: (snapshot: TraceList) => void): () => void;
   getSessionSnapshot(): Promise<SessionSnapshot>;
   onSessionChange(listener: (status: SessionSnapshot) => void): () => void;

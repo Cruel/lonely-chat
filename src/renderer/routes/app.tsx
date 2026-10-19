@@ -137,6 +137,7 @@ export function DesktopPage() {
     setLogFocus({ attemptId, nonce: Date.now() });
     setSection('logs');
   };
+  const [caseFocus, setCaseFocus] = useState<string | null>(null);
   const [playgroundTab, setPlaygroundTab] = useState<'freeform' | 'simulation' | 'speech'>(
     'freeform',
   );
@@ -391,6 +392,7 @@ export function DesktopPage() {
             </div>
             {playgroundTab === 'simulation' && (
               <SimulationPlayground
+                caseFocus={caseFocus}
                 simulationActive={running || session.busy || audience.busy}
                 onViewLogs={(source) => openLogs(source)}
               />
@@ -1002,7 +1004,15 @@ export function DesktopPage() {
                 title="Run Inspector"
                 description="Inspect each production Simulation inference attempt, including retries, raw model responses and scheduled chat."
               />
-              <InferenceRunInspector focus={inspectorFocus} onViewLogs={openAttemptLogs} />
+              <InferenceRunInspector
+                focus={inspectorFocus}
+                onViewLogs={openAttemptLogs}
+                onOpenCase={(id) => {
+                  setCaseFocus(id);
+                  setPlaygroundTab('simulation');
+                  setSection('playground');
+                }}
+              />
             </section>
           )}
 

@@ -16,6 +16,9 @@ import {
   validateSimulationExperiment,
 } from './simulation-experiment';
 import type { InferenceInput } from './fake-inference';
+import type { SavedCaseFork, SavedCaseForkResult } from '../shared/saved-case-contract';
+import type { SavedInferenceCases } from './saved-inference-cases';
+import type { PlaygroundFrame } from '../shared/playground-media-contract';
 import { DEFAULT_PREFERENCES, type SessionPreferences } from '../shared/session-contract';
 import { PrivateInferenceError } from './private-inference-error';
 
@@ -185,81 +188,112 @@ export class PlaygroundService {
       request.rawRequestJson === undefined
         ? constructedRequest
         : validateRawSimulationRequest(request.rawRequestJson, request.frames);
-    return this.execute(
+    return this.executeSimulation(
       request.modelId,
-      Boolean(request.frames?.length),
-      async (provider, signal) => {
-        const startedAt = new Date().toISOString();
-        const start = performance.now();
-        const result: SimulationExperimentResult = {
-          modelId: request.modelId,
-          ...(request.frames?.length ? { submittedFrames: request.frames } : {}),
-          startedAt,
-          durationMs: 0,
-          constructedRequest,
-          submittedRequest,
-          rawNativeOutput: null,
-          normalizedResult: null,
-          accepted: null,
-          errorStage: null,
-          error: null,
-          usage: null,
-        };
-        const finish = (updates: Partial<SimulationExperimentResult>) => ({
-          ...result,
-          ...updates,
-          durationMs: Math.round(performance.now() - start),
-        });
-        let rawNativeOutput: unknown;
-        try {
-          if (!provider.completeSimulationRequest)
-            throw new Error('Selected provider does not support structured Simulation requests.');
-          rawNativeOutput = await provider.completeSimulationRequest(
-            cycleInput,
-            submittedRequest,
-            signal,
-          );
-        } catch (error) {
-          return finish({
-            errorStage: 'transport',
-            error: errorMessage(error),
-            rawNativeOutput: boundedTransportDetails(error),
-          });
-        }
-        const usage = nativeUsage(rawNativeOutput);
-        let normalizedResult: unknown;
-        try {
-          normalizedResult = extractNativeChat(rawNativeOutput, cycleInput.roster);
-        } catch (error) {
-          return finish({
-            rawNativeOutput,
-            usage,
-            errorStage: 'normalization',
-            error: errorMessage(error),
-          });
-        }
-        try {
-          const { accepted } = validateSimulationCycle(cycleInput, normalizedResult);
-          // Production native chat clips accepted offsets to the playback window.
-          const scheduled = {
-            ...accepted,
-            messages: accepted.messages.map((message) => ({
-              ...message,
-              offsetMs: Math.min(message.offsetMs, request.values.playbackWindowMs),
-            })),
-          };
-          return finish({ rawNativeOutput, normalizedResult, accepted: scheduled, usage });
-        } catch (error) {
-          return finish({
-            rawNativeOutput,
-            normalizedResult,
-            usage,
-            errorStage: 'validation',
-            error: errorMessage(error),
-          });
-        }
-      },
+      cycleInput,
+      constructedRequest,
+      submittedRequest,
+      request.frames ?? [],
+      request.values.playbackWindowMs,
     );
+  }
+
+  /** Fork runs use the original captured input and request, never today's prompt builder. */
+  async runSavedCase(
+    input: SavedCaseFork,
+    cases: SavedInferenceCases,
+  ): Promise<SavedCaseForkResult> {
+    const prepared = await cases.prepareFork(input);
+    const result = await this.executeSimulation(
+      prepared.modelId,
+      prepared.input,
+      prepared.submitted,
+      prepared.submitted,
+      prepared.frames,
+      prepared.input.playbackWindowMs ?? 3000,
+    );
+    return { result, child: await cases.saveChild(input.caseId, result) };
+  }
+
+  private executeSimulation(
+    modelId: string,
+    cycleInput: InferenceInput,
+    constructedRequest: unknown,
+    submittedRequest: unknown,
+    frames: readonly PlaygroundFrame[],
+    playbackWindowMs: number,
+  ): Promise<SimulationExperimentResult> {
+    return this.execute(modelId, frames.length > 0, async (provider, signal) => {
+      const startedAt = new Date().toISOString();
+      const start = performance.now();
+      const result: SimulationExperimentResult = {
+        modelId,
+        ...(frames.length ? { submittedFrames: frames } : {}),
+        startedAt,
+        durationMs: 0,
+        constructedRequest,
+        submittedRequest,
+        rawNativeOutput: null,
+        normalizedResult: null,
+        accepted: null,
+        errorStage: null,
+        error: null,
+        usage: null,
+      };
+      const finish = (updates: Partial<SimulationExperimentResult>) => ({
+        ...result,
+        ...updates,
+        durationMs: Math.round(performance.now() - start),
+      });
+      let rawNativeOutput: unknown;
+      try {
+        if (!provider.completeSimulationRequest)
+          throw new Error('Selected provider does not support structured Simulation requests.');
+        rawNativeOutput = await provider.completeSimulationRequest(
+          cycleInput,
+          submittedRequest,
+          signal,
+        );
+      } catch (error) {
+        return finish({
+          errorStage: 'transport',
+          error: errorMessage(error),
+          rawNativeOutput: boundedTransportDetails(error),
+        });
+      }
+      const usage = nativeUsage(rawNativeOutput);
+      let normalizedResult: unknown;
+      try {
+        normalizedResult = extractNativeChat(rawNativeOutput, cycleInput.roster);
+      } catch (error) {
+        return finish({
+          rawNativeOutput,
+          usage,
+          errorStage: 'normalization',
+          error: errorMessage(error),
+        });
+      }
+      try {
+        const { accepted } = validateSimulationCycle(cycleInput, normalizedResult);
+        // Production native chat clips accepted offsets to the playback window.
+        const scheduled = {
+          ...accepted,
+          messages: accepted.messages.map((message) => ({
+            ...message,
+            offsetMs: Math.min(message.offsetMs, playbackWindowMs),
+          })),
+        };
+        return finish({ rawNativeOutput, normalizedResult, accepted: scheduled, usage });
+      } catch (error) {
+        return finish({
+          rawNativeOutput,
+          normalizedResult,
+          usage,
+          errorStage: 'validation',
+          error: errorMessage(error),
+        });
+      }
+    });
   }
 
   async stop(): Promise<void> {

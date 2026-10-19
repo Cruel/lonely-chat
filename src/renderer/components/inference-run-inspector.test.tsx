@@ -75,6 +75,53 @@ it('fetches private attempt data only after selection and distinguishes each exe
   expect(get).toHaveBeenCalledWith('attempt-7');
 });
 
+it('saves a selected native attempt only on explicit action and navigates to its immutable case', async () => {
+  const item: TraceList['attempts'][number] = {
+    id: 'attempt-18',
+    runId: 5,
+    cycle: 2,
+    attempt: 1,
+    seed: 9,
+    rosterSeed: 10,
+    mode: 'native',
+    modelId: 'installed-model',
+    startedAt: 1700000000000,
+    durationMs: 30,
+    stage: 'failed',
+    errorStage: 'validation',
+    error: 'Invalid JSON',
+    usage: null,
+  };
+  const save = vi.fn(async () => ({ id: 'case-123', attemptId: 'attempt-18' }));
+  const open = vi.fn();
+  window.lonelyChat = {
+    listInferenceTraces: async () => ({ attempts: [item], dropped: 0, bytes: 10 }),
+    onInferenceTraces: () => () => {},
+    getInferenceTrace: async () => ({
+      ...item,
+      input: { frames: [] },
+      request: { seed: 9 },
+      settings: {},
+      adaptation: {},
+      promptPreset: null,
+      rawResponse: {},
+      normalized: null,
+      parsed: null,
+      accepted: null,
+      scheduled: null,
+      transportError: null,
+    }),
+    saveInferenceCase: save,
+  } as unknown as typeof window.lonelyChat;
+  render(<InferenceRunInspector onOpenCase={open} />);
+  expect(save).not.toHaveBeenCalled();
+  fireEvent.click(await screen.findByRole('button', { name: /Run 5 · cycle 2/ }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Save exact inference case' }));
+  await waitFor(() => expect(save).toHaveBeenCalledWith('attempt-18'));
+  fireEvent.click(await screen.findByRole('button', { name: 'Open saved case in Playground' }));
+  expect(open).toHaveBeenCalledWith('case-123');
+});
+
 it('shows exact selected frame evidence, pending versus published chat, and cross-links Logs', async () => {
   const image = 'data:image/jpeg;base64,/9j/2Q==';
   const list: TraceList = {

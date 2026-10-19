@@ -1,5 +1,6 @@
 import path from 'node:path';
-import { writeFile } from 'node:fs/promises';
+import { readFile, stat, writeFile } from 'node:fs/promises';
+import { SavedInferenceCases } from './saved-inference-cases';
 import { DiagnosticCapture } from './diagnostic-capture';
 import { OperationalLogger } from './operational-logger';
 import { serializeOperationalLogs } from './operational-log-export';
@@ -123,6 +124,7 @@ const preferenceStore = new PreferencesStore(app.getPath('userData'));
 const promptPresets = new PromptPresetStore(app.getPath('userData'));
 const audioConfig = new AudioConfigStore(app.getPath('userData'));
 const transcriptCache = new RecordedTranscriptCache(app.getPath('userData'));
+const savedCases = new SavedInferenceCases(app.getPath('userData'));
 const windowStore = new WindowPreferencesStore(app.getPath('userData'));
 let windowPrefs: WindowPreferences = DEFAULT_WINDOW_PREFERENCES;
 let pendingWindowSave: ReturnType<typeof setTimeout> | null = null;
@@ -353,6 +355,42 @@ function registerHandlers(): void {
       return windowStatus();
     },
     'trace:list': () => session.trace.list(),
+    'case:list': () => savedCases.list(),
+    'case:get': (id: string) => savedCases.get(id),
+    'case:save': (id: string) => {
+      if (typeof id !== 'string' || !/^attempt-\d{1,12}$/.test(id))
+        throw new Error('Invalid inference attempt ID.');
+      const attempt = session.trace.get(id);
+      if (!attempt) throw new Error('Inference attempt is no longer available in memory.');
+      return savedCases.save(attempt);
+    },
+    'case:run': (fork: import('../shared/saved-case-contract').SavedCaseFork) =>
+      playground.runSavedCase(fork, savedCases),
+    'case:export': async (id: string) => {
+      if (!mainWindow) throw new Error('Desktop window is unavailable.');
+      const contents = await savedCases.exportPortable(id);
+      const selection = await dialog.showSaveDialog(mainWindow, {
+        title: 'Export exact inference case (includes private prompts and images)',
+        defaultPath: 'lonely-chat-case.json',
+        filters: [{ name: 'Exact inference case', extensions: ['json'] }],
+      });
+      if (selection.canceled || !selection.filePath) return false;
+      await writeFile(selection.filePath, contents, { mode: 0o600 });
+      return true;
+    },
+    'case:import': async () => {
+      if (!mainWindow) throw new Error('Desktop window is unavailable.');
+      const choice = await dialog.showOpenDialog(mainWindow, {
+        title: 'Import exact inference case',
+        properties: ['openFile'],
+        filters: [{ name: 'Exact inference case', extensions: ['json'] }],
+      });
+      if (choice.canceled || !choice.filePaths[0]) return null;
+      const selected = choice.filePaths[0];
+      if ((await stat(selected)).size > 18 * 1024 * 1024)
+        throw new Error('Inference case archive exceeds the import size limit.');
+      return savedCases.importPortable(await readFile(selected, 'utf8'));
+    },
     'trace:search': (filter: import('../shared/inference-trace-contract').TraceFilter) =>
       session.trace.search(filter),
     'trace:get': (id: string) => {
@@ -1059,6 +1097,15 @@ app.on('will-quit', () => {
   ipcMain.removeHandler('trace:list');
   ipcMain.removeHandler('trace:get');
   ipcMain.removeHandler('trace:search');
+  for (const channel of [
+    'case:list',
+    'case:get',
+    'case:save',
+    'case:run',
+    'case:import',
+    'case:export',
+  ])
+    ipcMain.removeHandler(channel);
   ipcMain.removeHandler('session:snapshot');
   ipcMain.removeHandler('session:start');
   ipcMain.removeHandler('session:stop');

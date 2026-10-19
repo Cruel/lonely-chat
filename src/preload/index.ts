@@ -94,6 +94,12 @@ const api: DesktopAPI = {
   listInferenceTraces: () => invoke('trace:list'),
   getInferenceTrace: (id) => invoke('trace:get', id),
   searchInferenceTraces: (filter) => invoke('trace:search', filter),
+  listSavedCases: () => invoke('case:list'),
+  getSavedCase: (id) => invoke('case:get', id),
+  saveInferenceCase: (id) => invoke('case:save', id),
+  runSavedCase: (fork) => invoke('case:run', fork),
+  exportSavedCase: (id) => invoke('case:export', id),
+  importSavedCase: () => invoke('case:import'),
   onInferenceTraces: (listener) => {
     const receive = (
       _event: Electron.IpcRendererEvent,
