@@ -17,6 +17,31 @@ export function installElectronSmoke(
   },
 ): void {
   const { chat, session, overlay, floating, lifecycle } = services;
+  // Require the privileged desktop API seams needed by certification, not an
+  // exact key count: new validated IPC capabilities must not break this smoke.
+  const requiredApi = [
+    'getChatSnapshot',
+    'publishSample',
+    'getOperationalLogs',
+    'getPlaygroundStatus',
+    'runFreeform',
+    'runSimulationExperiment',
+    'startSession',
+    'stopSession',
+    'listInferenceTraces',
+    'getInferenceTrace',
+    'getCompactRecording',
+    'listSavedCases',
+    'importSavedCase',
+    'exportSavedCase',
+    'listRecordedScenarios',
+    'listRecordedRuns',
+    'importRecordedRun',
+    'getOverlayUrl',
+    'openFloatingChat',
+    'closeFloatingChat',
+    'setCloseToTray',
+  ];
   window.webContents.once('did-finish-load', () => {
     void run().catch((error: unknown) => {
       console.error('FAIL: Electron smoke', error);
@@ -64,8 +89,7 @@ export function installElectronSmoke(
       !result.previewReady ||
       !result.playgroundReady ||
       result.session.phase !== 'running' ||
-      result.apiKeys.join(',') !==
-        'activateModel,audioDisconnected,cancelModelDownload,chooseModelDirectory,closeFloatingChat,configureDiagnosticCapture,configureFloatingChat,configureOperationalLogs,configureOverlayPort,deletePromptPreset,discoverModels,exportDiagnosticCapture,getAudience,getAudioCapabilities,getAudioConfiguration,getAudioStatus,getChatSnapshot,getDiagnosticCapture,getFloatingChat,getModelsSnapshot,getNativeStatus,getOperationalLogs,getOverlayStatus,getOverlayUrl,getPlaygroundStatus,getPreferences,getSessionSnapshot,getWindowStatus,installModel,listDisplaySources,listPromptPresetRevisions,listPromptPresets,onAudienceChange,onAudioChange,onChatEvent,onFloatingChatChange,onMediaStop,onModelsChange,onNativeChange,onOperationalLog,onOverlayChange,onPlaygroundStatus,onSessionChange,openFloatingChat,publishSample,regenerateAudience,removeAudioInput,removeModel,retryAudio,retrySession,runFreeform,savePromptPreset,selectVideoSource,setAudioConfiguration,setAudioLabel,setCloseToTray,setPreferences,startAudio,startSession,stopAudio,stopSession,submitAudioSegment,submitVideoFrame'
+      !requiredApi.every((method) => result.apiKeys.includes(method))
     ) {
       throw new Error(`Electron smoke failed: ${JSON.stringify(result)}`);
     }

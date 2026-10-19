@@ -29,8 +29,9 @@ const environment = {
 console.log(execFileSync(binary, ['--version'], { env: environment, encoding: 'utf8' }).trim());
 const model = process.env.LONELY_CHAT_CPU_SMOKE_MODEL;
 if (!model) {
+  console.log('PASS: pinned native llama.cpp executable and linked libraries load');
   console.log(
-    'PASS: pinned native executable and its shared libraries load. Set LONELY_CHAT_CPU_SMOKE_MODEL to test inference.',
+    'SKIP: actual CPU freeform and structured inference (provide LONELY_CHAT_CPU_SMOKE_MODEL to exercise both)',
   );
   process.exit(0);
 }
@@ -87,6 +88,27 @@ try {
     await delay(200);
   }
   if (!ready) throw new Error(`llama.cpp failed to load the CPU test model: ${logs}`);
+  const freeform = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${secret}` },
+    body: JSON.stringify({
+      messages: [{ role: 'user', content: 'Reply with a short greeting.' }],
+      stream: false,
+      seed: 17,
+      max_tokens: 64,
+      temperature: 0,
+    }),
+    signal: AbortSignal.timeout(120000),
+  });
+  const freeformResult = await freeform.json();
+  if (!freeform.ok)
+    throw new Error(
+      `llama.cpp freeform HTTP ${freeform.status}: ${JSON.stringify(freeformResult).slice(0, 700)}`,
+    );
+  const content = freeformResult.choices?.[0]?.message?.content;
+  if (typeof content !== 'string' || !content.trim())
+    throw new Error('Real CPU GGUF returned empty or invalid freeform completion.');
+  console.log('PASS: real CPU GGUF freeform inference returned text');
   const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${secret}` },

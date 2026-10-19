@@ -426,6 +426,7 @@ export const RecordedVideoInput = forwardRef<
       {url && (
         <video
           ref={video}
+          crossOrigin="anonymous"
           src={url}
           className="mt-3 max-h-60 w-full rounded-md bg-black object-contain"
           preload="auto"

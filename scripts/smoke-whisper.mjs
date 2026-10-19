@@ -92,6 +92,9 @@ try {
       throw new Error(`Expected a missing-model IPC error, got ${init.kind}: ${init.text}`);
     }
     console.log('PASS: pinned native whisper.cpp framed IPC and missing-model error');
+    console.log(
+      'SKIP: real CPU PCM transcription (provide LONELY_CHAT_CPU_SMOKE_SPEECH_MODEL to exercise it)',
+    );
   } else {
     if (init.kind !== 0x81) {
       throw new Error(`Native speech model failed to load: ${init.text}`);

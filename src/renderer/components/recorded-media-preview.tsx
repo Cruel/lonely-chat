@@ -241,6 +241,7 @@ export function RecordedMediaPreview({
       </p>
       {video && (
         <video
+          crossOrigin="anonymous"
           ref={registerVideo}
           aria-label="Preview video"
           src={video.url}
@@ -256,6 +257,7 @@ export function RecordedMediaPreview({
         return (
           <div key={track.id} className="mt-3 rounded-md border border-border p-3">
             <audio
+              crossOrigin="anonymous"
               aria-label={`Preview audio: ${track.label}`}
               ref={audioRefFor(track.id)}
               src={track.url}

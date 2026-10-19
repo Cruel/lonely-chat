@@ -29,6 +29,7 @@
     "package:mac": "node scripts/verify-release-version.mjs && node scripts/stage-llama.mjs darwin-arm64 --accelerators && node scripts/stage-whisper.mjs darwin-arm64 && pnpm build && electron-builder --mac --arm64 --publish never",
     "smoke:electron": "pnpm build && node scripts/smoke-electron.mjs",
     "certify:package": "node scripts/certify-package.mjs",
+    "certify:e2e": "node scripts/certify-e2e.mjs",
     "format": "vp fmt src scripts vite.config.ts --write",
     "format:check": "vp fmt src scripts vite.config.ts --check",
     "lint": "vp lint src scripts vite.config.ts"

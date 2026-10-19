@@ -37,6 +37,14 @@ jobs:
       - run: xvfb-run -a pnpm certify:package
         env:
           LONELY_CHAT_REQUIRE_ACCELERATORS: '1'
+      - name: Retain packaged end-to-end result
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: certification-report-linux-x64
+          path: out/certification-linux-x64.json
+          if-no-files-found: warn
+          retention-days: 14
       - name: Smoke the distributed AppImage
         shell: bash
         run: |
@@ -97,6 +105,14 @@ jobs:
       - run: pnpm certify:package
         env:
           LONELY_CHAT_REQUIRE_ACCELERATORS: '1'
+      - name: Retain packaged end-to-end result
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: certification-report-${{ matrix.artifact }}
+          path: out/certification-*.json
+          if-no-files-found: warn
+          retention-days: 14
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: lonely-chat-${{ matrix.artifact }}

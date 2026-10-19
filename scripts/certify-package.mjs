@@ -61,4 +61,5 @@ function run(args) {
 run(['scripts/smoke-llama.mjs', resources]);
 run(['scripts/smoke-whisper.mjs', resources]);
 run(['scripts/smoke-electron.mjs', '--packaged']);
-console.log(`PASS: ${target} self-contained unpacked package certification`);
+run(['scripts/certify-e2e.mjs']);
+console.log(`PASS: ${target} self-contained packaged workflow certification`);

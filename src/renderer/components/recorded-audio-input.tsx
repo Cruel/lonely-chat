@@ -294,7 +294,9 @@ export const RecordedAudioInput = forwardRef<
               await context.close();
               return;
             }
-            const audio = new Audio(track.url);
+            const audio = new Audio();
+            audio.crossOrigin = 'anonymous';
+            audio.src = track.url;
             audio.preload = 'auto';
             audio.playbackRate = 1;
             if (track.kind === 'video') {
@@ -1014,6 +1016,7 @@ export const RecordedAudioInput = forwardRef<
           <div key={track.id} className="rounded-md border border-border p-3">
             {track.url && (
               <audio
+                crossOrigin="anonymous"
                 preload="auto"
                 src={track.url}
                 className="hidden"

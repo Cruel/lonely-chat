@@ -21,6 +21,11 @@ import { PromptPresetStore } from './prompt-preset-store';
 import { SpeechPlaygroundService } from './speech-playground-service';
 import { SpeechSegmentCapture } from './speech-segment-capture';
 import { installElectronSmoke } from './electron-smoke';
+import { installPackagedE2E } from './packaged-e2e';
+import {
+  certificationPlaygroundProvider,
+  CertificationSpeechWorker,
+} from './certification-workers';
 import { observationNow } from '../shared/observation-clock';
 import { pathToFileURL } from 'node:url';
 import {
@@ -89,6 +94,20 @@ protocol.registerSchemesAsPrivileged([
 const rendererDirectory = path.join(__dirname, '../renderer');
 const preloadPath = path.join(__dirname, '../preload/preload.cjs');
 const devOrigin = process.env.LONELY_CHAT_RENDERER_URL;
+const packageE2E = process.env.LONELY_CHAT_CERTIFY_E2E === '1';
+if (packageE2E) {
+  const profile = process.env.LONELY_CHAT_CERT_PROFILE;
+  if (
+    !app.isPackaged ||
+    !profile ||
+    !path.isAbsolute(profile) ||
+    !process.env.LONELY_CHAT_CERT_MEDIA_DIR
+  )
+    throw new Error(
+      'Package certification requires an isolated profile, media fixtures and a packaged executable.',
+    );
+  app.setPath('userData', profile);
+}
 // Initialized before services and before app.whenReady(), to retain early boot errors.
 const logger = new OperationalLogger(app.getPath('userData'));
 logger.info('application', 'Lonely Chat process starting');
@@ -1088,7 +1107,16 @@ function openMainWindow(): void {
     const expected = devOrigin ?? pathToFileURL(path.join(rendererDirectory, 'index.html')).href;
     if (url !== expected && url !== `${expected}/`) event.preventDefault();
   });
-  if (process.env.LONELY_CHAT_SMOKE === '1') {
+  if (packageE2E) {
+    installPackagedE2E(window, {
+      chat,
+      session,
+      compact: compactRecorder,
+      cases: savedCases,
+      scenarios: recordedScenarios,
+      logger,
+    });
+  } else if (process.env.LONELY_CHAT_SMOKE === '1') {
     installElectronSmoke(window, { chat, session, overlay, floating, lifecycle });
   }
   if (devOrigin) void window.loadURL(devOrigin);
@@ -1169,6 +1197,7 @@ async function boot(): Promise<void> {
       ['stopped', 'error'].includes(session.snapshot().phase) &&
       installs.snapshot().progress.phase === 'idle',
     (id, needsVision) => {
+      if (packageE2E) return certificationPlaygroundProvider();
       // Playground workers own a fresh immutable snapshot, never the previous Run's settings.
       const playgroundSettings = nativeWorkerSettings(session, 'playground');
       return buildNative(async () => {
@@ -1242,14 +1271,20 @@ async function boot(): Promise<void> {
   await compactRecorder.loadLimits();
   audio = new AudioService(
     () =>
-      new NativeSpeech({
-        executable: bundledWhisperWorker(app.getAppPath(), app.isPackaged, process.resourcesPath),
-        resolveModel: () => installs.activeSpeechFile(),
-        reportError,
-        log: logger,
-        privateWorkerLine: (worker, stream, line) =>
-          diagnostics.recordWorkerLine(worker, stream, line),
-      }),
+      packageE2E
+        ? (new CertificationSpeechWorker() as unknown as NativeSpeech)
+        : new NativeSpeech({
+            executable: bundledWhisperWorker(
+              app.getAppPath(),
+              app.isPackaged,
+              process.resourcesPath,
+            ),
+            resolveModel: () => installs.activeSpeechFile(),
+            reportError,
+            log: logger,
+            privateWorkerLine: (worker, stream, line) =>
+              diagnostics.recordWorkerLine(worker, stream, line),
+          }),
     (entry) => sessionMedia?.recordTranscript(entry),
     undefined,
     undefined,
