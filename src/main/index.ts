@@ -340,7 +340,14 @@ function registerHandlers(): void {
     'compact:configure': (
       enabled: boolean,
       mode?: import('../shared/compact-recording-contract').InferenceRecordingMode,
-    ) => compactRecorder.configure(enabled, mode),
+    ) =>
+      compactRecorder.configure(
+        enabled,
+        mode,
+        !!session && !['stopped', 'completed', 'error'].includes(session.snapshot().phase),
+      ),
+    'compact:limits': (limits: import('../shared/compact-recording-contract').RecordingLimits) =>
+      compactRecorder.setLimits(limits),
     'compact:save-case': async (id: string, recordingId: string) =>
       savedCases.save(await compactRecorder.restoreExactAttempt(id, recordingId)),
     'compact:list': () => compactRecorder.list(),
@@ -1105,6 +1112,7 @@ async function boot(): Promise<void> {
     reportError,
   );
   session.trace.attachRecorder(compactRecorder);
+  await compactRecorder.loadLimits();
   audio = new AudioService(
     () =>
       new NativeSpeech({
@@ -1308,6 +1316,7 @@ app.on('will-quit', () => {
   for (const channel of [
     'compact:get',
     'compact:configure',
+    'compact:limits',
     'compact:list',
     'compact:reconstruct',
     'compact:save-case',

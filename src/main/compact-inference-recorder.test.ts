@@ -107,7 +107,7 @@ describe('opt-in compact inference evidence', () => {
         ),
       ),
     ).toEqual(Buffer.from('/9j/2Q==', 'base64'));
-    expect(recorder.status()).toMatchObject({ attempts: 2, chunks: 3 });
+    expect(recorder.status()).toMatchObject({ attempts: 2, chunks: 5 });
     const summaries = await recorder.list();
     expect(summaries.map((item) => [item.id, item.seed, item.stage])).toEqual([
       [first, 43, 'scheduled'],
@@ -163,10 +163,12 @@ describe('opt-in compact inference evidence', () => {
 
     const dir = path.join(root, 'compact-inference', recorder.status().recordingId!);
     const index = (await readFile(path.join(dir, 'index.jsonl'), 'utf8')).trim().split('\n');
-    const first = JSON.parse(index[0]) as { chunk: string };
+    const first = index
+      .map((row) => JSON.parse(row) as { type: string; chunk: string })
+      .find((row) => row.type === 'attempt')!;
     await unlink(path.join(dir, 'chunks', first.chunk));
     await expect(recorder.reconstruct(newer, recorder.status().recordingId!)).rejects.toThrow(
-      /ENOENT/,
+      /missing selected frame/,
     );
   });
 
@@ -287,9 +289,13 @@ describe('opt-in compact inference evidence', () => {
     });
     expect(rerun.submitted).toEqual(nativeRequest);
     const chunks = (await readdir(path.join(dir, 'chunks'))).sort();
-    const archive = gunzipSync(await readFile(path.join(dir, 'chunks', chunks[0]))).toString(
-      'utf8',
-    );
+    const archive = (
+      await Promise.all(
+        chunks.map(async (chunk) =>
+          gunzipSync(await readFile(path.join(dir, 'chunks', chunk))).toString('utf8'),
+        ),
+      )
+    ).join('\n');
     expect(archive).not.toContain(jpeg);
     expect(archive).toContain('Original prompt');
   });
@@ -342,6 +348,141 @@ describe('opt-in compact inference evidence', () => {
     await expect(recorder.reconstruct(captured, recordingId)).rejects.toThrow(
       /integrity|checksum/i,
     );
+  });
+
+  it('begins a partial recording with the next complete attempt and finalizes in-flight attempts after stop', async () => {
+    const { root, recorder, trace } = await fixture();
+    const beforeEnabled = start(trace);
+    await recorder.configure(true, 'compact', true);
+    const captured = start(trace, 2);
+    await recorder.configure(false);
+    expect(recorder.status()).toMatchObject({ enabled: false, partial: true, finalizing: 1 });
+    const excluded = start(trace, 3);
+    trace.update(beforeEnabled, { stage: 'scheduled' });
+    trace.update(excluded, { stage: 'scheduled' });
+    trace.update(captured, { stage: 'failed', errorStage: 'transport', error: 'worker failed' });
+    await recorder.flush();
+    const recordingId = recorder.status().recordingId!;
+    expect(
+      await readFile(path.join(root, 'compact-inference', recordingId, 'complete.json'), 'utf8'),
+    ).toContain('finalizedAt');
+    const reopened = new CompactInferenceRecorder(root);
+    expect(await reopened.list()).toMatchObject([
+      {
+        id: captured,
+        stage: 'failed',
+        archiveStatus: 'complete',
+        partial: true,
+      },
+    ]);
+  });
+
+  it('labels interrupted attempts and recovers complete orphan chunks behind a torn index', async () => {
+    const { root, recorder, trace } = await fixture();
+    await recorder.configure(true);
+    const interrupted = start(trace);
+    await recorder.flush(); // Durable checkpoint without a completed response.
+    const recordingId = recorder.status().recordingId!;
+    const dir = path.join(root, 'compact-inference', recordingId);
+    const reopened = new CompactInferenceRecorder(root);
+    expect(await reopened.list()).toMatchObject([
+      {
+        id: interrupted,
+        stage: 'interrupted',
+        interrupted: true,
+        archiveStatus: 'incomplete',
+      },
+    ]);
+    expect((await reopened.reconstruct(interrupted, recordingId))?.warning).toMatch(/interrupted/i);
+
+    trace.update(interrupted, { stage: 'failed', error: 'transport died' });
+    await recorder.flush();
+    const lines = (await readFile(path.join(dir, 'index.jsonl'), 'utf8')).trim().split('\n');
+    const onlyCheckpoint = lines.find((line) => JSON.parse(line).type === 'attempt-start')!;
+    await import('node:fs/promises').then(({ writeFile }) =>
+      writeFile(path.join(dir, 'index.jsonl'), onlyCheckpoint + '\n{"truncated":\n'),
+    );
+    const recovered = new CompactInferenceRecorder(root);
+    expect(await recovered.list()).toMatchObject([
+      {
+        id: interrupted,
+        stage: 'failed',
+        archiveStatus: 'incomplete',
+      },
+    ]);
+    expect((await recovered.reconstruct(interrupted, recordingId))?.input).toMatchObject({
+      context: 'gameplay',
+    });
+  });
+
+  it('isolates corrupt chunks so an unrelated complete attempt remains readable', async () => {
+    const { root, recorder, trace } = await fixture();
+    await recorder.configure(true);
+    const first = start(trace);
+    trace.update(first, { stage: 'scheduled' });
+    const second = start(trace, 2, {
+      frames: [{ sourceId: 'screen', observedAt: 1100, width: 1, height: 1, dataUrl: jpeg }],
+      captureSelection: {
+        observations: [20],
+        transcripts: [21],
+        events: ['event-20', 'event-21'],
+        chat: ['chat-20'],
+        frames: ['frame-20'],
+      },
+    });
+    trace.update(second, { stage: 'scheduled' });
+    await recorder.flush();
+    const recordingId = recorder.status().recordingId!;
+    const dir = path.join(root, 'compact-inference', recordingId);
+    const index = (await readFile(path.join(dir, 'index.jsonl'), 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { type: string; chunk: string });
+    const firstFile = path.join(
+      dir,
+      'chunks',
+      index.find((item) => item.type === 'attempt')!.chunk,
+    );
+    await import('node:fs/promises').then(({ writeFile }) => writeFile(firstFile, 'broken gzip'));
+    const reopened = new CompactInferenceRecorder(root);
+    expect(await reopened.list()).toHaveLength(2);
+    await expect(reopened.reconstruct(first, recordingId)).rejects.toThrow();
+    expect((await reopened.reconstruct(second, recordingId))?.attempt.id).toBe(second);
+  });
+
+  it('persists configurable limits, preserves old chunks, and disables capture without affecting tracing', async () => {
+    const { root, recorder, trace } = await fixture();
+    await recorder.configure(true);
+    const first = start(trace);
+    trace.update(first, { stage: 'scheduled' });
+    await recorder.flush();
+    const previousBytes = recorder.status().bytes;
+    await recorder.setLimits({ diskBytes: previousBytes, memoryBytes: 1024 * 1024 });
+    expect(recorder.status()).toMatchObject({ enabled: false, bytes: previousBytes });
+    expect(recorder.status().warning).toMatch(/limit/i);
+    const next = start(trace, 2);
+    trace.update(next, { stage: 'scheduled' });
+    await recorder.flush();
+    expect(trace.get(next)).not.toBeNull();
+    expect((await recorder.list()).map((entry) => entry.id)).toEqual([first]);
+    const reopened = new CompactInferenceRecorder(root);
+    await reopened.loadLimits();
+    expect(reopened.status().limits).toEqual({
+      diskBytes: previousBytes,
+      memoryBytes: 1024 * 1024,
+    });
+    await expect(reopened.configure(true)).rejects.toThrow(/disk limit/i);
+    await reopened.setLimits({ diskBytes: 1024 * 1024, memoryBytes: 1024 * 1024 });
+    await reopened.configure(true);
+    // The new archive refuses storage once its memory budget is too small to snapshot a request.
+    await reopened.setLimits({ diskBytes: 1024 * 1024, memoryBytes: 1024 });
+    const newTrace = new InferenceTrace();
+    newTrace.attachRecorder(reopened);
+    const oversized = start(newTrace, 4, { context: 'x'.repeat(4096) });
+    newTrace.update(oversized, { stage: 'scheduled' });
+    await reopened.flush();
+    expect(reopened.status().enabled).toBe(false);
+    expect(reopened.status().warning).toMatch(/memory limit/i);
   });
 
   it('keeps stable event identities under timestamp ties and history pruning', () => {

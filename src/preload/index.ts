@@ -49,6 +49,7 @@ const api: DesktopAPI = {
   getPrivateWorkerLines: () => invoke('diagnostics:worker-lines'),
   getCompactRecording: () => invoke('compact:get'),
   configureCompactRecording: (enabled, mode) => invoke('compact:configure', enabled, mode),
+  setCompactRecordingLimits: (limits) => invoke('compact:limits', limits),
   saveRecordedExactCase: (id, recordingId) => invoke('compact:save-case', id, recordingId),
   listCompactAttempts: () => invoke('compact:list'),
   reconstructCompactAttempt: (id, recordingId) => invoke('compact:reconstruct', id, recordingId),

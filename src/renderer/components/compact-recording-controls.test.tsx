@@ -25,6 +25,49 @@ afterEach(() => {
 });
 
 describe('persistent inference recording controls', () => {
+  it('shows partial/finalizing state, quota usage, and saves disk and memory limits', async () => {
+    const status: CompactRecordingStatus = {
+      ...idle,
+      recordingId: 'recording-2026-10-19T01-00-00-000Z-12345678-1234-1234-1234-123456789012',
+      partial: true,
+      finalizing: 1,
+      warning: 'Recording memory limit reached; later attempts are excluded.',
+      limits: { diskBytes: 100 * 1024 ** 2, memoryBytes: 16 * 1024 ** 2 },
+      bytes: 1024 ** 2,
+      totalBytes: 10 * 1024 ** 2,
+      memoryBytes: 256 * 1024,
+    };
+    const setLimits = vi.fn(async () => status);
+    Object.defineProperty(window, 'lonelyChat', {
+      configurable: true,
+      value: {
+        getCompactRecording: async () => status,
+        setCompactRecordingLimits: setLimits,
+        listCompactAttempts: async () => [],
+      } as unknown as DesktopAPI,
+    });
+    render(<CompactRecordingControls />);
+    expect(await screen.findByText(/Finishing 1 captured attempts/)).toBeInTheDocument();
+    expect(screen.getByText(/10.00 MiB all recordings/)).toBeInTheDocument();
+    expect(screen.getByText(/Recording memory limit reached/)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByLabelText('Recording disk limit (MiB)')).toHaveValue(100),
+    );
+    fireEvent.change(screen.getByLabelText('Recording disk limit (MiB)'), {
+      target: { value: '200' },
+    });
+    fireEvent.change(screen.getByLabelText('Pending memory limit (MiB)'), {
+      target: { value: '32' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save limits' }));
+    await waitFor(() =>
+      expect(setLimits).toHaveBeenCalledWith({
+        diskBytes: 200 * 1024 ** 2,
+        memoryBytes: 32 * 1024 ** 2,
+      }),
+    );
+  });
+
   it('requires opt-in, offers Exact before recording, and saves verified requests to Playground cases', async () => {
     const recordingId = 'recording-2026-10-19T01-00-00-000Z-12345678-1234-1234-1234-123456789012';
     let state: CompactRecordingStatus = idle;

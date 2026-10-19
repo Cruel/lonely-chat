@@ -1,5 +1,12 @@
 export type InferenceRecordingMode = 'compact' | 'exact';
 
+export interface RecordingLimits {
+  /** Maximum private recording bytes for a single archive (not saved cases). */
+  readonly diskBytes: number;
+  /** Maximum bytes held for incomplete attempts in memory. */
+  readonly memoryBytes: number;
+}
+
 /** Private disk-backed evidence. Never included in public chat/overlay or operational logs. */
 export interface CompactRecordingStatus {
   readonly enabled: boolean;
@@ -8,7 +15,14 @@ export interface CompactRecordingStatus {
   readonly attempts: number;
   readonly chunks: number;
   readonly bytes: number;
+  /** All opt-in recording archive bytes, excluding standalone saved cases. */
+  readonly totalBytes?: number;
   readonly error: string | null;
+  readonly warning?: string | null;
+  readonly partial?: boolean;
+  readonly finalizing?: number;
+  readonly limits?: RecordingLimits;
+  readonly memoryBytes?: number;
 }
 
 export interface CompactAttemptSummary {
@@ -24,6 +38,9 @@ export interface CompactAttemptSummary {
   readonly durationMs: number | null;
   readonly stage: string;
   readonly chunk: string;
+  readonly archiveStatus?: 'complete' | 'incomplete';
+  readonly partial?: boolean;
+  readonly interrupted?: boolean;
 }
 
 /** Compact uses today's builder. Exact uses the verified historical request independently of today's builder. */

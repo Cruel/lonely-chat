@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { JsonInspector } from './json-inspector';
 import type {
@@ -26,6 +26,9 @@ export function CompactRecordingControls() {
   const [savedCase, setSavedCase] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [diskMb, setDiskMb] = useState(1024);
+  const [memoryMb, setMemoryMb] = useState(64);
+  const limitsLoaded = useRef(false);
   useEffect(() => {
     let active = true;
     const refresh = async () => {
@@ -34,6 +37,11 @@ export function CompactRecordingControls() {
         if (active) {
           setStatus(next);
           if (next.enabled) setMode(next.mode);
+          if (next.limits && !limitsLoaded.current) {
+            setDiskMb(Math.round(next.limits.diskBytes / 1024 ** 2));
+            setMemoryMb(Math.round(next.limits.memoryBytes / 1024 ** 2));
+            limitsLoaded.current = true;
+          }
         }
       } catch (reason) {
         if (active) setError(String(reason));
@@ -86,9 +94,84 @@ export function CompactRecordingControls() {
         <option value="exact">Exact — preserve native requests</option>
       </select>
       <p role="status" className="mt-2 break-all text-xs text-zinc-400">
-        {status.enabled ? `Recording ${status.mode}` : 'Not recording'} · {status.attempts} attempts
-        · {status.chunks} chunks · {status.bytes} bytes
+        {status.enabled
+          ? `Recording ${status.mode}`
+          : status.finalizing
+            ? `Finishing ${status.finalizing} captured attempts`
+            : 'Not recording'}{' '}
+        · {status.attempts} attempts · {status.chunks} chunks ·{' '}
+        {(status.bytes / 1024 ** 2).toFixed(2)} MiB this archive
+        {status.totalBytes !== undefined
+          ? ` · ${(status.totalBytes / 1024 ** 2).toFixed(2)} MiB all recordings`
+          : ''}
+        {status.limits
+          ? ` / ${(status.limits.diskBytes / 1024 ** 2).toFixed(0)} MiB disk limit`
+          : ''}
+        {status.memoryBytes !== undefined
+          ? ` · ${(status.memoryBytes / 1024 ** 2).toFixed(2)} MiB pending memory`
+          : ''}
         {status.recordingId ? ` · ${status.recordingId}` : ''}
+        {status.partial ? ' · Partial (started mid-session)' : ''}
+      </p>
+      {status.warning && (
+        <p role="alert" className="mt-2 text-sm text-amber-300">
+          {status.warning}
+        </p>
+      )}
+      <div className="mt-3 flex flex-wrap items-end gap-3">
+        <label className="text-xs text-zinc-300">
+          Recording disk limit (MiB)
+          <input
+            type="number"
+            min={1}
+            max={1048576}
+            step={1}
+            value={diskMb}
+            disabled={busy}
+            onChange={(event) => setDiskMb(Number(event.target.value))}
+            className="mt-1 block w-32 rounded-md border border-border bg-background px-2 py-1 text-sm"
+          />
+        </label>
+        <label className="text-xs text-zinc-300">
+          Pending memory limit (MiB)
+          <input
+            type="number"
+            min={1}
+            max={1048576}
+            step={1}
+            value={memoryMb}
+            disabled={busy}
+            onChange={(event) => setMemoryMb(Number(event.target.value))}
+            className="mt-1 block w-32 rounded-md border border-border bg-background px-2 py-1 text-sm"
+          />
+        </label>
+        <Button
+          variant="secondary"
+          disabled={
+            busy ||
+            !Number.isSafeInteger(diskMb) ||
+            !Number.isSafeInteger(memoryMb) ||
+            diskMb < 1 ||
+            memoryMb < 1
+          }
+          onClick={() =>
+            void perform(async () =>
+              setStatus(
+                await window.lonelyChat!.setCompactRecordingLimits({
+                  diskBytes: diskMb * 1024 ** 2,
+                  memoryBytes: memoryMb * 1024 ** 2,
+                }),
+              ),
+            )
+          }
+        >
+          Save limits
+        </Button>
+      </div>
+      <p className="mt-1 text-xs text-zinc-400">
+        Disk limits cover all session recording archives; memory limits cover in-flight captures.
+        Saved Playground cases are excluded. Hitting a limit stops recording without stopping
+        Simulation or deleting existing files.
       </p>
       {status.error && (
         <p role="alert" className="mt-2 text-sm text-amber-300">
@@ -138,6 +221,11 @@ export function CompactRecordingControls() {
             >
               {item.recordingId} / {item.id} · Run {item.runId} · cycle {item.cycle}, attempt{' '}
               {item.attempt} · {item.stage} · {item.mode ?? 'compact'} · seed {item.seed}
+              {item.archiveStatus
+                ? ` · ${item.archiveStatus === 'incomplete' ? 'Incomplete archive' : 'Complete archive'}`
+                : ''}
+              {item.partial ? ' · Partial' : ''}
+              {item.interrupted ? ' · Interrupted attempt' : ''}
             </button>
           ))}
         </div>

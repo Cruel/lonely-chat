@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { appendFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import type { InferenceTrace } from './inference-trace';
 import path from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
@@ -11,6 +11,7 @@ import type {
   CompactReconstruction,
   CompactRecordingStatus,
   InferenceRecordingMode,
+  RecordingLimits,
 } from '../shared/compact-recording-contract';
 
 type EvidenceKind = 'observation' | 'transcript' | 'event' | 'chat' | 'frame';
@@ -35,9 +36,10 @@ type Presentation = {
   timelineAt?: number;
 };
 type PresentationClosed = { type: 'presentation-closed'; runId: number; attemptIds: string[] };
-type Row = Evidence | AttemptRecord | Presentation | PresentationClosed;
+type AttemptStart = { type: 'attempt-start'; summary: CompactAttemptSummary };
+type Row = Evidence | AttemptRecord | Presentation | PresentationClosed | AttemptStart;
 type IndexRow = {
-  type: 'attempt' | 'presentation' | 'presentation-closed';
+  type: 'attempt' | 'attempt-start' | 'presentation' | 'presentation-closed';
   chunk: string;
   attemptId: string;
   summary?: CompactAttemptSummary;
@@ -48,6 +50,7 @@ type Capture = {
   patch: Partial<TraceAttempt>;
   mode: InferenceRecordingMode;
   requestJson?: string;
+  bytes: number;
 };
 
 // Builder fingerprints distinguish app revisions without implying byte-identical prompts.
@@ -96,6 +99,17 @@ function mapImageUrls(value: unknown, replace: (url: string) => string): unknown
 }
 const EXACT_FRAME_REF = /^exact-jpeg:([a-f0-9]{64})$/;
 const CHUNK_SHA = /^[a-f0-9]{64}$/;
+const CHUNK_FILE = /^\d{8}\.jsonl\.gz$/;
+const DEFAULT_LIMITS: RecordingLimits = { diskBytes: 1024 ** 3, memoryBytes: 64 * 1024 ** 2 };
+// Corrupt or unfinished indices cannot force an unbounded recovery scan.
+const MAX_INDEX_BYTES = 128 * 1024 * 1024;
+const MAX_RECOVERY_CHUNKS = 8192;
+const MAX_CHUNK_BYTES = 16 * 1024 * 1024;
+class RecordingLimitExceeded extends Error {}
+
+function snapshotBytes(value: unknown): number {
+  return Buffer.byteLength(JSON.stringify(value) ?? 'null');
+}
 
 /**
  * Append-only, opt-in compact evidence storage. Each committed attempt is an independently
@@ -113,8 +127,15 @@ export class CompactInferenceRecorder {
   private serialByDirectory = new Map<string, number>();
   private attempts = 0;
   private bytes = 0;
+  private totalBytes = 0;
   private chunks = 0;
   private error: string | null = null;
+  private warning: string | null = null;
+  private partial = false;
+  private finalizingDirectory: string | null = null;
+  private limits: RecordingLimits = { ...DEFAULT_LIMITS };
+  private frames = new Set<string>();
+  private overLimitDirectories = new Set<string>();
   private pending = new Map<string, Capture>();
   private seen = new Set<string>();
   private indexedDirs = new Map<string, string>();
@@ -138,14 +159,96 @@ export class CompactInferenceRecorder {
       attempts: this.attempts,
       chunks: this.chunks,
       bytes: this.bytes,
+      totalBytes: this.totalBytes,
       error: this.error,
+      warning: this.warning,
+      partial: this.partial,
+      finalizing: this.finalizingDirectory ? this.pending.size : 0,
+      limits: { ...this.limits },
+      memoryBytes: [...this.pending.values()].reduce((total, capture) => total + capture.bytes, 0),
     };
+  }
+
+  /** Limits apply only to opt-in session evidence, never to independently saved cases. */
+  async loadLimits(): Promise<void> {
+    this.totalBytes = await this.measureArchiveUsage();
+    try {
+      const value: unknown = JSON.parse(
+        await readFile(path.join(this.root, 'compact-inference', 'limits.json'), 'utf8'),
+      );
+      if (this.validLimits(value)) this.limits = { ...value };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT')
+        this.onError(new Error('Unable to read recording limits; using safe defaults.'));
+    }
+  }
+
+  /** Bounded startup scan of private archive storage. An excessive tree fails closed. */
+  private async measureArchiveUsage(): Promise<number> {
+    const base = path.join(this.root, 'compact-inference');
+    let files = 0;
+    const sizeOf = async (dir: string, depth: number): Promise<number> => {
+      if (depth > 2) return Number.MAX_SAFE_INTEGER;
+      let entries: import('node:fs').Dirent<string>[];
+      try {
+        entries = await readdir(dir, { withFileTypes: true });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0;
+        throw error;
+      }
+      let total = 0;
+      for (const entry of entries) {
+        if (++files > 100000) return Number.MAX_SAFE_INTEGER;
+        const child = path.join(dir, entry.name);
+        if (entry.isDirectory()) total += await sizeOf(child, depth + 1);
+        else if (entry.isFile()) total += (await stat(child)).size;
+        if (!Number.isSafeInteger(total)) return Number.MAX_SAFE_INTEGER;
+      }
+      return total;
+    };
+    let recordings: string[];
+    try {
+      recordings = (await readdir(base, { withFileTypes: true }))
+        .filter((entry) => entry.isDirectory() && RECORDING_ID.test(entry.name))
+        .map((entry) => entry.name);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0;
+      throw error;
+    }
+    let total = 0;
+    for (const recording of recordings) {
+      total += await sizeOf(path.join(base, recording), 0);
+      if (!Number.isSafeInteger(total)) return Number.MAX_SAFE_INTEGER;
+    }
+    return total;
+  }
+
+  private validLimits(value: unknown): value is RecordingLimits {
+    const limits = value as RecordingLimits | null;
+    return (
+      !!limits &&
+      [limits.diskBytes, limits.memoryBytes].every(
+        (number) => Number.isSafeInteger(number) && number >= 1024 && number <= 1024 ** 4,
+      )
+    );
+  }
+
+  async setLimits(limits: RecordingLimits): Promise<CompactRecordingStatus> {
+    if (!this.validLimits(limits)) throw new Error('Invalid recording storage limits.');
+    const dir = path.join(this.root, 'compact-inference');
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    await writeFile(path.join(dir, 'limits.json'), JSON.stringify(limits), { mode: 0o600 });
+    this.limits = { ...limits };
+    if (this.enabled && this.totalBytes >= limits.diskBytes)
+      this.limitReached('Disk recording limit reached; further recording is disabled.');
+    return this.status();
   }
 
   /** A fresh recording begins at the next attempt. Already captured attempts finish on disable. */
   async configure(
     enabled: boolean,
     mode: InferenceRecordingMode = 'compact',
+    partial = false,
   ): Promise<CompactRecordingStatus> {
     if (typeof enabled !== 'boolean' || (mode !== 'compact' && mode !== 'exact'))
       throw new Error('Invalid inference recording configuration.');
@@ -160,30 +263,47 @@ export class CompactInferenceRecorder {
           'Cannot start a new recording until the previous captured attempts finish.',
         );
       await this.flush();
+      this.totalBytes = await this.measureArchiveUsage();
+      if (this.totalBytes >= this.limits.diskBytes)
+        throw new Error(
+          'Recording disk limit reached across saved session archives. Increase the limit to start a new recording; saved cases remain untouched.',
+        );
+      this.finalizingDirectory = null;
+      this.partial = partial;
       this.recordingId = `recording-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID()}`;
       this.directory = path.join(this.root, 'compact-inference', this.recordingId);
       await mkdir(path.join(this.directory, 'frames'), { recursive: true, mode: 0o700 });
       await mkdir(path.join(this.directory, 'chunks'), { recursive: true, mode: 0o700 });
-      await writeFile(
-        path.join(this.directory, 'manifest.json'),
-        JSON.stringify({
-          format: 'lonely-chat-compact',
-          version: 1,
-          builderVersion: BUILDER_VERSION,
-          mode,
-        }),
-        { flag: 'wx', mode: 0o600 },
-      );
+      const manifest = JSON.stringify({
+        format: 'lonely-chat-compact',
+        version: 1,
+        builderVersion: BUILDER_VERSION,
+        mode,
+        partial,
+      });
+      await writeFile(path.join(this.directory, 'manifest.json'), manifest, {
+        flag: 'wx',
+        mode: 0o600,
+      });
       this.mode = mode;
       this.serialByDirectory.set(this.directory, 0);
       this.attempts = 0;
-      this.bytes = 0;
+      this.bytes = Buffer.byteLength(manifest);
+      this.totalBytes += this.bytes;
       this.chunks = 0;
       this.seen.clear();
+      this.frames.clear();
       this.error = null;
+      this.warning = partial
+        ? 'Recording began mid-session; earlier observations and attempts are not included.'
+        : null;
       this.broken = false;
     }
     this.enabled = enabled;
+    if (!enabled && this.directory) {
+      this.finalizingDirectory = this.directory;
+      this.finalizeIfDrained();
+    }
     return this.status();
   }
 
@@ -192,8 +312,24 @@ export class CompactInferenceRecorder {
     safeId(id);
     // Deep copy at the capture boundary, not after another cycle can mutate its input.
     try {
-      this.pending.set(id, { metadata: structuredClone(metadata), patch: {}, mode: this.mode });
+      const frozen = structuredClone(metadata);
+      const bytes = snapshotBytes(frozen);
+      if (this.memoryUsed() + bytes > this.limits.memoryBytes) {
+        this.limitReached('Recording memory limit reached; later attempts are excluded.');
+        return;
+      }
+      this.pending.set(id, { metadata: frozen, patch: {}, mode: this.mode, bytes });
       this.indexedRun.set(id, metadata.runId);
+      const summary = this.summaryForStart(id, metadata);
+      const dir = this.directory;
+      this.enqueue(() =>
+        this.chunk(dir, [{ type: 'attempt-start', summary }], {
+          type: 'attempt-start',
+          attemptId: id,
+          chunk: '',
+          summary,
+        }),
+      );
     } catch {
       this.captureError('Unable to snapshot selected inference input.');
     }
@@ -212,6 +348,14 @@ export class CompactInferenceRecorder {
         item.requestJson = json;
       }
       Object.assign(item.patch, structuredClone(compactPatch));
+      item.bytes =
+        snapshotBytes(item.metadata) +
+        snapshotBytes(item.patch) +
+        (item.requestJson ? Buffer.byteLength(item.requestJson) : 0);
+      if (this.memoryUsed() > this.limits.memoryBytes)
+        this.limitReached(
+          'Recording memory limit reached; in-flight attempts will finish, but later attempts are excluded.',
+        );
     } catch {
       this.pending.delete(id);
       this.captureError('Unable to snapshot an inference result for compact recording.');
@@ -221,6 +365,7 @@ export class CompactInferenceRecorder {
       this.pending.delete(id);
       const snapshot = { ...item.metadata, ...item.patch, id } as unknown as TraceAttempt;
       this.enqueue(() => this.saveAttempt(snapshot, item));
+      this.finalizeIfDrained();
     }
   }
 
@@ -287,10 +432,69 @@ export class CompactInferenceRecorder {
     await this.chain;
   }
 
+  private memoryUsed(): number {
+    return [...this.pending.values()].reduce((total, item) => total + item.bytes, 0);
+  }
+
+  private summaryForStart(
+    id: string,
+    metadata: Parameters<InferenceTrace['begin']>[0],
+  ): CompactAttemptSummary {
+    return {
+      recordingId: this.recordingId!,
+      mode: this.mode,
+      id,
+      runId: metadata.runId,
+      cycle: metadata.cycle,
+      attempt: metadata.attempt,
+      seed: metadata.seed,
+      modelId: metadata.modelId,
+      startedAt: metadata.startedAt,
+      durationMs: null,
+      stage: 'preparing',
+      chunk: '',
+    };
+  }
+
+  private finalizeIfDrained(): void {
+    const dir = this.finalizingDirectory;
+    if (!dir || this.pending.size) return;
+    this.finalizingDirectory = null;
+    this.enqueue(async () => {
+      if (this.overLimitDirectories.has(dir)) return;
+      // A marker written only after every queued chunk makes interrupted shutdowns recognizable.
+      const marker = JSON.stringify({ finalizedAt: new Date().toISOString() });
+      await writeFile(path.join(dir, 'complete.json'), marker, { flag: 'wx', mode: 0o600 });
+      if (dir === this.directory) {
+        this.bytes += Buffer.byteLength(marker);
+        this.totalBytes += Buffer.byteLength(marker);
+      }
+    });
+  }
+
+  private limitReached(message: string): void {
+    if (!this.warning || !this.warning.includes('limit')) this.warning = message;
+    this.enabled = false;
+    if (this.directory) this.overLimitDirectories.add(this.directory);
+    // Do not mark this archive complete: pending/outstanding evidence may not fit.
+    this.finalizingDirectory = null;
+  }
+
+  private ensureDiskBudget(dir: string, additionalBytes: number): void {
+    if (dir !== this.directory) return;
+    if (this.totalBytes + additionalBytes > this.limits.diskBytes) {
+      this.limitReached(
+        'Disk recording limit reached; further evidence is not captured. Saved cases are untouched.',
+      );
+      throw new RecordingLimitExceeded();
+    }
+  }
+
   private enqueue(write: () => Promise<void>): void {
     this.chain = this.chain
       .then(() => (this.broken ? undefined : write()))
-      .catch(() => {
+      .catch((error: unknown) => {
+        if (error instanceof RecordingLimitExceeded) return;
         this.captureError(
           'Unable to save compact recording to disk. Earlier indexed chunks remain readable.',
         );
@@ -302,6 +506,7 @@ export class CompactInferenceRecorder {
     this.enabled = false;
     this.broken = true;
     this.pending.clear();
+    this.finalizingDirectory = null;
     this.onError(new Error(message));
   }
 
@@ -310,15 +515,18 @@ export class CompactInferenceRecorder {
     this.serialByDirectory.set(dir, serial);
     const name = `${String(serial).padStart(8, '0')}.jsonl.gz`;
     const bytes = gzipSync(rows.map(jsonLine).join(''), { level: 6 });
+    if (bytes.byteLength > MAX_CHUNK_BYTES) {
+      this.limitReached('One compressed chunk exceeds the archive size limit; recording stopped.');
+      throw new RecordingLimitExceeded();
+    }
+    const indexLine = jsonLine({ ...index, chunk: name, sha256: sha(bytes) });
+    this.ensureDiskBudget(dir, bytes.byteLength + Buffer.byteLength(indexLine));
     await writeFile(path.join(dir, 'chunks', name), bytes, { flag: 'wx', mode: 0o600 });
-    await appendFile(
-      path.join(dir, 'index.jsonl'),
-      jsonLine({ ...index, chunk: name, sha256: sha(bytes) }),
-      { mode: 0o600 },
-    );
+    await appendFile(path.join(dir, 'index.jsonl'), indexLine, { mode: 0o600 });
     if (dir === this.directory) {
       this.chunks++;
-      this.bytes += bytes.byteLength;
+      this.bytes += bytes.byteLength + Buffer.byteLength(indexLine);
+      this.totalBytes += bytes.byteLength + Buffer.byteLength(indexLine);
     }
   }
 
@@ -358,6 +566,7 @@ export class CompactInferenceRecorder {
     captureEvidence('chat', input.recentChat, selection.chat);
     references.frame = [];
     const selectedJpegs = new Set<string>();
+    const pendingFrames = new Map<string, Buffer>();
     for (const [index, value] of array(input.frames).entries()) {
       const frame = object(value);
       const match = typeof frame.dataUrl === 'string' ? JPEG.exec(frame.dataUrl) : null;
@@ -369,13 +578,9 @@ export class CompactInferenceRecorder {
         JSON.stringify([frame.sourceId, frame.observedAt, frame.mediaTimeMs, digest]),
       )}`;
       const filename = `${digest}.jpg`;
-      // Content-addressed exact JPEG bytes, shared across attempts and observations.
-      try {
-        await writeFile(path.join(dir, 'frames', filename), buffer, { flag: 'wx', mode: 0o600 });
-        this.bytes += buffer.byteLength;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      }
+      // Reserve disk budget before writing any blobs so an oversized attempt leaves no
+      // partial media alongside a missing outcome. Content hashes deduplicate frames.
+      if (!this.frames.has(digest)) pendingFrames.set(digest, buffer);
       emit('frame', frameId, {
         sourceId: frame.sourceId,
         observedAt: frame.observedAt,
@@ -433,6 +638,37 @@ export class CompactInferenceRecorder {
       details: { ...rest, originalSelection: selection, builderVersion: BUILDER_VERSION },
       ...(exact ? { exact } : {}),
     } as AttemptRecord);
+    const projectedChunk = gzipSync(entries.map(jsonLine).join(''), { level: 6 });
+    const serial = (this.serialByDirectory.get(dir) ?? 0) + 1;
+    const name = `${String(serial).padStart(8, '0')}.jsonl.gz`;
+    const projectedIndex = jsonLine({
+      type: 'attempt',
+      attemptId: attempt.id,
+      chunk: name,
+      summary,
+      sha256: sha(projectedChunk),
+    });
+    this.ensureDiskBudget(
+      dir,
+      projectedChunk.byteLength +
+        Buffer.byteLength(projectedIndex) +
+        [...pendingFrames.values()].reduce((total, frame) => total + frame.byteLength, 0),
+    );
+    for (const [digest, buffer] of pendingFrames) {
+      try {
+        await writeFile(path.join(dir, 'frames', `${digest}.jpg`), buffer, {
+          flag: 'wx',
+          mode: 0o600,
+        });
+        if (dir === this.directory) {
+          this.bytes += buffer.byteLength;
+          this.totalBytes += buffer.byteLength;
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      }
+      this.frames.add(digest);
+    }
     await this.chunk(dir, entries, { type: 'attempt', attemptId: attempt.id, chunk: '', summary });
     this.indexedDirs.set(attempt.id, dir);
     this.indexedRun.set(attempt.id, attempt.runId);
@@ -455,35 +691,120 @@ export class CompactInferenceRecorder {
     }
     const results: CompactAttemptSummary[] = [];
     for (const recordingId of recordings.filter((id) => RECORDING_ID.test(id)).sort()) {
-      const index = await this.readIndex(path.join(base, recordingId));
-      results.push(
-        ...index
-          .filter((item) => item.type === 'attempt' && item.summary)
-          .map((item) => ({
-            ...item.summary!,
-            mode: item.summary!.mode ?? 'compact',
-            recordingId,
-            chunk: item.chunk,
-          })),
+      const dir = path.join(base, recordingId);
+      const index = await this.readIndex(dir);
+      const complete = await stat(path.join(dir, 'complete.json')).then(
+        () => true,
+        () => false,
       );
+      let partial = false;
+      try {
+        const manifest = JSON.parse(await readFile(path.join(dir, 'manifest.json'), 'utf8')) as {
+          partial?: boolean;
+        };
+        partial = manifest.partial === true;
+      } catch {
+        /* A missing or damaged manifest must not hide recoverable chunks. */
+      }
+      const attempts = new Map<string, CompactAttemptSummary>();
+      const finished = new Set<string>();
+      for (const item of index) {
+        if ((item.type !== 'attempt-start' && item.type !== 'attempt') || !item.summary) continue;
+        if (item.type === 'attempt') finished.add(item.attemptId);
+        const previous = attempts.get(item.attemptId);
+        if (previous && item.type === 'attempt-start') continue;
+        attempts.set(item.attemptId, {
+          ...item.summary,
+          mode: item.summary.mode ?? 'compact',
+          recordingId,
+          chunk: item.chunk,
+          archiveStatus: complete ? 'complete' : 'incomplete',
+          partial,
+        });
+      }
+      for (const [id, summary] of attempts) {
+        results.push(
+          finished.has(id)
+            ? summary
+            : {
+                ...summary,
+                stage:
+                  this.pending.has(id) && recordingId === this.recordingId
+                    ? 'preparing'
+                    : 'interrupted',
+                interrupted: !(this.pending.has(id) && recordingId === this.recordingId),
+              },
+        );
+      }
     }
     return results;
   }
 
   private async readIndex(dir: string): Promise<IndexRow[]> {
-    let data: string;
+    const indexed: IndexRow[] = [];
+    const names = new Set<string>();
     try {
-      data = await readFile(path.join(dir, 'index.jsonl'), 'utf8');
+      const file = path.join(dir, 'index.jsonl');
+      // Do not read an attacker-controlled or runaway index into unbounded memory.
+      if ((await stat(file)).size <= MAX_INDEX_BYTES) {
+        const data = await readFile(file, 'utf8');
+        for (const line of data.split('\n')) {
+          if (!line || line.length > 1024 * 1024) continue;
+          try {
+            const row = JSON.parse(line) as IndexRow;
+            if (
+              !CHUNK_FILE.test(row.chunk) ||
+              !['attempt', 'attempt-start', 'presentation', 'presentation-closed'].includes(
+                row.type,
+              )
+            )
+              continue;
+            indexed.push(row);
+            names.add(row.chunk);
+          } catch {
+            /* A torn or corrupt line cannot mask later valid entries. */
+          }
+        }
+      }
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    // The process may die after atomically creating a gzip chunk but before indexing it.
+    // Recover only bounded, independently decodable chunks, never arbitrary archive paths.
+    let chunks: string[];
+    try {
+      chunks = (await readdir(path.join(dir, 'chunks')))
+        .filter((name) => CHUNK_FILE.test(name))
+        .sort();
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return indexed;
       throw error;
     }
-    // A torn final index append must not invalidate previously completed chunks.
-    const complete = data.endsWith('\n') ? data : data.slice(0, data.lastIndexOf('\n') + 1);
-    return complete
-      .split('\n')
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as IndexRow);
+    // Inspect missing chunks, not the first N filenames: a crash after a very long
+    // recording most often leaves unindexed chunks at the *end* of the archive.
+    const orphanChunks = chunks.filter((name) => !names.has(name));
+    for (const name of orphanChunks.slice(-MAX_RECOVERY_CHUNKS)) {
+      try {
+        const rows = await this.readChunk(dir, name);
+        for (const row of rows) {
+          if (row.type === 'attempt' || row.type === 'attempt-start') {
+            indexed.push({
+              type: row.type,
+              chunk: name,
+              attemptId: row.summary.id,
+              summary: row.summary,
+            });
+          } else if (row.type === 'presentation') {
+            indexed.push({ type: row.type, chunk: name, attemptId: row.attemptId });
+          } else if (row.type === 'presentation-closed') {
+            indexed.push({ type: row.type, chunk: name, attemptId: `run-${row.runId}` });
+          }
+        }
+      } catch {
+        /* A corrupt orphan chunk does not prevent recovery of its neighbors. */
+      }
+    }
+    return indexed.sort((a, b) => a.chunk.localeCompare(b.chunk));
   }
 
   async reconstruct(id: string, recordingId: string): Promise<CompactReconstruction | null> {
@@ -494,11 +815,38 @@ export class CompactInferenceRecorder {
     const dir = path.join(this.root, 'compact-inference', recordingId);
     const index = await this.readIndex(dir);
     const target = index.find((item) => item.type === 'attempt' && item.attemptId === id);
-    if (!target) return null;
+    if (!target) {
+      const started = index.find((item) => item.type === 'attempt-start' && item.attemptId === id);
+      if (!started?.summary) return null;
+      return {
+        input: null,
+        request: null,
+        provenance: 'exact-not-constructed',
+        recordedBuilderVersion: 'unknown',
+        currentBuilderVersion: BUILDER_VERSION,
+        warning:
+          'Inference attempt was interrupted before its outcome could be recorded; no input or completed request is available.',
+        attempt: {
+          ...started.summary,
+          recordingId,
+          chunk: started.chunk,
+          stage: 'interrupted',
+          interrupted: true,
+          archiveStatus: 'incomplete',
+        },
+      };
+    }
     const evidence = new Map<string, Evidence>();
     let attempt: AttemptRecord | null = null;
     for (const item of index) {
-      const rows = await this.readChunk(dir, item.chunk, item.sha256);
+      let rows: Row[];
+      try {
+        rows = await this.readChunk(dir, item.chunk, item.sha256);
+      } catch (error) {
+        if (item === target) throw error;
+        // An unrelated damaged chunk need not hide readable later attempts.
+        continue;
+      }
       for (const row of rows) {
         if (row.type === 'evidence') evidence.set(row.id, row);
         if (row.type === 'attempt' && row.summary.id === id) attempt = row;
@@ -633,11 +981,13 @@ export class CompactInferenceRecorder {
   }
 
   private async readChunk(dir: string, name: string, digest?: string): Promise<Row[]> {
-    if (!/^\d{8}\.jsonl\.gz$/.test(name)) throw new Error('Invalid compact chunk name.');
+    if (!CHUNK_FILE.test(name)) throw new Error('Invalid compact chunk name.');
+    if ((await stat(path.join(dir, 'chunks', name))).size > MAX_CHUNK_BYTES)
+      throw new Error('Recorded chunk exceeds the recovery size limit.');
     const bytes = await readFile(path.join(dir, 'chunks', name));
     if (digest !== undefined && (!CHUNK_SHA.test(digest) || sha(bytes) !== digest))
       throw new Error('Recorded chunk integrity checksum mismatch.');
-    return gunzipSync(bytes)
+    return gunzipSync(bytes, { maxOutputLength: 64 * 1024 * 1024 })
       .toString('utf8')
       .split('\n')
       .filter(Boolean)

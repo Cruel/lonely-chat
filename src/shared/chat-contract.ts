@@ -84,6 +84,7 @@ export interface DesktopInvocations {
   'diagnostics:worker-lines': readonly PrivateWorkerLine[];
   'compact:get': CompactRecordingStatus;
   'compact:configure': CompactRecordingStatus;
+  'compact:limits': CompactRecordingStatus;
   'compact:save-case': SavedCaseSummary;
   'compact:list': CompactAttemptSummary[];
   'compact:reconstruct': CompactReconstruction | null;
@@ -186,6 +187,7 @@ export interface DesktopArguments {
     enabled: boolean,
     mode?: import('./compact-recording-contract').InferenceRecordingMode,
   ];
+  'compact:limits': [limits: import('./compact-recording-contract').RecordingLimits];
   'compact:save-case': [id: string, recordingId: string];
   'compact:list': [];
   'compact:reconstruct': [id: string, recordingId: string];
@@ -286,6 +288,9 @@ export interface DesktopAPI {
   configureCompactRecording(
     enabled: boolean,
     mode?: import('./compact-recording-contract').InferenceRecordingMode,
+  ): Promise<CompactRecordingStatus>;
+  setCompactRecordingLimits(
+    limits: import('./compact-recording-contract').RecordingLimits,
   ): Promise<CompactRecordingStatus>;
   saveRecordedExactCase(id: string, recordingId: string): Promise<SavedCaseSummary>;
   listCompactAttempts(): Promise<CompactAttemptSummary[]>;

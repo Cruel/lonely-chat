@@ -27,6 +27,15 @@ const modelsAPI = {
     bytes: 0,
     error: null,
   }),
+  setCompactRecordingLimits: async () => ({
+    mode: 'compact' as const,
+    enabled: false,
+    recordingId: null,
+    attempts: 0,
+    chunks: 0,
+    bytes: 0,
+    error: null,
+  }),
   configureCompactRecording: async (enabled: boolean) => ({
     mode: 'compact' as const,
     enabled,
