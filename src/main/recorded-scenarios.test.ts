@@ -66,7 +66,7 @@ it('saves and reloads named Scenarios with exact media paths, audio offsets and 
   const restarted = new RecordedScenarioStore(root);
   expect(await restarted.list()).toEqual([saved]);
   const bytes = await readFile(path.join(root, 'recorded-scenarios.json'), 'utf8');
-  expect(bytes).toContain(video);
+  expect(JSON.parse(bytes)).toMatchObject({ scenarios: [{ config: { video: { path: video } } }] });
   expect(bytes).toContain('-125');
   expect(bytes).not.toContain('data:image/'); // only path metadata, not duplicated media data
 });
