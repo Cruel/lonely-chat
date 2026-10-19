@@ -18,6 +18,24 @@ const emptyModels: ModelManagerSnapshot = {
   progress: { phase: 'idle', file: null, receivedBytes: 0, totalBytes: null },
 };
 const modelsAPI = {
+  getCompactRecording: async () => ({
+    enabled: false,
+    recordingId: null,
+    attempts: 0,
+    chunks: 0,
+    bytes: 0,
+    error: null,
+  }),
+  configureCompactRecording: async (enabled: boolean) => ({
+    enabled,
+    recordingId: null,
+    attempts: 0,
+    chunks: 0,
+    bytes: 0,
+    error: null,
+  }),
+  listCompactAttempts: async () => [],
+  reconstructCompactAttempt: async () => null,
   listInferenceTraces: async () => ({ attempts: [], dropped: 0, bytes: 0 }),
   getInferenceTrace: async () => null,
   onInferenceTraces: () => () => {},

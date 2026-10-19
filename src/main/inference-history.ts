@@ -28,7 +28,8 @@ export type CycleInput = InferenceInput & { readonly boundary: InferenceBoundary
  */
 export class InferenceHistory {
   private captures: CaptureEntry[] = [];
-  private events: InferredEvent[] = [];
+  private events: { readonly id: string; readonly data: InferredEvent }[] = [];
+  private eventSequence = 0;
   private nextSequence = 0;
   private acknowledged = 0;
   private acknowledgedAt = 0;
@@ -43,6 +44,7 @@ export class InferenceHistory {
   reset(startMs: number): void {
     this.captures = [];
     this.events = [];
+    this.eventSequence = 0;
     this.nextSequence = 0;
     this.acknowledged = 0;
     this.acknowledgedAt = startMs;
@@ -73,13 +75,17 @@ export class InferenceHistory {
   }
 
   commitEvents(events: readonly InferredEvent[], now: number): readonly InferredEvent[] {
-    this.events.push(...events);
+    this.events.push(
+      ...events.map((data) => ({ id: `event-${++this.eventSequence}`, data: { ...data } })),
+    );
     this.prune(now);
     return this.recentEvents(now);
   }
 
   recentEvents(now: number): readonly InferredEvent[] {
-    return this.bounded(this.events, (value) => value.observedAt, now).map((item) => ({ ...item }));
+    return this.bounded(this.events, (value) => value.data.observedAt, now).map((item) => ({
+      ...item.data,
+    }));
   }
 
   snapshot(
@@ -122,8 +128,8 @@ export class InferenceHistory {
           .filter((item) => item.kind === 'transcript')
           .map((item) => item.sequence),
         chat: this.bounded(chat, (item) => item.presentedAt, now).map((item) => item.id),
-        events: this.recentEvents(now).map(
-          (event, index) => `${event.kind}:${event.observedAt}:${index}`,
+        events: this.bounded(this.events, (entry) => entry.data.observedAt, now).map(
+          (entry) => entry.id,
         ),
       },
       playbackWindowMs,
@@ -186,6 +192,6 @@ export class InferenceHistory {
     );
     this.dropped += removed.length;
     this.captures = kept;
-    this.events = this.bounded(this.events, (item) => item.observedAt, now);
+    this.events = this.bounded(this.events, (item) => item.data.observedAt, now);
   }
 }

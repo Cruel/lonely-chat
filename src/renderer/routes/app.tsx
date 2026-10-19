@@ -40,6 +40,7 @@ import {
 import { RecordedAudioInput, type RecordedAudioHandle } from '@/components/recorded-audio-input';
 import type { RecordedSegment } from '../recorded-preview-timeline';
 import { DiagnosticCaptureControls } from '@/components/diagnostic-capture-controls';
+import { CompactRecordingControls } from '@/components/compact-recording-controls';
 import { OperationalLogs } from '@/components/operational-logs';
 import { InferenceRunInspector } from '@/components/inference-run-inspector';
 import { useUnreadLogErrors } from '../use-unread-log-errors';
@@ -1097,6 +1098,7 @@ export function DesktopPage() {
               <SectionHeading title="Logs" description="Runtime status and diagnostics." />
               <OperationalLogs focus={logFocus} onOpenAttempt={openAttempt} />
               <DiagnosticCaptureControls />
+              <CompactRecordingControls />
               <Panel>
                 <h3 className="font-medium">Session diagnostics</h3>
                 <p className="mt-2 text-xs text-zinc-400">

@@ -2,6 +2,7 @@ import path from 'node:path';
 import { readFile, stat, writeFile } from 'node:fs/promises';
 import { SavedInferenceCases } from './saved-inference-cases';
 import { DiagnosticCapture } from './diagnostic-capture';
+import { CompactInferenceRecorder } from './compact-inference-recorder';
 import { OperationalLogger } from './operational-logger';
 import { serializeOperationalLogs } from './operational-log-export';
 import { validateRendererFailure } from '../shared/renderer-log-contract';
@@ -75,6 +76,9 @@ process.on('unhandledRejection', (reason) =>
 );
 const chat = new ChatService();
 const diagnostics = new DiagnosticCapture();
+const compactRecorder = new CompactInferenceRecorder(app.getPath('userData'), (error) =>
+  logger.error('recording', 'Unable to write compact inference evidence', error),
+);
 const reportError = (
   source: string,
   text: string,
@@ -302,6 +306,11 @@ function registerHandlers(): void {
         phase: failure.kind,
       });
     },
+    'compact:get': () => compactRecorder.status(),
+    'compact:configure': (enabled: boolean) => compactRecorder.configure(enabled),
+    'compact:list': () => compactRecorder.list(),
+    'compact:reconstruct': (id: string, recordingId: string) =>
+      compactRecorder.reconstruct(id, recordingId),
     'diagnostics:get': () => diagnostics.status(),
     'diagnostics:worker-lines': () => diagnostics.privateWorkerLines(),
     'diagnostics:configure': (enabled: boolean) => diagnostics.configure(enabled),
@@ -928,6 +937,7 @@ async function boot(): Promise<void> {
     diagnostics,
     reportError,
   );
+  session.trace.attachRecorder(compactRecorder);
   audio = new AudioService(
     () =>
       new NativeSpeech({
@@ -1064,6 +1074,8 @@ app.on('before-quit', (event) => {
   logger.info('application', 'Application shutdown requested');
   lifecycle.beginShutdown();
   void shutdown.stop().then(async () => {
+    // All captured attempts are cancelled/completed before we drain the recorder.
+    await compactRecorder.flush();
     // ManagedShutdown runs services concurrently. Close logs afterward so late
     // worker/shutdown failures cannot be dropped by an already-closed logger.
     try {
@@ -1104,6 +1116,8 @@ app.on('will-quit', () => {
   ipcMain.removeHandler('floating:configure');
   ipcMain.removeHandler('window:get');
   ipcMain.removeHandler('window:set-close-to-tray');
+  for (const channel of ['compact:get', 'compact:configure', 'compact:list', 'compact:reconstruct'])
+    ipcMain.removeHandler(channel);
   ipcMain.removeHandler('trace:list');
   ipcMain.removeHandler('trace:get');
   ipcMain.removeHandler('trace:search');

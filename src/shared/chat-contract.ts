@@ -39,6 +39,11 @@ import type {
   RecordedAudioStart,
 } from './audio-contract';
 import type { DiagnosticStatus, PrivateWorkerLine } from './diagnostic-contract';
+import type {
+  CompactAttemptSummary,
+  CompactReconstruction,
+  CompactRecordingStatus,
+} from './compact-recording-contract';
 import type { LogEntry, LogRetention, LogSnapshot } from './log-contract';
 import type { TraceAttempt, TraceFilter, TraceList } from './inference-trace-contract';
 import type {
@@ -72,6 +77,10 @@ export interface DesktopInvocations {
   'diagnostics:configure': DiagnosticStatus;
   'diagnostics:export': boolean;
   'diagnostics:worker-lines': readonly PrivateWorkerLine[];
+  'compact:get': CompactRecordingStatus;
+  'compact:configure': CompactRecordingStatus;
+  'compact:list': CompactAttemptSummary[];
+  'compact:reconstruct': CompactReconstruction | null;
   'logs:get': LogSnapshot;
   'logs:configure': LogRetention;
   'logs:export': boolean;
@@ -158,6 +167,10 @@ export interface DesktopArguments {
   'diagnostics:configure': [enabled: boolean];
   'diagnostics:export': [];
   'diagnostics:worker-lines': [];
+  'compact:get': [];
+  'compact:configure': [enabled: boolean];
+  'compact:list': [];
+  'compact:reconstruct': [id: string, recordingId: string];
   'logs:get': [];
   'logs:configure': [retention: LogRetention];
   'logs:export': [ids: readonly string[]];
@@ -243,6 +256,10 @@ export interface DesktopAPI {
   configureDiagnosticCapture(enabled: boolean): Promise<DiagnosticStatus>;
   exportDiagnosticCapture(): Promise<boolean>;
   getPrivateWorkerLines(): Promise<readonly PrivateWorkerLine[]>;
+  getCompactRecording(): Promise<CompactRecordingStatus>;
+  configureCompactRecording(enabled: boolean): Promise<CompactRecordingStatus>;
+  listCompactAttempts(): Promise<CompactAttemptSummary[]>;
+  reconstructCompactAttempt(id: string, recordingId: string): Promise<CompactReconstruction | null>;
   getPlaygroundStatus(): Promise<PlaygroundStatus>;
   listPromptPresets(): Promise<PromptPreset[]>;
   listPromptPresetRevisions(id: string): Promise<PromptPreset[]>;

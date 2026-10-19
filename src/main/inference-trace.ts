@@ -1,4 +1,5 @@
 import { matchesTraceFilter, traceFacets, validateTraceFilter } from './trace-evidence';
+import type { CompactInferenceRecorder } from './compact-inference-recorder';
 import type {
   TraceAttempt,
   TraceList,
@@ -65,6 +66,11 @@ export class InferenceTrace {
   private dropped = 0;
   private serial = 0;
   private listeners = new Set<(snapshot: TraceList) => void>();
+  private recorder: CompactInferenceRecorder | null = null;
+
+  attachRecorder(recorder: CompactInferenceRecorder): void {
+    this.recorder = recorder;
+  }
 
   subscribe(listener: (snapshot: TraceList) => void): () => void {
     this.listeners.add(listener);
@@ -118,6 +124,8 @@ export class InferenceTrace {
     message: { id: string; author: string; text: string; presentedAt: number },
     scheduledIndex: number,
   ): void {
+    // Persist actual presentation even after the bounded inspector evicts the attempt.
+    this.recorder?.present(id, message, scheduledIndex);
     const attempt = this.attempts.find((item) => item.id === id);
     if (!attempt || attempt.presentationClosed || attempt.stage !== 'scheduled') return;
     if (
@@ -132,6 +140,7 @@ export class InferenceTrace {
   }
 
   closePresentation(runId: number): void {
+    this.recorder?.closePresentation(runId);
     let changed = false;
     for (const item of this.attempts) {
       if (item.runId === runId && item.stage === 'scheduled' && !item.presentationClosed) {
@@ -190,12 +199,14 @@ export class InferenceTrace {
       presented: [],
       presentationClosed: false,
     });
+    this.recorder?.begin(id, initial);
     this.prune();
     this.notify();
     return id;
   }
 
   update(id: string, patch: Partial<TraceAttempt>): void {
+    this.recorder?.update(id, patch);
     const found = this.attempts.find((item) => item.id === id);
     if (!found) return; // Evicted while asynchronous work was still pending.
     for (const [key, value] of Object.entries(patch)) {
@@ -222,6 +233,7 @@ export class InferenceTrace {
   }
 
   cancelPending(runId: number): void {
+    this.recorder?.cancelPending(runId);
     for (const attempt of this.attempts) {
       if (
         attempt.runId === runId &&
