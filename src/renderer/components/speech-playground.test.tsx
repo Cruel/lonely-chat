@@ -76,6 +76,34 @@ it('routes uploaded synthetic audio through separate speech IPC without publishi
   expect(close).toHaveBeenCalled();
 });
 
+it('shows the exact raw clip identifier next to a completed Playground transcript', async () => {
+  window.lonelyChat = {
+    getSpeechTestStatus: async () => ({
+      ...idle,
+      phase: 'ready',
+      segments: [
+        {
+          id: 1,
+          sourceId: 'caster',
+          label: 'Caster',
+          startMs: 100,
+          endMs: 300,
+          phase: 'transcribed',
+          speechSegmentId: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa',
+          text: 'hello',
+          error: null,
+          durationMs: 20,
+        },
+      ],
+    }),
+    onSpeechTestChange: () => () => {},
+    stopSpeechTest: async () => idle,
+  } as unknown as DesktopAPI;
+  render(<SpeechPlayground simulationActive={false} />);
+  expect(await screen.findByText('Raw clip aaaaaaaa')).toBeTruthy();
+  expect(screen.getByText('hello')).toBeTruthy();
+});
+
 it('disables starting during Simulation and surfaces native Whisper errors', async () => {
   const fail = vi.fn(async () => {
     throw new Error('whisper.cpp failed: no model');

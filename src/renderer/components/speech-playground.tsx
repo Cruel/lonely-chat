@@ -455,6 +455,9 @@ export function SpeechPlayground({
                     {seconds(segment.startMs)}–{seconds(segment.endMs)}
                   </span>
                   <span>{segment.phase}</span>
+                  {segment.speechSegmentId && (
+                    <span>Raw clip {segment.speechSegmentId.slice(0, 8)}</span>
+                  )}
                   {segment.durationMs !== null && <span>Whisper: {segment.durationMs} ms</span>}
                 </div>
                 {segment.text && <p className="mt-2 whitespace-pre-wrap">{segment.text}</p>}

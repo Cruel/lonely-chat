@@ -11,6 +11,8 @@ export interface SpeechTestStart {
 }
 
 export interface SpeechTestSegment {
+  /** Opt-in raw PCM evidence UUID for this exact Whisper segment, when retained. */
+  readonly speechSegmentId?: string;
   readonly id: number;
   readonly sourceId: string;
   readonly label: string;

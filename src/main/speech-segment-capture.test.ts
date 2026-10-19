@@ -118,7 +118,10 @@ describe('private opt-in Whisper PCM evidence', () => {
     expect(bySource.guest).toMatchObject({ error: 'guest worker failed', result: 'failed' });
     expect((await capture.samples(bySource.caster.id)).pcm[0]).toBeCloseTo(0.22);
     expect((await capture.samples(bySource.guest.id)).pcm[0]).toBeCloseTo(0.33);
-    expect(onTranscript).toHaveBeenCalledWith(expect.objectContaining({ sourceId: 'caster' }));
+    expect(onTranscript).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceId: 'caster', speechSegmentId: bySource.caster.id }),
+    );
+    expect(onTranscript.mock.calls[0][0]).not.toHaveProperty('speechSegmentId');
     expect(capture.status().enabled).toBe(false);
 
     await capture.clear();
@@ -157,6 +160,60 @@ describe('private opt-in Whisper PCM evidence', () => {
     await capture.clear();
     expect(await readdir(path.join(root, 'speech-segments'))).toEqual([]);
     expect(capture.configure(true).enabled).toBe(true);
+  });
+
+  it('restores sequence numbers after restart and uniquely identifies independent Playground experiments', async () => {
+    const { capture, root } = await fixture();
+    capture.configure(true);
+    const pcm = new Float32Array(3200).fill(0.35);
+    const first = storeSample(capture, 'caster', pcm, 'same-capture')!;
+    await capture.complete(first, { text: 'first', durationMs: 1 });
+    const reopened = new SpeechSegmentCapture(root);
+    await reopened.load();
+    reopened.configure(true);
+    const second = storeSample(reopened, 'caster', pcm, 'same-capture')!;
+    await reopened.complete(second, { text: 'second', durationMs: 1 });
+    expect(reopened.status().records.find((record) => record.id === second)?.sequence).toBe(2);
+
+    const worker = () =>
+      ({
+        start: async () => {},
+        stop: () => {},
+        transcribe: async () => 'hello',
+        shutdown: async () => {},
+      }) as unknown as NativeSpeech;
+    async function experiment() {
+      const service = new SpeechPlaygroundService(worker, () => true, Date.now, reopened);
+      await service.start({
+        mode: 'whole-file',
+        sourceId: 'caster',
+        label: 'Caster',
+        sampleRate: 16000,
+      });
+      await service.push(pcm);
+      const snapshot = await service.finish();
+      expect(snapshot.segments[0]?.speechSegmentId).toBeTruthy();
+      await reopened.flush();
+      await service.stop();
+    }
+    await experiment();
+    await experiment();
+    const experiments = reopened.status().records.filter((record) => record.timeBase === 'input');
+    expect(experiments).toHaveLength(2);
+    expect(new Set(experiments.map((record) => record.captureId)).size).toBe(2);
+  });
+
+  it('fails closed and reports a storage initialization failure without preventing startup', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'lc-speech-'));
+    roots.push(root);
+    await writeFile(path.join(root, 'speech-segments'), 'not-a-directory');
+    const report = vi.fn();
+    const capture = new SpeechSegmentCapture(root, report);
+    await expect(capture.load()).resolves.toBeUndefined();
+    expect(capture.status().warning).toMatch(/unavailable|could not/i);
+    expect(capture.status().enabled).toBe(false);
+    expect(() => capture.configure(true)).toThrow(/invalid|unavailable|storage/i);
+    expect(report).toHaveBeenCalledTimes(1);
   });
 
   it('reruns one saved segment with identical PCM in isolated whole-file Whisper without other sources', async () => {

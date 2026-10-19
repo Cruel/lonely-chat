@@ -519,6 +519,7 @@ export class AudioService {
           if (epoch !== source.epoch || !text.trim()) return;
           const entry: LabeledTranscript = {
             sourceId: source.status.id,
+            ...(captureIdForSegment ? { speechSegmentId: captureIdForSegment } : {}),
             source: label,
             text: text.trim().slice(0, 2000),
             observedAt,

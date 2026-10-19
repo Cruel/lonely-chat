@@ -12,7 +12,15 @@ describe('bounded inference context and observation boundaries', () => {
       { kind: 'visual', source: 'camera', description: 'opening map', observedAt: now },
       now,
     );
-    history.recordTranscript({ source: 'streamer mic', text: 'hello there', observedAt: now }, now);
+    history.recordTranscript(
+      {
+        source: 'streamer mic',
+        text: 'hello there',
+        observedAt: now,
+        speechSegmentId: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa',
+      },
+      now,
+    );
     const first = history.snapshot('a game', 1, now + 50, 3000, []);
     expect(first.boundary).toMatchObject({
       fromSequence: 0,
@@ -22,6 +30,9 @@ describe('bounded inference context and observation boundaries', () => {
     });
     expect(first.observations?.map((item) => item.description)).toEqual(['opening map']);
     expect(first.recentTranscripts?.map((item) => item.source)).toEqual(['streamer mic']);
+    expect(first.recentTranscripts?.[0].speechSegmentId).toBe(
+      'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa',
+    );
     expect(first.roster?.length).toBe(3);
     history.recordObservation(
       { kind: 'audio', source: 'game audio', description: 'gunshot', observedAt: now + 100 },

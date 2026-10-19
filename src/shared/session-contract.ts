@@ -38,6 +38,8 @@ export interface CapturedObservation {
 export interface LabeledTranscript {
   /** Stable identity of the configured input, even when its label changes. */
   readonly sourceId?: string;
+  /** Correlates an opt-in raw PCM evidence clip to this exact Whisper result. Never contains PCM. */
+  readonly speechSegmentId?: string;
   readonly source: string;
   readonly text: string;
   readonly observedAt: number;

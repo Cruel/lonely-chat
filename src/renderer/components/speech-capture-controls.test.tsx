@@ -44,6 +44,20 @@ it('requires separate opt-in to capture raw PCM and shows no recorded clips by d
   await waitFor(() => expect(configure).toHaveBeenCalledWith(false));
 });
 
+it('offers to cancel pending PCM before the first Whisper result is saved', async () => {
+  const clear = vi.fn(async () => empty);
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  window.lonelyChat = {
+    getSpeechCapture: async () => ({ ...empty, enabled: true, pending: 1, bytes: 12000 }),
+    clearCapturedSpeech: clear,
+    onSpeechCaptureChange: () => () => {},
+  } as unknown as typeof window.lonelyChat;
+  render(<SpeechCaptureControls />);
+  const deleteAll = await screen.findByRole('button', { name: 'Stop and delete all clips' });
+  fireEvent.click(deleteAll);
+  await waitFor(() => expect(clear).toHaveBeenCalledOnce());
+});
+
 it('shows source-labeled failed evidence and makes rerun, export and deletion explicit', async () => {
   const record: SpeechCaptureStatus['records'][number] = {
     id: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa',

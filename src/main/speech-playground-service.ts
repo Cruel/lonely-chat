@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { MonoResampler, SpeechSegmenter, type SpeechSlice } from './audio-segmentation';
 import type { NativeSpeech } from './native-speech';
 import type { SpeechSegmentCapture } from './speech-segment-capture';
@@ -35,6 +36,7 @@ export class SpeechPlaygroundService {
   private tasks = new Set<Promise<void>>();
   private generation = 0;
   private nextSegment = 0;
+  private captureSessionId = '';
   private retiring: Promise<void> = Promise.resolve();
   private failedStartupReleased = false;
 
@@ -70,6 +72,7 @@ export class SpeechPlaygroundService {
     if (!this.canStart())
       throw new Error('Stop Simulation and other model operations before testing speech.');
     const generation = ++this.generation;
+    this.captureSessionId = randomUUID();
     this.failedStartupReleased = false;
     this.resampler = new MonoResampler(request.sampleRate);
     this.segmenter = new SpeechSegmenter();
@@ -205,7 +208,7 @@ export class SpeechPlaygroundService {
       {
         sourceId: segment.sourceId,
         label: segment.label,
-        captureId: `speech-test-${generation}`,
+        captureId: this.captureSessionId,
         timeBase: 'input',
         startMs: segment.startMs,
         endMs: segment.endMs,
@@ -213,6 +216,7 @@ export class SpeechPlaygroundService {
       },
       slice.samples,
     );
+    if (capturedId) this.updateSegment(id, { speechSegmentId: capturedId });
     let task!: Promise<void>;
     task = worker
       .transcribe(slice.samples)

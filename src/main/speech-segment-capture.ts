@@ -73,69 +73,83 @@ export class SpeechSegmentCapture {
 
   /** Only bounded, regular files under our own UUID filenames are reopened. */
   async load(): Promise<void> {
-    await mkdir(this.directory, { recursive: true, mode: 0o700 });
-    const entries = await readdir(this.directory, { withFileTypes: true });
-    if (entries.length > MAX_RECORDS + 16) {
-      this.storageBlocked = true;
-      this.warning = 'Speech evidence directory exceeds the safety limit; review stored files.';
-      this.publish();
-      return;
-    }
-    for (const entry of entries) {
-      if (!entry.isFile()) continue;
-      // An interrupted atomic write must not leave hidden private audio behind.
-      if (ID_PATTERN.test(entry.name.slice(0, -4)) && entry.name.endsWith('.tmp')) {
-        await rm(path.join(this.directory, entry.name));
-        continue;
-      }
-      if (!entry.name.endsWith('.json')) continue;
-      const id = entry.name.slice(0, -5);
-      if (!ID_PATTERN.test(id)) continue;
-      try {
-        const file = path.join(this.directory, entry.name);
-        const size = (await stat(file)).size;
-        if (size > MAX_BYTES || this.bytes + size > MAX_BYTES || this.records.size >= MAX_RECORDS)
-          throw new Error('Speech evidence storage limit exceeded');
-        const parsed = JSON.parse(await readFile(file, 'utf8')) as {
-          version: number;
-          meta: CapturedSpeechSegment;
-          pcmBase64: string;
-        };
-        if (
-          parsed.version !== 1 ||
-          parsed.meta?.id !== id ||
-          parsed.meta?.sampleRate !== 16000 ||
-          !/^[\w-]{1,80}$/.test(parsed.meta.sourceId) ||
-          !/^[\w-]{1,80}$/.test(parsed.meta.captureId) ||
-          typeof parsed.meta.label !== 'string' ||
-          parsed.meta.label.length > 80 ||
-          !['observation', 'input'].includes(parsed.meta.timeBase) ||
-          !['transcribed', 'empty', 'failed'].includes(parsed.meta.result) ||
-          ![
-            parsed.meta.startMs,
-            parsed.meta.endMs,
-            parsed.meta.observedAt,
-            parsed.meta.capturedAt,
-            parsed.meta.durationMs,
-          ].every(Number.isFinite) ||
-          parsed.meta.startMs > parsed.meta.endMs ||
-          !Number.isInteger(parsed.meta.sequence) ||
-          !Number.isInteger(parsed.meta.sampleCount) ||
-          parsed.meta.sampleCount < 1600 ||
-          parsed.meta.sampleCount > MAX_SEGMENT_SAMPLES ||
-          typeof parsed.pcmBase64 !== 'string' ||
-          Buffer.from(parsed.pcmBase64, 'base64').byteLength !== parsed.meta.sampleCount * 4
-        )
-          throw new Error('Invalid speech evidence record');
-        this.bytes += size;
-        this.records.set(id, { ...parsed.meta, bytes: size });
-      } catch (error) {
+    try {
+      await mkdir(this.directory, { recursive: true, mode: 0o700 });
+      const entries = await readdir(this.directory, { withFileTypes: true });
+      if (entries.length > MAX_RECORDS + 16) {
         this.storageBlocked = true;
-        this.warning = 'Some stored speech evidence could not be loaded; files were not deleted.';
-        this.reportError(error);
+        this.warning = 'Speech evidence directory exceeds the safety limit; review stored files.';
+        this.publish();
+        return;
       }
+      for (const entry of entries) {
+        if (!entry.isFile()) continue;
+        // An interrupted atomic write must not leave hidden private audio behind.
+        if (ID_PATTERN.test(entry.name.slice(0, -4)) && entry.name.endsWith('.tmp')) {
+          await rm(path.join(this.directory, entry.name));
+          continue;
+        }
+        if (!entry.name.endsWith('.json')) continue;
+        const id = entry.name.slice(0, -5);
+        if (!ID_PATTERN.test(id)) continue;
+        try {
+          const file = path.join(this.directory, entry.name);
+          const size = (await stat(file)).size;
+          if (size > MAX_BYTES || this.bytes + size > MAX_BYTES || this.records.size >= MAX_RECORDS)
+            throw new Error('Speech evidence storage limit exceeded');
+          const parsed = JSON.parse(await readFile(file, 'utf8')) as {
+            version: number;
+            meta: CapturedSpeechSegment;
+            pcmBase64: string;
+          };
+          if (
+            parsed.version !== 1 ||
+            parsed.meta?.id !== id ||
+            parsed.meta?.sampleRate !== 16000 ||
+            !/^[\w-]{1,80}$/.test(parsed.meta.sourceId) ||
+            !/^[\w-]{1,80}$/.test(parsed.meta.captureId) ||
+            typeof parsed.meta.label !== 'string' ||
+            parsed.meta.label.length > 80 ||
+            !['observation', 'input'].includes(parsed.meta.timeBase) ||
+            !['transcribed', 'empty', 'failed'].includes(parsed.meta.result) ||
+            ![
+              parsed.meta.startMs,
+              parsed.meta.endMs,
+              parsed.meta.observedAt,
+              parsed.meta.capturedAt,
+              parsed.meta.durationMs,
+            ].every(Number.isFinite) ||
+            parsed.meta.startMs > parsed.meta.endMs ||
+            !Number.isInteger(parsed.meta.sequence) ||
+            !Number.isInteger(parsed.meta.sampleCount) ||
+            parsed.meta.sampleCount < 1600 ||
+            parsed.meta.sampleCount > MAX_SEGMENT_SAMPLES ||
+            typeof parsed.pcmBase64 !== 'string' ||
+            Buffer.from(parsed.pcmBase64, 'base64').byteLength !== parsed.meta.sampleCount * 4
+          )
+            throw new Error('Invalid speech evidence record');
+          this.bytes += size;
+          this.records.set(id, { ...parsed.meta, bytes: size });
+          this.sequences.set(
+            parsed.meta.captureId,
+            Math.max(this.sequences.get(parsed.meta.captureId) ?? 0, parsed.meta.sequence),
+          );
+        } catch (error) {
+          this.storageBlocked = true;
+          this.warning = 'Some stored speech evidence could not be loaded; files were not deleted.';
+          this.reportError(error);
+        }
+      }
+      this.publish();
+    } catch (error) {
+      // Optional diagnostics must never prevent the application from launching.
+      // Refuse new capture until storage is accessible; preserve existing evidence.
+      this.enabled = false;
+      this.storageBlocked = true;
+      this.warning = 'Speech evidence storage is unavailable; raw capture is disabled.';
+      this.reportError(error);
+      this.publish();
     }
-    this.publish();
   }
 
   configure(enabled: unknown): SpeechCaptureStatus {

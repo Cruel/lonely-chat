@@ -96,7 +96,7 @@ export function SpeechCaptureControls({
           {error}
         </p>
       )}
-      {(!!status?.records.length || !!status?.warning) && (
+      {(!!status?.records.length || !!status?.pending || !!status?.warning) && (
         <>
           <div className="flex justify-end">
             <Button
