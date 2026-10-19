@@ -55,6 +55,7 @@ import { reportRendererFailure } from '../renderer-error-reporting';
 import { FreeformPlayground } from '@/components/freeform-playground';
 import { SimulationPlayground } from '@/components/simulation-playground';
 import { SpeechPlayground } from '@/components/speech-playground';
+import { SpeechCaptureControls } from '@/components/speech-capture-controls';
 import { AudioInput } from '@/components/audio-input';
 import type { AudioStatus } from '../../shared/audio-contract';
 import type { RecordedTranscriptMode } from '../../shared/recorded-transcript-cache';
@@ -1476,6 +1477,7 @@ export function DesktopPage() {
               <OperationalLogs focus={logFocus} onOpenAttempt={openAttempt} />
               <DiagnosticCaptureControls />
               <CompactRecordingControls />
+              <SpeechCaptureControls />
               <Panel>
                 <h3 className="font-medium">Session diagnostics</h3>
                 <p className="mt-2 text-xs text-zinc-400">

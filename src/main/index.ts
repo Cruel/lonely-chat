@@ -17,6 +17,7 @@ import { validateRendererFailure } from '../shared/renderer-log-contract';
 import { PlaygroundService } from './playground-service';
 import { PromptPresetStore } from './prompt-preset-store';
 import { SpeechPlaygroundService } from './speech-playground-service';
+import { SpeechSegmentCapture } from './speech-segment-capture';
 import { installElectronSmoke } from './electron-smoke';
 import { observationNow } from '../shared/observation-clock';
 import { pathToFileURL } from 'node:url';
@@ -150,6 +151,9 @@ const preferenceStore = new PreferencesStore(app.getPath('userData'));
 const promptPresets = new PromptPresetStore(app.getPath('userData'));
 const audioConfig = new AudioConfigStore(app.getPath('userData'));
 const transcriptCache = new RecordedTranscriptCache(app.getPath('userData'));
+const speechCapture = new SpeechSegmentCapture(app.getPath('userData'), (error) =>
+  logger.error('recording', 'Unable to store private speech segment evidence', error),
+);
 const savedCases = new SavedInferenceCases(app.getPath('userData'));
 const recordedScenarios = new RecordedScenarioStore(app.getPath('userData'));
 const recordedMediaAccess = new RecordedMediaAccess();
@@ -305,6 +309,23 @@ function registerHandlers(): void {
       speechTest.push(samples, backpressure),
     'speech-test:finish': () => speechTest.finish(),
     'speech-test:stop': () => speechTest.stop(),
+    'speech-test:rerun-captured': (id: string) => speechTest.rerunCaptured(id),
+    'speech-capture:get': () => speechCapture.status(),
+    'speech-capture:configure': (enabled: boolean) => speechCapture.configure(enabled),
+    'speech-capture:delete': (id: string) => speechCapture.deleteRecord(id),
+    'speech-capture:clear': () => speechCapture.clear(),
+    'speech-capture:export': async (id: string) => {
+      if (!mainWindow) throw new Error('Desktop window is unavailable.');
+      const payload = await speechCapture.exportRecord(id);
+      const selection = await dialog.showSaveDialog(mainWindow, {
+        title: 'Export private PCM, source labels and transcript (review before sharing)',
+        defaultPath: `speech-segment-${id}.json`,
+        filters: [{ name: 'Raw speech evidence (JSON)', extensions: ['json'] }],
+      });
+      if (selection.canceled || !selection.filePath) return false;
+      await writeFile(selection.filePath, payload, { mode: 0o600 });
+      return true;
+    },
     'logs:get': async () => {
       await logReady;
       return logger.snapshot();
@@ -976,6 +997,11 @@ function openMainWindow(): void {
 }
 
 async function boot(): Promise<void> {
+  await speechCapture.load();
+  speechCapture.subscribe((status) => {
+    if (mainWindow && !mainWindow.isDestroyed())
+      mainWindow.webContents.send('speech-capture:change', status);
+  });
   protocol.handle(MEDIA_SCHEME, (request) => recordedMediaAccess.serve(request));
   try {
     windowPrefs = await windowStore.read();
@@ -1079,6 +1105,8 @@ async function boot(): Promise<void> {
       !session.switchingModel &&
       ['stopped', 'error'].includes(session.snapshot().phase) &&
       installs.snapshot().progress.phase === 'idle',
+    undefined,
+    speechCapture,
   );
   speechTest.subscribe((status) => {
     if (status.phase === 'error' && status.error)
@@ -1129,6 +1157,7 @@ async function boot(): Promise<void> {
     reportError,
     transcriptCache,
     () => installs.snapshot().active['speech-to-text'],
+    speechCapture,
   );
   sessionMedia = new SessionMedia(session, audio, () => {
     ++videoSelectionGeneration;
@@ -1273,6 +1302,7 @@ app.on('before-quit', (event) => {
   void shutdown.stop().then(async () => {
     // All captured attempts are cancelled/completed before we drain the recorder.
     await compactRecorder.flush();
+    await speechCapture.flush();
     // ManagedShutdown runs services concurrently. Close logs afterward so late
     // worker/shutdown failures cannot be dropped by an already-closed logger.
     try {
@@ -1294,6 +1324,15 @@ app.on('will-quit', () => {
   ipcMain.removeHandler('speech-test:pcm');
   ipcMain.removeHandler('speech-test:finish');
   ipcMain.removeHandler('speech-test:stop');
+  ipcMain.removeHandler('speech-test:rerun-captured');
+  for (const channel of [
+    'speech-capture:get',
+    'speech-capture:configure',
+    'speech-capture:delete',
+    'speech-capture:clear',
+    'speech-capture:export',
+  ])
+    ipcMain.removeHandler(channel);
   ipcMain.removeHandler('logs:get');
   ipcMain.removeHandler('logs:configure');
   ipcMain.removeHandler('logs:export');

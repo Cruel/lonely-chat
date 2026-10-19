@@ -8,6 +8,7 @@ import { validateAudioId, validateAudioLabel } from '../shared/audio-contract';
 import type { LabeledTranscript } from '../shared/session-contract';
 import type { NativeSpeech } from './native-speech';
 import type { OperationalErrorSink } from './operational-logger';
+import type { SpeechSegmentCapture } from './speech-segment-capture';
 import { systemClock, type TimerClock } from './chat-scheduler';
 import { MonoResampler, SpeechSegmenter } from './audio-segmentation';
 import type { TranscriptCacheQuery } from '../shared/recorded-transcript-cache';
@@ -66,6 +67,7 @@ export class AudioService {
     private readonly reportError?: OperationalErrorSink,
     private readonly transcriptCache?: RecordedTranscriptCache,
     private readonly speechModelId?: () => string | null,
+    private readonly speechCapture?: SpeechSegmentCapture,
   ) {}
 
   snapshot(): AudioStatus {
@@ -488,6 +490,19 @@ export class AudioService {
     const observedAt = Math.max(value.observedAt ?? this.now(), source.lastObservedAt + 1);
     source.lastObservedAt = observedAt;
     this.patch(source, { pendingSegments: source.status.pendingSegments + 1 });
+    const captureIdForSegment = this.speechCapture?.begin(
+      {
+        sourceId: source.status.id,
+        label,
+        captureId,
+        timeBase: 'observation',
+        startMs: observedAt - (value.samples.length * 1000) / 16000,
+        endMs: observedAt,
+        observedAt,
+      },
+      value.samples,
+    );
+    const transcriptionStarted = this.now();
     const track = source.recorded;
     // An in-flight Whisper request retains its original speech time even if a
     // later resume shifts the physical origin of recorded playback.
@@ -497,6 +512,10 @@ export class AudioService {
       .transcribe(value.samples)
       .then(
         (text) => {
+          void this.speechCapture?.complete(captureIdForSegment ?? null, {
+            text,
+            durationMs: this.now() - transcriptionStarted,
+          });
           if (epoch !== source.epoch || !text.trim()) return;
           const entry: LabeledTranscript = {
             sourceId: source.status.id,
@@ -515,6 +534,10 @@ export class AudioService {
           this.emitTranscript(source, entry);
         },
         (error: unknown) => {
+          void this.speechCapture?.complete(captureIdForSegment ?? null, {
+            error,
+            durationMs: this.now() - transcriptionStarted,
+          });
           if (epoch !== source.epoch) return;
           if (track?.cacheMode === 'save') track.cacheInvalid = true;
           this.workerFailed(source, epoch, error);

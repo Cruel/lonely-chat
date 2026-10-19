@@ -1,5 +1,6 @@
 import { MonoResampler, SpeechSegmenter, type SpeechSlice } from './audio-segmentation';
 import type { NativeSpeech } from './native-speech';
+import type { SpeechSegmentCapture } from './speech-segment-capture';
 import {
   validateSpeechTestStart,
   type SpeechTestSegment,
@@ -41,6 +42,7 @@ export class SpeechPlaygroundService {
     private readonly newWorker: () => SpeechWorker,
     private readonly canStart: () => boolean = () => true,
     private readonly now: () => number = Date.now,
+    private readonly speechCapture?: SpeechSegmentCapture,
   ) {}
 
   get busy(): boolean {
@@ -199,11 +201,27 @@ export class SpeechPlaygroundService {
     const worker = this.worker;
     if (!worker) return;
     const started = this.now();
+    const capturedId = this.speechCapture?.begin(
+      {
+        sourceId: segment.sourceId,
+        label: segment.label,
+        captureId: `speech-test-${generation}`,
+        timeBase: 'input',
+        startMs: segment.startMs,
+        endMs: segment.endMs,
+        observedAt: started,
+      },
+      slice.samples,
+    );
     let task!: Promise<void>;
     task = worker
       .transcribe(slice.samples)
       .then(
         (text) => {
+          void this.speechCapture?.complete(capturedId ?? null, {
+            text,
+            durationMs: this.now() - started,
+          });
           if (generation !== this.generation) return;
           this.updateSegment(id, {
             phase: text.trim() ? 'transcribed' : 'empty',
@@ -212,6 +230,10 @@ export class SpeechPlaygroundService {
           });
         },
         (error: unknown) => {
+          void this.speechCapture?.complete(capturedId ?? null, {
+            error,
+            durationMs: this.now() - started,
+          });
           if (generation !== this.generation) return;
           const reason = errorText(error);
           this.updateSegment(id, {
@@ -228,6 +250,32 @@ export class SpeechPlaygroundService {
       });
     this.tasks.add(task);
     this.patch({ pending: this.tasks.size });
+  }
+
+  /** Re-run exact saved 16 kHz input through one isolated Whisper request, without VAD or Simulation. */
+  async rerunCaptured(id: string): Promise<SpeechTestSnapshot> {
+    if (!this.speechCapture) throw new Error('Speech evidence is unavailable.');
+    const { meta, pcm } = await this.speechCapture.samples(id);
+    await this.start({
+      mode: 'whole-file',
+      sourceId: meta.sourceId,
+      label: meta.label,
+      sampleRate: 16000,
+    });
+    try {
+      // The captured samples were already resampled and segmented. Do not pass
+      // them through MonoResampler again (which can drop the last PCM sample).
+      const generation = this.generation;
+      this.patch({ phase: 'finishing' });
+      this.submit({ samples: pcm, startSample: 0, endSample: pcm.length });
+      await Promise.allSettled(this.tasks);
+      if (generation === this.generation && this.state.phase === 'finishing')
+        this.patch({ phase: 'ready' });
+      return this.snapshot();
+    } catch (error) {
+      await this.stop();
+      throw error;
+    }
   }
 
   private updateSegment(id: number, change: Partial<SpeechTestSegment>): void {

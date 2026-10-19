@@ -68,6 +68,7 @@ import type {
 } from './recorded-scenario-contract';
 import type { SimulationExperimentValues } from './playground-contract';
 import type { SpeechTestStart, SpeechTestSnapshot } from './speech-playground-contract';
+import type { SpeechCaptureStatus } from './speech-capture-contract';
 import type {
   TranscriptCacheAvailability,
   TranscriptCacheQuery,
@@ -105,6 +106,12 @@ export interface DesktopInvocations {
   'speech-test:pcm': SpeechTestSnapshot;
   'speech-test:finish': SpeechTestSnapshot;
   'speech-test:stop': SpeechTestSnapshot;
+  'speech-test:rerun-captured': SpeechTestSnapshot;
+  'speech-capture:get': SpeechCaptureStatus;
+  'speech-capture:configure': SpeechCaptureStatus;
+  'speech-capture:delete': SpeechCaptureStatus;
+  'speech-capture:clear': SpeechCaptureStatus;
+  'speech-capture:export': boolean;
   'chat:snapshot': ChatSnapshot;
   'chat:sample': void;
   'overlay:url': string | null;
@@ -208,6 +215,12 @@ export interface DesktopArguments {
   'speech-test:pcm': [samples: Float32Array, backpressure?: boolean];
   'speech-test:finish': [];
   'speech-test:stop': [];
+  'speech-test:rerun-captured': [id: string];
+  'speech-capture:get': [];
+  'speech-capture:configure': [enabled: boolean];
+  'speech-capture:delete': [id: string];
+  'speech-capture:clear': [];
+  'speech-capture:export': [id: string];
   'chat:snapshot': [];
   'chat:sample': [];
   'overlay:url': [];
@@ -316,6 +329,13 @@ export interface DesktopAPI {
   submitSpeechTestPcm(samples: Float32Array, backpressure?: boolean): Promise<SpeechTestSnapshot>;
   finishSpeechTest(): Promise<SpeechTestSnapshot>;
   stopSpeechTest(): Promise<SpeechTestSnapshot>;
+  rerunCapturedSpeech(id: string): Promise<SpeechTestSnapshot>;
+  getSpeechCapture(): Promise<SpeechCaptureStatus>;
+  configureSpeechCapture(enabled: boolean): Promise<SpeechCaptureStatus>;
+  deleteCapturedSpeech(id: string): Promise<SpeechCaptureStatus>;
+  clearCapturedSpeech(): Promise<SpeechCaptureStatus>;
+  exportCapturedSpeech(id: string): Promise<boolean>;
+  onSpeechCaptureChange(listener: (status: SpeechCaptureStatus) => void): () => void;
   onSpeechTestChange(listener: (snapshot: SpeechTestSnapshot) => void): () => void;
   onPlaygroundStatus(listener: (status: PlaygroundStatus) => void): () => void;
   getOperationalLogs(): Promise<LogSnapshot>;

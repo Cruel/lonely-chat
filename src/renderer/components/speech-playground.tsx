@@ -10,6 +10,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { audioWorkletSource } from '../audio-processor';
+import { SpeechCaptureControls } from './speech-capture-controls';
 import type { SpeechTestMode, SpeechTestSnapshot } from '../../shared/speech-playground-contract';
 
 type TestSource = 'file' | 'microphone';
@@ -419,6 +420,23 @@ export function SpeechPlayground({
           </>
         )}
       </div>
+      <SpeechCaptureControls
+        rerunDisabled={busy || simulationActive}
+        onRerun={async (id) => {
+          if (busy || simulationActive)
+            throw new Error('Stop current speech testing and Simulation before rerunning a clip.');
+          setError(null);
+          setBusy(true);
+          try {
+            await api.stopSpeechTest();
+            await api.rerunCapturedSpeech(id);
+            // Retire the isolated worker; keep the result visible in the transcript pane.
+            await api.stopSpeechTest();
+          } finally {
+            setBusy(false);
+          }
+        }}
+      />
       <div className="rounded-xl border border-border bg-card p-5">
         <h3 className="font-medium">Segments and transcripts</h3>
         <p className="mt-1 text-xs text-zinc-400">

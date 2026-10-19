@@ -27,6 +27,20 @@ const api: DesktopAPI = {
   submitSpeechTestPcm: (samples, backpressure) => invoke('speech-test:pcm', samples, backpressure),
   finishSpeechTest: () => invoke('speech-test:finish'),
   stopSpeechTest: () => invoke('speech-test:stop'),
+  rerunCapturedSpeech: (id) => invoke('speech-test:rerun-captured', id),
+  getSpeechCapture: () => invoke('speech-capture:get'),
+  configureSpeechCapture: (enabled) => invoke('speech-capture:configure', enabled),
+  deleteCapturedSpeech: (id) => invoke('speech-capture:delete', id),
+  clearCapturedSpeech: () => invoke('speech-capture:clear'),
+  exportCapturedSpeech: (id) => invoke('speech-capture:export', id),
+  onSpeechCaptureChange: (listener) => {
+    const receive = (
+      _event: Electron.IpcRendererEvent,
+      status: import('../shared/speech-capture-contract').SpeechCaptureStatus,
+    ) => listener(status);
+    ipcRenderer.on('speech-capture:change', receive);
+    return () => ipcRenderer.removeListener('speech-capture:change', receive);
+  },
   onSpeechTestChange: (listener) => {
     const receive = (
       _event: Electron.IpcRendererEvent,
