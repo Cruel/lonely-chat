@@ -150,7 +150,10 @@ export class CompactInferenceRecorder {
   private indexedStage = new Map<string, TraceAttempt['stage']>();
   private presented = new Set<string>();
   // Run IDs increase monotonically within one process; no growing tombstone set is needed.
+  // Close rejects new presentations immediately, but queued writes keep their references
+  // until the ordered close operation has actually drained.
   private closedThroughRunId = -1;
+  private drainedThroughRunId = -1;
   private broken = false;
   private chain: Promise<void> = Promise.resolve();
 
@@ -477,7 +480,9 @@ export class CompactInferenceRecorder {
           });
         }
       } finally {
-        // Presentation identity state is needed only while a Run can publish chat.
+        // Presentation identity state is needed until every previously queued
+        // attempt/presentation has executed, not merely until Close was requested.
+        this.drainedThroughRunId = Math.max(this.drainedThroughRunId, runId);
         for (const [id, owner] of this.indexedRun) {
           if (owner !== runId) continue;
           this.indexedRun.delete(id);
@@ -783,7 +788,7 @@ export class CompactInferenceRecorder {
       this.remember(this.frames, digest, MAX_CACHED_FRAME_HASHES);
     }
     await this.chunk(dir, entries, { type: 'attempt', attemptId: attempt.id, chunk: '', summary });
-    if (attempt.stage === 'scheduled' && attempt.runId > this.closedThroughRunId) {
+    if (attempt.stage === 'scheduled' && attempt.runId > this.drainedThroughRunId) {
       this.indexedDirs.set(attempt.id, dir);
       this.indexedRun.set(attempt.id, attempt.runId);
       this.indexedStage.set(attempt.id, attempt.stage);

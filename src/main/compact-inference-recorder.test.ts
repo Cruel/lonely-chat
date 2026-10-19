@@ -234,6 +234,55 @@ describe('opt-in compact inference evidence', () => {
     expect(await recorder.list()).toHaveLength(2);
   });
 
+  it('retains presentations admitted before Run close while attempt writes are still queued', async () => {
+    const { root, recorder, trace } = await fixture();
+    await recorder.configure(true);
+    const recordingId = recorder.status().recordingId!;
+    let unblock!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      unblock = resolve;
+    });
+    // Simulate slow storage: the attempt, presentation and close are all enqueued
+    // while the recorder has not yet written the terminal attempt chunk.
+    (recorder as unknown as { chain: Promise<void> }).chain = gate;
+    const id = start(trace);
+    trace.update(id, { stage: 'scheduled' });
+    trace.present(
+      id,
+      { id: 'chat-before-close', author: 'viewer', text: 'retained', presentedAt: 1250 },
+      0,
+    );
+    trace.closePresentation(3);
+    // The synchronous Run-close boundary must reject later publications.
+    trace.present(
+      id,
+      { id: 'chat-after-close', author: 'viewer', text: 'excluded', presentedAt: 1350 },
+      1,
+    );
+    unblock();
+    await recorder.flush();
+    const dir = path.join(root, 'compact-inference', recordingId);
+    const index = (await readFile(path.join(dir, 'index.jsonl'), 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { type: string; chunk: string });
+    expect(index.map((entry) => entry.type)).toEqual([
+      'attempt-start',
+      'attempt',
+      'presentation',
+      'presentation-closed',
+    ]);
+    const chunks = await Promise.all(
+      index.map(async (entry) =>
+        gunzipSync(await readFile(path.join(dir, 'chunks', entry.chunk))).toString('utf8'),
+      ),
+    );
+    expect(chunks.join('\n')).toContain('chat-before-close');
+    expect(chunks.join('\n')).not.toContain('chat-after-close');
+    expect(chunks.at(-1)).toContain('presentation-closed');
+    expect(recorder.status().memoryBytes).toBeLessThan(4000);
+  });
+
   it('captures each constructed Exact transport request, including retries and missing replies, without duplicating JPEG blobs', async () => {
     const { root, recorder, trace } = await fixture();
     await recorder.configure(true, 'exact');
