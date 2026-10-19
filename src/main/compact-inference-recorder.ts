@@ -10,6 +10,7 @@ import type {
   CompactAttemptSummary,
   CompactReconstruction,
   CompactRecordingStatus,
+  InferenceRecordingMode,
 } from '../shared/compact-recording-contract';
 
 type EvidenceKind = 'observation' | 'transcript' | 'event' | 'chat' | 'frame';
@@ -20,6 +21,7 @@ type AttemptRecord = {
   base: Record<string, unknown>;
   selection: Record<string, string[]>;
   details: Record<string, unknown>;
+  exact?: { readonly encodedJson: string; readonly sha256: string };
 };
 type Presentation = {
   type: 'presentation';
@@ -39,10 +41,13 @@ type IndexRow = {
   chunk: string;
   attemptId: string;
   summary?: CompactAttemptSummary;
+  sha256?: string;
 };
 type Capture = {
   metadata: Parameters<InferenceTrace['begin']>[0];
   patch: Partial<TraceAttempt>;
+  mode: InferenceRecordingMode;
+  requestJson?: string;
 };
 
 // Builder fingerprints distinguish app revisions without implying byte-identical prompts.
@@ -74,6 +79,24 @@ function jsonLine(value: Row | IndexRow): string {
   return JSON.stringify(value) + '\n';
 }
 
+/** Replace only transport image URLs; never rewrite matching strings inside user prompts. */
+function mapImageUrls(value: unknown, replace: (url: string) => string): unknown {
+  if (Array.isArray(value)) return value.map((item) => mapImageUrls(item, replace));
+  if (!value || typeof value !== 'object') return value;
+  const item = value as Record<string, unknown>;
+  return Object.fromEntries(
+    Object.entries(item).map(([key, entry]) => {
+      if (key === 'image_url' && entry && typeof entry === 'object' && !Array.isArray(entry)) {
+        const image = entry as Record<string, unknown>;
+        if (typeof image.url === 'string') return [key, { ...image, url: replace(image.url) }];
+      }
+      return [key, mapImageUrls(entry, replace)];
+    }),
+  );
+}
+const EXACT_FRAME_REF = /^exact-jpeg:([a-f0-9]{64})$/;
+const CHUNK_SHA = /^[a-f0-9]{64}$/;
+
 /**
  * Append-only, opt-in compact evidence storage. Each committed attempt is an independently
  * readable gzip JSONL chunk. The index is appended only AFTER chunk and referenced JPEG files
@@ -84,6 +107,7 @@ function jsonLine(value: Row | IndexRow): string {
  */
 export class CompactInferenceRecorder {
   private enabled = false;
+  private mode: InferenceRecordingMode = 'compact';
   private directory: string | null = null;
   private recordingId: string | null = null;
   private serialByDirectory = new Map<string, number>();
@@ -109,6 +133,7 @@ export class CompactInferenceRecorder {
   status(): CompactRecordingStatus {
     return {
       enabled: this.enabled,
+      mode: this.mode,
       recordingId: this.recordingId,
       attempts: this.attempts,
       chunks: this.chunks,
@@ -118,9 +143,17 @@ export class CompactInferenceRecorder {
   }
 
   /** A fresh recording begins at the next attempt. Already captured attempts finish on disable. */
-  async configure(enabled: boolean): Promise<CompactRecordingStatus> {
-    if (typeof enabled !== 'boolean') throw new Error('Invalid compact recording setting.');
-    if (enabled === this.enabled) return this.status();
+  async configure(
+    enabled: boolean,
+    mode: InferenceRecordingMode = 'compact',
+  ): Promise<CompactRecordingStatus> {
+    if (typeof enabled !== 'boolean' || (mode !== 'compact' && mode !== 'exact'))
+      throw new Error('Invalid inference recording configuration.');
+    if (enabled === this.enabled) {
+      if (enabled && mode !== this.mode)
+        throw new Error('Stop the current recording before switching capture modes.');
+      return this.status();
+    }
     if (enabled) {
       if (this.pending.size)
         throw new Error(
@@ -137,9 +170,11 @@ export class CompactInferenceRecorder {
           format: 'lonely-chat-compact',
           version: 1,
           builderVersion: BUILDER_VERSION,
+          mode,
         }),
         { flag: 'wx', mode: 0o600 },
       );
+      this.mode = mode;
       this.serialByDirectory.set(this.directory, 0);
       this.attempts = 0;
       this.bytes = 0;
@@ -157,7 +192,7 @@ export class CompactInferenceRecorder {
     safeId(id);
     // Deep copy at the capture boundary, not after another cycle can mutate its input.
     try {
-      this.pending.set(id, { metadata: structuredClone(metadata), patch: {} });
+      this.pending.set(id, { metadata: structuredClone(metadata), patch: {}, mode: this.mode });
       this.indexedRun.set(id, metadata.runId);
     } catch {
       this.captureError('Unable to snapshot selected inference input.');
@@ -167,9 +202,15 @@ export class CompactInferenceRecorder {
   update(id: string, patch: Partial<TraceAttempt>): void {
     const item = this.pending.get(id);
     if (!item) return;
-    // Exact transport requests belong to the next ticket, never retain them in compact mode.
-    const { request: _request, ...compactPatch } = patch;
+    // Capture the actual JSON transport representation when the native request is constructed.
+    // Compact continues to omit it, even while the ephemeral inspector retains the request.
+    const { request, ...compactPatch } = patch;
     try {
+      if (item.mode === 'exact' && request != null) {
+        const json = JSON.stringify(request);
+        if (!json) throw new Error('The constructed request is not JSON serializable.');
+        item.requestJson = json;
+      }
       Object.assign(item.patch, structuredClone(compactPatch));
     } catch {
       this.pending.delete(id);
@@ -179,7 +220,7 @@ export class CompactInferenceRecorder {
     if (patch.stage === 'scheduled' || patch.stage === 'failed' || patch.stage === 'cancelled') {
       this.pending.delete(id);
       const snapshot = { ...item.metadata, ...item.patch, id } as unknown as TraceAttempt;
-      this.enqueue(() => this.saveAttempt(snapshot));
+      this.enqueue(() => this.saveAttempt(snapshot, item));
     }
   }
 
@@ -270,16 +311,18 @@ export class CompactInferenceRecorder {
     const name = `${String(serial).padStart(8, '0')}.jsonl.gz`;
     const bytes = gzipSync(rows.map(jsonLine).join(''), { level: 6 });
     await writeFile(path.join(dir, 'chunks', name), bytes, { flag: 'wx', mode: 0o600 });
-    await appendFile(path.join(dir, 'index.jsonl'), jsonLine({ ...index, chunk: name }), {
-      mode: 0o600,
-    });
+    await appendFile(
+      path.join(dir, 'index.jsonl'),
+      jsonLine({ ...index, chunk: name, sha256: sha(bytes) }),
+      { mode: 0o600 },
+    );
     if (dir === this.directory) {
       this.chunks++;
       this.bytes += bytes.byteLength;
     }
   }
 
-  private async saveAttempt(attempt: TraceAttempt): Promise<void> {
+  private async saveAttempt(attempt: TraceAttempt, capture: Capture): Promise<void> {
     const dir = this.directory;
     if (!dir) return;
     const input = object(attempt.input);
@@ -293,7 +336,11 @@ export class CompactInferenceRecorder {
       }
     };
     const run = attempt.runId;
-    const capture = (kind: Exclude<EvidenceKind, 'frame'>, values: unknown, ids: unknown): void => {
+    const captureEvidence = (
+      kind: Exclude<EvidenceKind, 'frame'>,
+      values: unknown,
+      ids: unknown,
+    ): void => {
       const chosen = array(values);
       const provided = array(ids);
       references[kind] = chosen.map((value, index) => {
@@ -305,17 +352,19 @@ export class CompactInferenceRecorder {
         return id;
       });
     };
-    capture('observation', input.observations, selection.observations);
-    capture('transcript', input.recentTranscripts, selection.transcripts);
-    capture('event', input.recentEvents, selection.events);
-    capture('chat', input.recentChat, selection.chat);
+    captureEvidence('observation', input.observations, selection.observations);
+    captureEvidence('transcript', input.recentTranscripts, selection.transcripts);
+    captureEvidence('event', input.recentEvents, selection.events);
+    captureEvidence('chat', input.recentChat, selection.chat);
     references.frame = [];
+    const selectedJpegs = new Set<string>();
     for (const [index, value] of array(input.frames).entries()) {
       const frame = object(value);
       const match = typeof frame.dataUrl === 'string' ? JPEG.exec(frame.dataUrl) : null;
       if (!match) throw new Error('Selected JPEG was unavailable for compact recording.');
       const buffer = Buffer.from(match[1], 'base64');
       const digest = sha(buffer);
+      selectedJpegs.add(digest);
       const frameId = `${run}:frame:${sha(
         JSON.stringify([frame.sourceId, frame.observedAt, frame.mediaTimeMs, digest]),
       )}`;
@@ -349,6 +398,7 @@ export class CompactInferenceRecorder {
     } = input;
     const { request: _request, input: _input, ...rest } = attempt;
     const summary: CompactAttemptSummary = {
+      mode: capture.mode,
       recordingId: this.recordingId!,
       id: attempt.id,
       runId: attempt.runId,
@@ -361,12 +411,27 @@ export class CompactInferenceRecorder {
       stage: attempt.stage,
       chunk: '',
     };
+    let exact: AttemptRecord['exact'];
+    if (capture.mode === 'exact' && capture.requestJson !== undefined) {
+      const original = capture.requestJson;
+      const encoded = mapImageUrls(JSON.parse(original), (url) => {
+        const match = JPEG.exec(url);
+        if (!match) throw new Error('Exact native request contains a non-JPEG image.');
+        const bytes = Buffer.from(match[1], 'base64');
+        const hash = sha(bytes);
+        if (!selectedJpegs.has(hash))
+          throw new Error('Exact request image does not match the selected input frames.');
+        return `exact-jpeg:${hash}`;
+      });
+      exact = { encodedJson: JSON.stringify(encoded), sha256: sha(original) };
+    }
     entries.push({
       type: 'attempt',
       summary,
       base,
       selection: references,
       details: { ...rest, originalSelection: selection, builderVersion: BUILDER_VERSION },
+      ...(exact ? { exact } : {}),
     } as AttemptRecord);
     await this.chunk(dir, entries, { type: 'attempt', attemptId: attempt.id, chunk: '', summary });
     this.indexedDirs.set(attempt.id, dir);
@@ -394,7 +459,12 @@ export class CompactInferenceRecorder {
       results.push(
         ...index
           .filter((item) => item.type === 'attempt' && item.summary)
-          .map((item) => ({ ...item.summary!, recordingId, chunk: item.chunk })),
+          .map((item) => ({
+            ...item.summary!,
+            mode: item.summary!.mode ?? 'compact',
+            recordingId,
+            chunk: item.chunk,
+          })),
       );
     }
     return results;
@@ -428,7 +498,7 @@ export class CompactInferenceRecorder {
     const evidence = new Map<string, Evidence>();
     let attempt: AttemptRecord | null = null;
     for (const item of index) {
-      const rows = await this.readChunk(dir, item.chunk);
+      const rows = await this.readChunk(dir, item.chunk, item.sha256);
       for (const row of rows) {
         if (row.type === 'evidence') evidence.set(row.id, row);
         if (row.type === 'attempt' && row.summary.id === id) attempt = row;
@@ -465,6 +535,42 @@ export class CompactInferenceRecorder {
       recentChat: required('chat') as unknown as InferenceInput['recentChat'],
       frames: frames as unknown as InferenceInput['frames'],
     } as InferenceInput;
+    let request: unknown;
+    let provenance: CompactReconstruction['provenance'];
+    let warning: string;
+    const mode = selected.summary.mode ?? 'compact';
+    if (mode === 'exact') {
+      if (!selected.exact) {
+        request = null;
+        provenance = 'exact-not-constructed';
+        warning =
+          'The attempt ended before its native request was constructed; no original request exists to rerun.';
+      } else {
+        const blobs = new Map(
+          frames.map((frame) => {
+            const match = JPEG.exec(frame.dataUrl);
+            const bytes = Buffer.from(match![1], 'base64');
+            return [sha(bytes), frame.dataUrl] as const;
+          }),
+        );
+        const restored = mapImageUrls(JSON.parse(selected.exact.encodedJson), (reference) => {
+          const match = EXACT_FRAME_REF.exec(reference);
+          if (!match || !blobs.has(match[1]))
+            throw new Error('Exact request references a missing or invalid selected JPEG.');
+          return blobs.get(match[1])!;
+        });
+        if (sha(JSON.stringify(restored)) !== selected.exact.sha256)
+          throw new Error('Exact request checksum mismatch; the archive may be corrupt.');
+        request = restored;
+        provenance = 'exact-recorded-request';
+        warning =
+          'Verified original native request; its prompts, schema, parameters, seed and JPEG bytes are independent of the current builder.';
+      }
+    } else {
+      request = nativeChatRequest(input);
+      provenance = 'current-builder-reconstruction';
+      warning = ''; // Compact reconstruction caveat is applied below.
+    }
     const currentBuilderVersion = BUILDER_VERSION;
     const recordedBuilderVersion =
       typeof selected.details.builderVersion === 'string'
@@ -472,23 +578,66 @@ export class CompactInferenceRecorder {
         : 'unknown';
     return {
       input,
-      request: nativeChatRequest(input),
-      provenance: 'current-builder-reconstruction',
+      request,
+      provenance,
       recordedBuilderVersion,
       currentBuilderVersion,
       warning:
-        (recordedBuilderVersion !== currentBuilderVersion
-          ? 'The recorded builder fingerprint differs from this application. '
-          : 'The recorded builder fingerprint matches this application. ') +
-        'Reconstructed with the current native request builder. This is not the byte-exact ' +
-        'historical request; builder/schema/version changes can alter the prompt and output.',
-      attempt: { ...selected.summary, chunk: target.chunk },
+        mode === 'exact'
+          ? warning
+          : (recordedBuilderVersion !== currentBuilderVersion
+              ? 'The recorded builder fingerprint differs from this application. '
+              : 'The recorded builder fingerprint matches this application. ') +
+            'Reconstructed with the current native request builder. This is not the byte-exact ' +
+            'historical request; builder/schema/version changes can alter the prompt and output.',
+      attempt: { ...selected.summary, mode, chunk: target.chunk },
     };
   }
 
-  private async readChunk(dir: string, name: string): Promise<Row[]> {
+  /** Turn a disk-backed Exact attempt into a standalone immutable saved case source. */
+  async restoreExactAttempt(id: string, recordingId: string): Promise<TraceAttempt> {
+    const rebuilt = await this.reconstruct(id, recordingId);
+    if (!rebuilt) throw new Error('Recorded inference attempt was not found.');
+    if (rebuilt.provenance !== 'exact-recorded-request')
+      throw new Error('This attempt has no constructed Exact native request.');
+    const dir = path.join(this.root, 'compact-inference', recordingId);
+    const index = await this.readIndex(dir);
+    const target = index.find((row) => row.type === 'attempt' && row.attemptId === id);
+    if (!target) throw new Error('Recorded attempt index is missing.');
+    const stored = (await this.readChunk(dir, target.chunk, target.sha256)).find(
+      (row): row is AttemptRecord => row.type === 'attempt' && row.summary.id === id,
+    );
+    if (!stored) throw new Error('Recorded Exact attempt is missing.');
+    const {
+      builderVersion: _builderVersion,
+      originalSelection: _selection,
+      ...details
+    } = stored.details;
+    return {
+      errorStage: null,
+      error: null,
+      usage: null,
+      rawResponse: null,
+      normalized: null,
+      parsed: null,
+      accepted: null,
+      scheduled: null,
+      transportError: null,
+      presented: [],
+      presentationClosed: false,
+      ...rebuilt.attempt,
+      ...details,
+      input: rebuilt.input,
+      request: rebuilt.request,
+    } as unknown as TraceAttempt;
+  }
+
+  private async readChunk(dir: string, name: string, digest?: string): Promise<Row[]> {
     if (!/^\d{8}\.jsonl\.gz$/.test(name)) throw new Error('Invalid compact chunk name.');
-    return gunzipSync(await readFile(path.join(dir, 'chunks', name)))
+    const bytes = await readFile(path.join(dir, 'chunks', name));
+    if (digest !== undefined && (!CHUNK_SHA.test(digest) || sha(bytes) !== digest))
+      throw new Error('Recorded chunk integrity checksum mismatch.');
+    return gunzipSync(bytes)
       .toString('utf8')
       .split('\n')
       .filter(Boolean)

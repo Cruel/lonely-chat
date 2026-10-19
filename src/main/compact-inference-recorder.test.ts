@@ -6,6 +6,9 @@ import { gunzipSync } from 'node:zlib';
 import { CompactInferenceRecorder } from './compact-inference-recorder';
 import { InferenceTrace } from './inference-trace';
 import { InferenceHistory } from './inference-history';
+import { SavedInferenceCases } from './saved-inference-cases';
+import { nativeChatRequest } from './native-inference';
+import type { InferenceInput } from './fake-inference';
 
 const roots: string[] = [];
 async function fixture() {
@@ -227,6 +230,118 @@ describe('opt-in compact inference evidence', () => {
     expect(oldIndex).toContain('presentation');
     expect(oldIndex).toContain('presentation-closed');
     expect(await recorder.list()).toHaveLength(2);
+  });
+
+  it('captures each constructed Exact transport request, including retries and missing replies, without duplicating JPEG blobs', async () => {
+    const { root, recorder, trace } = await fixture();
+    await recorder.configure(true, 'exact');
+    const one = start(trace);
+    const built = nativeChatRequest(trace.get(one)!.input as InferenceInput);
+    const nativeRequest = {
+      ...built,
+      temperature: 0.33,
+      messages: [
+        { role: 'system', content: 'Original prompt, even after a builder update' },
+        built.messages[1],
+      ],
+    };
+    trace.update(one, { stage: 'transport', request: nativeRequest });
+    trace.update(one, {
+      stage: 'failed',
+      errorStage: 'transport',
+      error: 'No response',
+      rawResponse: null,
+    });
+    const two = start(trace, 2);
+    trace.update(two, { stage: 'transport', request: { ...nativeRequest, seed: 44 } });
+    trace.update(two, { stage: 'scheduled' });
+    await recorder.flush();
+    const recordingId = recorder.status().recordingId!;
+    const dir = path.join(root, 'compact-inference', recordingId);
+    expect(await readdir(path.join(dir, 'frames'))).toHaveLength(1);
+    expect((await recorder.list()).map((entry) => entry.mode)).toEqual(['exact', 'exact']);
+    const first = await recorder.reconstruct(one, recordingId);
+    expect(first?.provenance).toBe('exact-recorded-request');
+    expect(first?.request).toEqual(nativeRequest);
+    expect(first?.warning).toMatch(/original native request/i);
+    expect(first?.request).toMatchObject({
+      temperature: 0.33,
+      response_format: nativeRequest.response_format,
+    });
+    expect((await recorder.reconstruct(two, recordingId))?.request).toEqual({
+      ...nativeRequest,
+      seed: 44,
+    });
+    // Reopening on a future version must never invoke that version's prompt builder.
+    const reopened = new CompactInferenceRecorder(root);
+    expect((await reopened.reconstruct(one, recordingId))?.request).toEqual(nativeRequest);
+    const cases = new SavedInferenceCases(root);
+    const saved = await cases.save(await reopened.restoreExactAttempt(one, recordingId));
+    const savedCase = await cases.get(saved.id);
+    expect(JSON.stringify(savedCase.request)).toContain('saved-frame:');
+    const rerun = await cases.prepareFork({
+      caseId: saved.id,
+      modelId: 'model',
+      rawRequestJson: JSON.stringify(savedCase.request),
+      frameIndices: [0],
+    });
+    expect(rerun.submitted).toEqual(nativeRequest);
+    const chunks = (await readdir(path.join(dir, 'chunks'))).sort();
+    const archive = gunzipSync(await readFile(path.join(dir, 'chunks', chunks[0]))).toString(
+      'utf8',
+    );
+    expect(archive).not.toContain(jpeg);
+    expect(archive).toContain('Original prompt');
+  });
+
+  it('finishes already-started Exact attempts after recording is disabled', async () => {
+    const { recorder, trace } = await fixture();
+    await recorder.configure(true, 'exact');
+    const id = start(trace);
+    await recorder.configure(false);
+    trace.update(id, { stage: 'transport', request: { seed: 43, messages: [] } });
+    trace.update(id, { stage: 'failed', errorStage: 'transport' });
+    await recorder.flush();
+    const recordingId = recorder.status().recordingId!;
+    expect((await recorder.reconstruct(id, recordingId))?.request).toEqual({
+      seed: 43,
+      messages: [],
+    });
+  });
+
+  it('marks pre-request failures explicitly and verifies Exact request and archive integrity', async () => {
+    const { root, recorder, trace } = await fixture();
+    await recorder.configure(true, 'exact');
+    const noRequest = start(trace);
+    trace.update(noRequest, {
+      stage: 'failed',
+      errorStage: 'preparing',
+      error: 'model unavailable',
+    });
+    const captured = start(trace, 2);
+    trace.update(captured, {
+      stage: 'transport',
+      request: { seed: 44, messages: [{ image_url: { url: jpeg } }] },
+    });
+    trace.update(captured, { stage: 'failed', errorStage: 'transport' });
+    await recorder.flush();
+    const recordingId = recorder.status().recordingId!;
+    expect((await recorder.reconstruct(noRequest, recordingId))?.warning).toMatch(
+      /before.*constructed/i,
+    );
+    await expect(recorder.restoreExactAttempt(noRequest, recordingId)).rejects.toThrow(
+      /no constructed/i,
+    );
+    const dir = path.join(root, 'compact-inference', recordingId);
+    const index = (await readFile(path.join(dir, 'index.jsonl'), 'utf8')).trim().split('\n');
+    const last = JSON.parse(index.at(-1)!) as { chunk: string };
+    const file = path.join(dir, 'chunks', last.chunk);
+    const corrupt = Buffer.from(await readFile(file));
+    corrupt[corrupt.length - 1] ^= 0xff;
+    await import('node:fs/promises').then(({ writeFile }) => writeFile(file, corrupt));
+    await expect(recorder.reconstruct(captured, recordingId)).rejects.toThrow(
+      /integrity|checksum/i,
+    );
   });
 
   it('keeps stable event identities under timestamp ties and history pruning', () => {

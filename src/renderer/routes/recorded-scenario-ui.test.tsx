@@ -87,6 +87,7 @@ it('loads a saved Scenario, preserves its policy and explicitly isolates recorde
     getNativeStatus: async () => ({ revision: 0, phase: 'stopped' as const, error: null }),
     onNativeChange: () => () => {},
     getCompactRecording: async () => ({
+      mode: 'compact' as const,
       enabled: false,
       recordingId: null,
       attempts: 0,

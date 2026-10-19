@@ -84,6 +84,7 @@ export interface DesktopInvocations {
   'diagnostics:worker-lines': readonly PrivateWorkerLine[];
   'compact:get': CompactRecordingStatus;
   'compact:configure': CompactRecordingStatus;
+  'compact:save-case': SavedCaseSummary;
   'compact:list': CompactAttemptSummary[];
   'compact:reconstruct': CompactReconstruction | null;
   'logs:get': LogSnapshot;
@@ -180,7 +181,11 @@ export interface DesktopArguments {
   'diagnostics:export': [];
   'diagnostics:worker-lines': [];
   'compact:get': [];
-  'compact:configure': [enabled: boolean];
+  'compact:configure': [
+    enabled: boolean,
+    mode?: import('./compact-recording-contract').InferenceRecordingMode,
+  ];
+  'compact:save-case': [id: string, recordingId: string];
   'compact:list': [];
   'compact:reconstruct': [id: string, recordingId: string];
   'logs:get': [];
@@ -276,7 +281,11 @@ export interface DesktopAPI {
   exportDiagnosticCapture(): Promise<boolean>;
   getPrivateWorkerLines(): Promise<readonly PrivateWorkerLine[]>;
   getCompactRecording(): Promise<CompactRecordingStatus>;
-  configureCompactRecording(enabled: boolean): Promise<CompactRecordingStatus>;
+  configureCompactRecording(
+    enabled: boolean,
+    mode?: import('./compact-recording-contract').InferenceRecordingMode,
+  ): Promise<CompactRecordingStatus>;
+  saveRecordedExactCase(id: string, recordingId: string): Promise<SavedCaseSummary>;
   listCompactAttempts(): Promise<CompactAttemptSummary[]>;
   reconstructCompactAttempt(id: string, recordingId: string): Promise<CompactReconstruction | null>;
   getPlaygroundStatus(): Promise<PlaygroundStatus>;

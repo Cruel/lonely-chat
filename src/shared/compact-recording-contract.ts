@@ -1,6 +1,9 @@
+export type InferenceRecordingMode = 'compact' | 'exact';
+
 /** Private disk-backed evidence. Never included in public chat/overlay or operational logs. */
 export interface CompactRecordingStatus {
   readonly enabled: boolean;
+  readonly mode: InferenceRecordingMode;
   readonly recordingId: string | null;
   readonly attempts: number;
   readonly chunks: number;
@@ -10,6 +13,7 @@ export interface CompactRecordingStatus {
 
 export interface CompactAttemptSummary {
   readonly recordingId: string;
+  readonly mode: InferenceRecordingMode;
   readonly id: string;
   readonly runId: number;
   readonly cycle: number;
@@ -22,11 +26,14 @@ export interface CompactAttemptSummary {
   readonly chunk: string;
 }
 
-/** Rebuilt using today's request builder; never claim byte identity with historical requests. */
+/** Compact uses today's builder. Exact uses the verified historical request independently of today's builder. */
 export interface CompactReconstruction {
   readonly input: unknown;
   readonly request: unknown;
-  readonly provenance: 'current-builder-reconstruction';
+  readonly provenance:
+    | 'current-builder-reconstruction'
+    | 'exact-recorded-request'
+    | 'exact-not-constructed';
   readonly recordedBuilderVersion: string;
   readonly currentBuilderVersion: string;
   readonly warning: string;

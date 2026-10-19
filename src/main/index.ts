@@ -332,7 +332,12 @@ function registerHandlers(): void {
       });
     },
     'compact:get': () => compactRecorder.status(),
-    'compact:configure': (enabled: boolean) => compactRecorder.configure(enabled),
+    'compact:configure': (
+      enabled: boolean,
+      mode?: import('../shared/compact-recording-contract').InferenceRecordingMode,
+    ) => compactRecorder.configure(enabled, mode),
+    'compact:save-case': async (id: string, recordingId: string) =>
+      savedCases.save(await compactRecorder.restoreExactAttempt(id, recordingId)),
     'compact:list': () => compactRecorder.list(),
     'compact:reconstruct': (id: string, recordingId: string) =>
       compactRecorder.reconstruct(id, recordingId),
@@ -1281,7 +1286,13 @@ app.on('will-quit', () => {
   ipcMain.removeHandler('floating:configure');
   ipcMain.removeHandler('window:get');
   ipcMain.removeHandler('window:set-close-to-tray');
-  for (const channel of ['compact:get', 'compact:configure', 'compact:list', 'compact:reconstruct'])
+  for (const channel of [
+    'compact:get',
+    'compact:configure',
+    'compact:list',
+    'compact:reconstruct',
+    'compact:save-case',
+  ])
     ipcMain.removeHandler(channel);
   ipcMain.removeHandler('trace:list');
   ipcMain.removeHandler('trace:get');

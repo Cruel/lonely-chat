@@ -19,6 +19,7 @@ const emptyModels: ModelManagerSnapshot = {
 };
 const modelsAPI = {
   getCompactRecording: async () => ({
+    mode: 'compact' as const,
     enabled: false,
     recordingId: null,
     attempts: 0,
@@ -27,6 +28,7 @@ const modelsAPI = {
     error: null,
   }),
   configureCompactRecording: async (enabled: boolean) => ({
+    mode: 'compact' as const,
     enabled,
     recordingId: null,
     attempts: 0,
@@ -36,6 +38,9 @@ const modelsAPI = {
   }),
   listCompactAttempts: async () => [],
   reconstructCompactAttempt: async () => null,
+  saveRecordedExactCase: async () => {
+    throw new Error('not mocked');
+  },
   listInferenceTraces: async () => ({ attempts: [], dropped: 0, bytes: 0 }),
   getInferenceTrace: async () => null,
   onInferenceTraces: () => () => {},

@@ -5,10 +5,12 @@ import type {
   CompactAttemptSummary,
   CompactReconstruction,
   CompactRecordingStatus,
+  InferenceRecordingMode,
 } from '../../shared/compact-recording-contract';
 
 const EMPTY: CompactRecordingStatus = {
   enabled: false,
+  mode: 'compact',
   recordingId: null,
   attempts: 0,
   chunks: 0,
@@ -20,6 +22,8 @@ export function CompactRecordingControls() {
   const [status, setStatus] = useState<CompactRecordingStatus>(EMPTY);
   const [attempts, setAttempts] = useState<CompactAttemptSummary[]>([]);
   const [selected, setSelected] = useState<CompactReconstruction | null>(null);
+  const [mode, setMode] = useState<InferenceRecordingMode>('compact');
+  const [savedCase, setSavedCase] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -27,7 +31,10 @@ export function CompactRecordingControls() {
     const refresh = async () => {
       try {
         const next = await window.lonelyChat!.getCompactRecording();
-        if (active) setStatus(next);
+        if (active) {
+          setStatus(next);
+          if (next.enabled) setMode(next.mode);
+        }
       } catch (reason) {
         if (active) setError(String(reason));
       }
@@ -53,18 +60,34 @@ export function CompactRecordingControls() {
   }
 
   return (
-    <section className="mt-5 rounded-lg border border-border p-4" aria-label="Compact recording">
-      <h3 className="font-medium">Persistent compact inference recording</h3>
+    <section className="mt-5 rounded-lg border border-border p-4" aria-label="Inference recording">
+      <h3 className="font-medium">Persistent inference recording</h3>
       <p className="mt-2 text-sm text-zinc-400">
-        Disabled by default. Opt in to save selected transcripts, events, chat context, actual JPEG
-        frames, seeds, settings and attempt results as private compressed chunks on disk. Full
-        historical prompts, unsampled video, and raw audio are not recorded. Switching recording off
-        stops new captures but completes already started attempts. Existing files remain on disk.
-        Ordinary operational logs and temporary Run Inspector history are independent.
+        Disabled by default. Both modes save selected transcripts, chat, events, and exact sampled
+        JPEG frames in private compressed chunks. Compact rebuilds requests using the current prompt
+        builder and cannot preserve old prompts. Exact additionally freezes the constructed native
+        request for each attempt, including failures and retries, so old prompts and parameters
+        remain rerunnable. Exact uses more storage and may contain sensitive prompts, images, and
+        spoken text. Neither mode saves full video or raw audio. Stopping a recording finishes
+        captured attempts; existing files remain on disk. Operational logs and temporary Run
+        Inspector history remain independent.
       </p>
+      <label className="mt-3 block text-sm text-zinc-300" htmlFor="recording-mode">
+        Capture mode
+      </label>
+      <select
+        id="recording-mode"
+        className="mt-1 rounded-md border border-border bg-background px-3 py-2 text-sm"
+        value={status.enabled ? status.mode : mode}
+        disabled={status.enabled || busy}
+        onChange={(event) => setMode(event.target.value as InferenceRecordingMode)}
+      >
+        <option value="compact">Compact (default)</option>
+        <option value="exact">Exact — preserve native requests</option>
+      </select>
       <p role="status" className="mt-2 break-all text-xs text-zinc-400">
-        {status.enabled ? 'Recording' : 'Not recording'} · {status.attempts} attempts ·{' '}
-        {status.chunks} chunks · {status.bytes} bytes
+        {status.enabled ? `Recording ${status.mode}` : 'Not recording'} · {status.attempts} attempts
+        · {status.chunks} chunks · {status.bytes} bytes
         {status.recordingId ? ` · ${status.recordingId}` : ''}
       </p>
       {status.error && (
@@ -78,13 +101,14 @@ export function CompactRecordingControls() {
           variant="secondary"
           onClick={() =>
             void perform(async () => {
-              setStatus(await window.lonelyChat!.configureCompactRecording(!status.enabled));
+              setStatus(await window.lonelyChat!.configureCompactRecording(!status.enabled, mode));
               setSelected(null);
+              setSavedCase(null);
               setAttempts([]);
             })
           }
         >
-          {status.enabled ? 'Stop new recordings' : 'Enable compact recording'}
+          {status.enabled ? 'Stop new recordings' : `Start ${mode} recording`}
         </Button>
         <Button
           disabled={busy}
@@ -113,7 +137,7 @@ export function CompactRecordingControls() {
               }
             >
               {item.recordingId} / {item.id} · Run {item.runId} · cycle {item.cycle}, attempt{' '}
-              {item.attempt} · {item.stage} · seed {item.seed}
+              {item.attempt} · {item.stage} · {item.mode ?? 'compact'} · seed {item.seed}
             </button>
           ))}
         </div>
@@ -125,11 +149,39 @@ export function CompactRecordingControls() {
             Recorded builder: {selected.recordedBuilderVersion} · current builder:{' '}
             {selected.currentBuilderVersion}
           </p>
-          <JsonInspector
-            title="Reconstructed input (not the original request)"
-            value={selected.input}
-          />
-          <JsonInspector title="Current-builder request" value={selected.request} />
+          <JsonInspector title="Selected recorded inputs" value={selected.input} />
+          {selected.request !== null && (
+            <JsonInspector
+              title={
+                selected.provenance === 'exact-recorded-request'
+                  ? 'Verified original native request'
+                  : 'Current-builder request'
+              }
+              value={selected.request}
+            />
+          )}
+          {selected.provenance === 'exact-recorded-request' && (
+            <Button
+              disabled={busy}
+              variant="secondary"
+              onClick={() =>
+                void perform(async () => {
+                  const saved = await window.lonelyChat!.saveRecordedExactCase(
+                    selected.attempt.id,
+                    selected.attempt.recordingId,
+                  );
+                  setSavedCase(saved.id);
+                })
+              }
+            >
+              Save as rerunnable Playground case
+            </Button>
+          )}
+          {savedCase && (
+            <p role="status" className="text-sm text-zinc-300">
+              Saved Exact case {savedCase}. Open Playground → Saved cases to rerun.
+            </p>
+          )}
         </div>
       )}
       {error && (
