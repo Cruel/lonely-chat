@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { JsonInspector } from './json-inspector';
+import { SavedCaseComparison } from './saved-case-comparison';
 import type {
   SavedCaseDetail,
   SavedCaseSummary,
@@ -273,6 +274,7 @@ export function SavedCasePlayground({
               Stop Simulation to run Playground.
             </span>
           )}
+          <SavedCaseComparison key={selected.id} source={source} />
           {source.children.length > 0 && (
             <div aria-label="Saved child experiments" className="space-y-1 text-xs">
               <h4 className="font-medium">Child experiments (persisted separately)</h4>

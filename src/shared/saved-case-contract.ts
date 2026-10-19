@@ -1,4 +1,5 @@
 import type { SimulationExperimentResult } from './playground-contract';
+import type { TraceStage, TraceUsage } from './inference-trace-contract';
 
 export interface SavedCaseSummary {
   readonly id: string;
@@ -29,6 +30,25 @@ export interface SavedCaseDetail {
   readonly input: unknown;
   readonly frames: readonly SavedCaseFrame[];
   readonly children: readonly SavedCaseChild[];
+  /** Absent for cases saved before response capture was added. Never reconstructed. */
+  readonly sourceResult?: SavedCaseSourceResult;
+}
+
+export interface SavedCaseSourceResult {
+  readonly stage: TraceStage;
+  readonly errorStage: TraceStage | null;
+  readonly error: string | null;
+  readonly durationMs: number | null;
+  readonly usage: TraceUsage | null;
+  readonly rawNativeOutput: unknown;
+  readonly normalizedResult: unknown;
+  readonly parsedResult: unknown;
+  readonly accepted: unknown;
+  readonly scheduled: unknown;
+  readonly presented: unknown;
+  readonly transportError: unknown;
+  /** Large outcomes are explicitly omitted, not truncated or represented as success. */
+  readonly omitted?: string;
 }
 export interface SavedCaseChild {
   readonly id: string;
@@ -39,11 +59,14 @@ export interface SavedCaseChild {
   readonly errorStage: SimulationExperimentResult['errorStage'];
   readonly error: string | null;
   readonly durationMs: number;
+  /** Original selected-frame indices; optional for children persisted by older versions. */
+  readonly frameIndices?: readonly number[];
   /** Frozen child result; submitted request replaces image bytes with saved frame references. */
   readonly outcome?: {
     readonly submittedRequest: unknown;
     readonly rawNativeOutput: unknown;
     readonly normalizedResult: unknown;
+    readonly parsedResult?: unknown;
     readonly accepted: unknown;
     readonly usage: SimulationExperimentResult['usage'];
     readonly omitted?: string;

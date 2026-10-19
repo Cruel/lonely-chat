@@ -212,7 +212,7 @@ export class PlaygroundService {
       prepared.frames,
       prepared.input.playbackWindowMs ?? 3000,
     );
-    return { result, child: await cases.saveChild(input.caseId, result) };
+    return { result, child: await cases.saveChild(input.caseId, result, input.frameIndices) };
   }
 
   private executeSimulation(
@@ -235,6 +235,7 @@ export class PlaygroundService {
         submittedRequest,
         rawNativeOutput: null,
         normalizedResult: null,
+        parsedResult: null,
         accepted: null,
         errorStage: null,
         error: null,
@@ -273,8 +274,16 @@ export class PlaygroundService {
           error: errorMessage(error),
         });
       }
+      let parsedResult: unknown = null;
       try {
-        const { accepted } = validateSimulationCycle(cycleInput, normalizedResult);
+        const { accepted } = validateSimulationCycle(
+          cycleInput,
+          normalizedResult,
+          true,
+          (parsed) => {
+            parsedResult = parsed;
+          },
+        );
         // Production native chat clips accepted offsets to the playback window.
         const scheduled = {
           ...accepted,
@@ -283,11 +292,18 @@ export class PlaygroundService {
             offsetMs: Math.min(message.offsetMs, playbackWindowMs),
           })),
         };
-        return finish({ rawNativeOutput, normalizedResult, accepted: scheduled, usage });
+        return finish({
+          rawNativeOutput,
+          normalizedResult,
+          parsedResult,
+          accepted: scheduled,
+          usage,
+        });
       } catch (error) {
         return finish({
           rawNativeOutput,
           normalizedResult,
+          parsedResult,
           usage,
           errorStage: 'validation',
           error: errorMessage(error),

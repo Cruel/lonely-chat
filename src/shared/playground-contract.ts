@@ -67,6 +67,8 @@ export interface SimulationExperimentResult {
   readonly submittedRequest: unknown;
   readonly rawNativeOutput: unknown | null;
   readonly normalizedResult: unknown | null;
+  /** Validated parser output; null if processing never reached the parser. */
+  readonly parsedResult?: unknown | null;
   readonly accepted: {
     readonly events: readonly InferredEvent[];
     readonly messages: readonly {

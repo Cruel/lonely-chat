@@ -69,6 +69,10 @@ describe('structured Playground and production Session seam', () => {
       { author: 'pixelpilot', color: '#bba5ff', text: 'Who is there?', offsetMs: 200 },
     ]);
     expect(result.accepted?.events[0].summary).toBe('Heard a question');
+    expect(result.parsedResult).toMatchObject({
+      events: [{ summary: 'Heard a question' }],
+      messages: [{ author: 'pixelpilot', text: 'Who is there?', offsetMs: 200 }],
+    });
     expect(result.usage).toMatchObject({ totalTokens: 35 });
     expect(stop).toHaveBeenCalledOnce();
     expect({ session: session.snapshot(), chat: chat.snapshot() }).toEqual(before);

@@ -8,6 +8,7 @@ import type {
   SavedCaseFork,
   SavedCaseFrame,
   SavedCaseSummary,
+  SavedCaseSourceResult,
 } from '../shared/saved-case-contract';
 import type { SimulationExperimentResult } from '../shared/playground-contract';
 import { validateRawSimulationRequest } from './simulation-experiment';
@@ -39,6 +40,7 @@ interface Manifest {
   request: unknown;
   input: unknown;
   frames: StoredFrame[];
+  sourceResult?: SavedCaseSourceResult;
 }
 function obj(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value))
@@ -166,6 +168,38 @@ function usableAttempt(value: TraceAttempt): {
     blobs: new Map(selected.map(({ metadata, bytes }) => [metadata.ref.slice(12), bytes])),
   };
 }
+/** Freeze captured evidence; never silently turn oversized results into empty results. */
+function sourceResult(attempt: TraceAttempt): SavedCaseSourceResult {
+  const base = {
+    stage: attempt.stage,
+    errorStage: attempt.errorStage,
+    error: attempt.error,
+    durationMs: attempt.durationMs,
+    usage: attempt.usage,
+  };
+  const evidence = {
+    ...base,
+    rawNativeOutput: attempt.rawResponse,
+    normalizedResult: attempt.normalized,
+    parsedResult: attempt.parsed,
+    accepted: attempt.accepted,
+    scheduled: attempt.scheduled,
+    presented: attempt.presented ?? null,
+    transportError: attempt.transportError,
+  };
+  if (Buffer.byteLength(json(evidence)) <= 2 * 1024 * 1024) return evidence;
+  return {
+    ...base,
+    rawNativeOutput: null,
+    normalizedResult: null,
+    parsedResult: null,
+    accepted: null,
+    scheduled: null,
+    presented: null,
+    transportError: null,
+    omitted: 'Original outcome exceeded the 2 MiB evidence storage limit.',
+  };
+}
 function validateManifest(value: unknown): Manifest {
   const record = obj(value);
   if (record.version !== VERSION || !Array.isArray(record.frames) || record.frames.length > 32)
@@ -196,6 +230,52 @@ function validateManifest(value: unknown): Manifest {
   const input = obj(record.input);
   if (typeof input.context !== 'string' || !Number.isSafeInteger(input.cycle))
     throw new Error('Saved case original input is incomplete.');
+  if (record.sourceResult !== undefined) {
+    const evidence = obj(record.sourceResult);
+    const stages = [
+      'preparing',
+      'transport',
+      'normalization',
+      'validation',
+      'accepted',
+      'scheduled',
+      'failed',
+      'cancelled',
+    ];
+    if (
+      !stages.includes(evidence.stage as string) ||
+      (evidence.errorStage !== null && !stages.includes(evidence.errorStage as string)) ||
+      (evidence.error !== null && typeof evidence.error !== 'string') ||
+      (evidence.durationMs !== null &&
+        (typeof evidence.durationMs !== 'number' ||
+          !Number.isFinite(evidence.durationMs) ||
+          evidence.durationMs < 0)) ||
+      (evidence.omitted !== undefined && typeof evidence.omitted !== 'string') ||
+      [
+        'rawNativeOutput',
+        'normalizedResult',
+        'parsedResult',
+        'accepted',
+        'scheduled',
+        'presented',
+        'transportError',
+      ].some((field) => !Object.hasOwn(evidence, field))
+    )
+      throw new Error('Corrupt saved source result.');
+    if (evidence.usage !== null) {
+      const usage = obj(evidence.usage);
+      if (
+        ['promptTokens', 'completionTokens', 'totalTokens'].some(
+          (key) =>
+            usage[key] !== null &&
+            (typeof usage[key] !== 'number' ||
+              !Number.isFinite(usage[key]) ||
+              (usage[key] as number) < 0),
+        )
+      )
+        throw new Error('Corrupt saved source token usage.');
+    }
+  }
   const request = obj(record.request);
   if (
     !Array.isArray(input.frames) ||
@@ -290,6 +370,7 @@ export class SavedInferenceCases {
         frames: candidate.frames.map((frame) => ({ ...frame, dataUrl: frame.ref })),
       },
       frames: candidate.frames,
+      sourceResult: sourceResult(attempt),
     };
     return this.commit(manifest, candidate.blobs);
   }
@@ -348,6 +429,9 @@ export class SavedInferenceCases {
       input: structuredClone(manifest.input),
       frames,
       children,
+      ...(manifest.sourceResult === undefined
+        ? {}
+        : { sourceResult: structuredClone(manifest.sourceResult) }),
     };
   }
   async children(id: string): Promise<SavedCaseChild[]> {
@@ -455,7 +539,11 @@ export class SavedInferenceCases {
       frames: selected,
     };
   }
-  async saveChild(id: string, result: SimulationExperimentResult): Promise<SavedCaseChild> {
+  async saveChild(
+    id: string,
+    result: SimulationExperimentResult,
+    frameIndices: readonly number[],
+  ): Promise<SavedCaseChild> {
     const caseRoot = this.file(id);
     const entries = await this.children(id);
     if (entries.length >= MAX_CHILDREN)
@@ -470,6 +558,7 @@ export class SavedInferenceCases {
       errorStage: result.errorStage,
       error: result.error?.slice(0, 400) ?? null,
       durationMs: result.durationMs,
+      frameIndices: [...frameIndices],
     };
     const outcome = {
       submittedRequest: replaceImages(
@@ -478,6 +567,7 @@ export class SavedInferenceCases {
       ),
       rawNativeOutput: result.rawNativeOutput,
       normalizedResult: result.normalizedResult,
+      parsedResult: result.parsedResult ?? null,
       accepted: result.accepted,
       usage: result.usage,
     };
@@ -491,6 +581,7 @@ export class SavedInferenceCases {
               submittedRequest: outcome.submittedRequest,
               rawNativeOutput: null,
               normalizedResult: null,
+              parsedResult: null,
               accepted: null,
               usage: result.usage,
               omitted: 'Child output exceeded the 2 MiB persistence limit.',

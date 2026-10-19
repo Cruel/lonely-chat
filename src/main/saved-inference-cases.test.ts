@@ -102,6 +102,15 @@ describe('immutable exact inference cases', () => {
       captureSelection: input.captureSelection,
       recentTranscripts: input.recentTranscripts,
     });
+    expect(copy.sourceResult).toMatchObject({
+      stage: 'scheduled',
+      durationMs: 40,
+      rawNativeOutput: null,
+      normalizedResult: null,
+      parsedResult: null,
+      accepted: null,
+      usage: null,
+    });
     expect(copy.frames[0]).toMatchObject({
       sourceId: frame.sourceId,
       mediaTimeMs: 420,
@@ -121,8 +130,19 @@ describe('immutable exact inference cases', () => {
     const imported = await store.importPortable(archive);
     expect(imported.id).not.toBe(saved.id);
     expect((await store.get(imported.id)).request).toEqual(copy.request);
+    expect((await store.get(imported.id)).sourceResult).toEqual(copy.sourceResult);
     expect((await store.get(imported.id)).frames[0].dataUrl).toEqual(image);
     expect((await store.list()).map((item) => item.id)).toHaveLength(2);
+  });
+
+  it('still opens legacy saved cases with no original outcome rather than inventing one', async () => {
+    const { root, cases } = await setup();
+    const saved = await cases.save(attempt);
+    const file = path.join(root, 'saved-inference-cases', saved.id, 'case.json');
+    const manifest = JSON.parse(await readFile(file, 'utf8'));
+    delete manifest.sourceResult;
+    await writeFile(file, JSON.stringify(manifest));
+    expect((await new SavedInferenceCases(root).get(saved.id)).sourceResult).toBeUndefined();
   });
 
   it('executes a fork with exact captured input and edited seed/prompt/schema while preserving immutable original', async () => {
@@ -175,11 +195,50 @@ describe('immutable exact inference cases', () => {
     expect(exactRequest.messages[1]).toEqual({ ...originalRequest.messages[1] });
     expect(exactRequest.response_format).toEqual(originalRequest.response_format);
     expect(outcome.child.parentCaseId).toBe(saved.id);
+    expect(outcome.child.frameIndices).toEqual([0]);
     expect(outcome.child.outcome?.accepted).toEqual(outcome.result.accepted);
     expect((await new SavedInferenceCases(root).get(saved.id)).request).toEqual(original.request);
-    expect((await new SavedInferenceCases(root).get(saved.id)).children[0].id).toBe(
-      outcome.child.id,
-    );
+    expect((await new SavedInferenceCases(root).get(saved.id)).children[0]).toMatchObject({
+      id: outcome.child.id,
+      frameIndices: [0],
+    });
+  });
+
+  it('persists failed original attempts with their unmodified response, parsed events and errors', async () => {
+    const { root, cases } = await setup();
+    const saved = await cases.save({
+      ...attempt,
+      stage: 'failed',
+      errorStage: 'validation',
+      error: 'Invalid chatter',
+      usage: { promptTokens: 9, completionTokens: 3, totalTokens: 12 },
+      rawResponse: { choices: [{ message: { content: '{bad}' } }] },
+      normalized: { events: [{ kind: 'reaction', summary: 'oops' }] },
+      parsed: { events: [{ kind: 'reaction', summary: 'oops' }] },
+      accepted: null,
+      transportError: null,
+    });
+    const result = (await new SavedInferenceCases(root).get(saved.id)).sourceResult;
+    expect(result).toMatchObject({
+      stage: 'failed',
+      errorStage: 'validation',
+      error: 'Invalid chatter',
+      rawNativeOutput: { choices: [{ message: { content: '{bad}' } }] },
+      parsedResult: { events: [{ kind: 'reaction', summary: 'oops' }] },
+      usage: { totalTokens: 12 },
+    });
+  });
+
+  it('explicitly omits oversized source outcomes and validates persisted result metadata', async () => {
+    const { cases } = await setup();
+    const saved = await cases.save({ ...attempt, rawResponse: { text: 'x'.repeat(2_200_000) } });
+    const original = await cases.get(saved.id);
+    expect(original.sourceResult?.omitted).toMatch(/2 MiB/);
+    expect(original.sourceResult?.rawNativeOutput).toBeNull();
+    const archive = JSON.parse(await cases.exportPortable(saved.id));
+    archive.manifest.sourceResult.stage = 'invented';
+    await expect(cases.importPortable(JSON.stringify(archive))).rejects.toThrow(/source result/);
+    expect((await cases.get(saved.id)).sourceResult).toEqual(original.sourceResult);
   });
 
   it('supports no-frame cases and deliberately excluding all frames for a new child', async () => {
