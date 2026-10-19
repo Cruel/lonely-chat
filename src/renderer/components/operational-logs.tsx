@@ -100,7 +100,7 @@ export function OperationalLogs({
   focus,
   onOpenAttempt,
 }: {
-  focus?: { source?: string; attemptId?: string; nonce: number } | null;
+  focus?: { source?: string; attemptId?: string; recordedRunId?: string; nonce: number } | null;
   onOpenAttempt?: (id: string) => void;
 }) {
   const [entries, setEntries] = useState<LogEntry[]>([]);
@@ -109,6 +109,7 @@ export function OperationalLogs({
   const [severity, setSeverity] = useState<LogLevel | 'all'>('all');
   const [source, setSource] = useState('all');
   const [attemptFilter, setAttemptFilter] = useState<string | null>(focus?.attemptId ?? null);
+  const [runFilter, setRunFilter] = useState<string | null>(focus?.recordedRunId ?? null);
   const [search, setSearch] = useState('');
   const [following, setFollowing] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -119,6 +120,7 @@ export function OperationalLogs({
   useEffect(() => {
     setSource(focus?.source ?? 'all');
     setAttemptFilter(focus?.attemptId ?? null);
+    setRunFilter(focus?.recordedRunId ?? null);
   }, [focus]);
 
   useEffect(() => {
@@ -165,9 +167,10 @@ export function OperationalLogs({
           (severity === 'all' || entry.level === severity) &&
           (source === 'all' || entry.source === source) &&
           (!attemptFilter || entry.context?.attemptId === attemptFilter) &&
+          (!runFilter || entry.context?.recordedRunId === runFilter) &&
           (!search || searchText(entry).includes(search.toLowerCase())),
       ),
-    [entries, severity, source, search, attemptFilter],
+    [entries, severity, source, search, attemptFilter, runFilter],
   );
 
   useEffect(() => {
@@ -227,6 +230,14 @@ export function OperationalLogs({
           Automatically saved locally · No media or prompts
         </span>
       </div>
+      {runFilter && (
+        <div className="mb-3 flex items-center gap-3 text-xs">
+          <span>Showing media diagnostics for recorded Run {runFilter}</span>
+          <Button size="sm" variant="link" onClick={() => setRunFilter(null)}>
+            Show all Runs
+          </Button>
+        </div>
+      )}
       {attemptFilter && (
         <div className="mb-3 flex items-center gap-3 text-xs">
           <span>Showing correlated errors for {attemptFilter}</span>

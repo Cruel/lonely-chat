@@ -180,6 +180,7 @@ const api: DesktopAPI = {
   chooseModelDirectory: () => invoke('models:choose-directory'),
   getVideoClock: () => invoke('video:clock'),
   reportRecordedVideoError: (message) => invoke('session:media-error', message),
+  reportRecordedMediaIssue: (issue) => invoke('session:media-issue', issue),
   listDisplaySources: () => invoke('video:list-displays'),
   selectVideoSource: (sourceId) => invoke('video:select', sourceId),
   submitVideoFrame: (frame) => invoke('video:frame', frame),

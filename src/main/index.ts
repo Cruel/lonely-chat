@@ -7,6 +7,7 @@ import {
   verifyRecordedSources,
 } from './recorded-scenarios';
 import { RecordedMediaAccess, MEDIA_SCHEME } from './recorded-media-access';
+import { reportRecordedMediaIssue } from './recorded-media-health';
 import type { RecordedRun } from '../shared/recorded-scenario-contract';
 import { DiagnosticCapture } from './diagnostic-capture';
 import { CompactInferenceRecorder } from './compact-inference-recorder';
@@ -152,7 +153,11 @@ const transcriptCache = new RecordedTranscriptCache(app.getPath('userData'));
 const savedCases = new SavedInferenceCases(app.getPath('userData'));
 const recordedScenarios = new RecordedScenarioStore(app.getPath('userData'));
 const recordedMediaAccess = new RecordedMediaAccess();
-let activeRecordedRun: { id: string; sessionRunId: number } | null = null;
+let activeRecordedRun: {
+  id: string;
+  sessionRunId: number;
+  config: import('../shared/recorded-scenario-contract').RecordedScenarioConfig;
+} | null = null;
 let pendingRecordedFinish: Promise<void> = Promise.resolve();
 const windowStore = new WindowPreferencesStore(app.getPath('userData'));
 let windowPrefs: WindowPreferences = DEFAULT_WINDOW_PREFERENCES;
@@ -586,7 +591,11 @@ function registerHandlers(): void {
             },
             effectiveSeed: started.sessionSeed!,
           });
-          activeRecordedRun = { id: saved.id, sessionRunId: started.runId! };
+          activeRecordedRun = {
+            id: saved.id,
+            sessionRunId: started.runId!,
+            config: recordedConfig,
+          };
         } catch (error) {
           stopSession();
           throw error;
@@ -751,10 +760,19 @@ function registerHandlers(): void {
     },
     'video:clock': () => observationNow(),
     'session:media-error': (message: string) => {
-      const result = sessionMedia!.failRecordedVideo(message);
-      logger.error('media', 'Recorded video decoding failed', new Error(message));
-      return result;
+      // Older renderer clients may still report video errors by message.
+      if (typeof message !== 'string' || !message.trim() || message.length > 500)
+        throw new Error('Invalid recorded video decoder error.');
+      const state = session.snapshot();
+      logger.error('media', 'Recorded video decoder failed', undefined, {
+        runId: state.runId,
+        recordedRunId: activeRecordedRun?.id,
+        sourceId: 'recorded:video',
+      });
+      return sessionMedia!.failRecordedVideo(message);
     },
+    'session:media-issue': (issue: import('../shared/recorded-media-health').RecordedMediaIssue) =>
+      reportRecordedMediaIssue(issue, activeRecordedRun, session.snapshot(), sessionMedia!, logger),
     'video:list-displays': async () =>
       (await listDesktopSources()).map((source) => ({
         id: `display:${source.id}`,
@@ -1128,12 +1146,13 @@ async function boot(): Promise<void> {
       activeRecordedRun &&
       status.runId === activeRecordedRun.sessionRunId &&
       (status.phase === 'stopped' ||
-        (status.phase === 'error' && status.failureKind === 'recorded-video'))
+        (status.phase === 'error' &&
+          (status.failureKind === 'recorded-video' || status.failureKind === 'recorded-media')))
     ) {
       const completed = activeRecordedRun;
       activeRecordedRun = null;
       const outcome: RecordedRun['status'] =
-        status.failureKind === 'recorded-video'
+        status.failureKind === 'recorded-video' || status.failureKind === 'recorded-media'
           ? 'failed'
           : status.recordedPlayback === 'completed'
             ? 'completed'
@@ -1338,6 +1357,7 @@ app.on('will-quit', () => {
   ipcMain.removeHandler('models:choose-directory');
   ipcMain.removeHandler('video:clock');
   ipcMain.removeHandler('session:media-error');
+  ipcMain.removeHandler('session:media-issue');
   ipcMain.removeHandler('video:list-displays');
   ipcMain.removeHandler('video:select');
   ipcMain.removeHandler('video:frame');

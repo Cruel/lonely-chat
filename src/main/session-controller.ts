@@ -454,7 +454,7 @@ export class SessionController {
     this.shutdownPromise = this.stopProvider(this.activeInference);
   }
 
-  stop(): SessionSnapshot {
+  stop(silent = false): SessionSnapshot {
     if (this.state.phase === 'stopped') return this.snapshot();
     this.epoch++;
     this.closePausedInterval();
@@ -477,35 +477,56 @@ export class SessionController {
     this.inferenceTimer = null;
     this.scheduler.stop();
     this.context = '';
-    this.setState({
-      phase: 'stopped',
+    const stopped = {
+      phase: 'stopped' as const,
       recordedPlayback: null,
       error: null,
       warning: null,
       retryAttempt: 0,
+    };
+    // Fatal media failure must publish only the final error. A transient 'stopped'
+    // notification would finalize persisted Runs as stopped before they can fail.
+    if (silent) this.state = { ...this.state, ...stopped };
+    else this.setState(stopped);
+    return this.snapshot();
+  }
+
+  /** An enabled decoder dying mid-Run is fatal, including audio and recoverable inference errors. */
+  failRecordedMedia(
+    source: string,
+    message: string,
+    failureKind: 'recorded-media' | 'recorded-video' = 'recorded-media',
+  ): SessionSnapshot {
+    if (
+      this.state.inputMode !== 'recorded' ||
+      !(
+        ['starting', 'running', 'switching'].includes(this.state.phase) ||
+        (this.state.phase === 'error' && this.state.failureKind === 'inference')
+      )
+    ) {
+      throw new Error('No recorded simulation is running.');
+    }
+    if (
+      typeof source !== 'string' ||
+      !source.trim() ||
+      source.length > 100 ||
+      typeof message !== 'string' ||
+      !message.trim() ||
+      message.length > 500
+    )
+      throw new Error('Invalid recorded media decoder error.');
+    this.stop(true);
+    this.setState({
+      phase: 'error',
+      failureKind,
+      error: `Recorded ${source} failed: ${message}`,
+      warning: null,
     });
     return this.snapshot();
   }
 
-  /** A failing recorded decoder is fatal, not a silent switch to empty video. */
   failRecordedVideo(message: string): SessionSnapshot {
-    if (
-      this.state.inputMode !== 'recorded' ||
-      !['starting', 'running', 'switching'].includes(this.state.phase)
-    ) {
-      throw new Error('No recorded simulation is running.');
-    }
-    if (typeof message !== 'string' || !message.trim() || message.length > 500) {
-      throw new Error('Invalid recorded video decoder error.');
-    }
-    this.stop();
-    this.setState({
-      phase: 'error',
-      failureKind: 'recorded-video',
-      error: `Recorded video failed: ${message}`,
-      warning: null,
-    });
-    return this.snapshot();
+    return this.failRecordedMedia('video', message, 'recorded-video');
   }
 
   async terminate(): Promise<void> {

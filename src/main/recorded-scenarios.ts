@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { validatePreferences } from '../shared/session-contract';
+import { supportedRecordedMediaPath } from './recorded-media-access';
 import type {
   RecordedRun,
   RecordedScenario,
@@ -96,16 +97,23 @@ export function validateScenarioConfig(value: unknown): RecordedScenarioConfig {
 
 /** Validate every enabled source at Start, independently of Chromium's decoder readiness. */
 export async function verifyRecordedSources(config: RecordedScenarioConfig): Promise<void> {
-  const inputs: { label: string; path: string }[] = [];
-  if (config.video) inputs.push({ label: 'Video', path: config.video.path });
+  const inputs: { label: string; path: string; kind: 'audio' | 'video' }[] = [];
+  if (config.video) inputs.push({ label: 'Video', path: config.video.path, kind: 'video' });
   for (const source of config.audio) {
     if (source.enabled && source.kind === 'file')
-      inputs.push({ label: source.label, path: source.path! });
+      inputs.push({ label: source.label, path: source.path!, kind: 'audio' });
   }
   for (const input of inputs) {
+    if (!supportedRecordedMediaPath(input.path, input.kind))
+      throw new Error(
+        `${input.label}: unsupported ${input.kind} container (${input.path}). Relink or disable this source. Chromium must also be able to decode the codec.`,
+      );
     try {
       const info = await stat(input.path);
       if (!info.isFile() || info.size === 0) throw new Error('Empty or not a regular file');
+      // stat can succeed even when media cannot be opened for reading.
+      const handle = await open(input.path, 'r');
+      await handle.close();
     } catch {
       throw new Error(
         `${input.label}: source file is missing or unreadable (${input.path}). Relink it or explicitly disable/remove the source.`,

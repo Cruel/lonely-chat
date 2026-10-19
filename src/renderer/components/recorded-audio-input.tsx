@@ -48,6 +48,7 @@ interface RecordedAudioTrack {
   enabled: boolean;
   offsetMs: number;
   durationMs: number | null;
+  decoded: boolean;
   error: string | null;
 }
 
@@ -77,7 +78,11 @@ export const RecordedAudioInput = forwardRef<
     video?: RecordedVideoMedia | null;
     onSegmentChange?: (state: { segment: RecordedSegment; valid: boolean }) => void;
     onTrackEnded?: (id: string) => void;
-    onFailure?: (message: string) => void;
+    onFailure?: (
+      id: string,
+      message: string,
+      code: 'decoder' | 'stall' | 'segment' | 'pcm-overflow',
+    ) => void;
     restore?: { key: string; config: RecordedScenarioConfig };
   }
 >(function RecordedAudioInput(
@@ -327,6 +332,7 @@ export const RecordedAudioInput = forwardRef<
               recovering: false,
               stalled: false,
               queue: Promise.resolve(),
+              pendingPcmChunks: 0,
               flushResolver: null,
               pauseResolver: null,
               pauseToken: 0,
@@ -363,9 +369,15 @@ export const RecordedAudioInput = forwardRef<
             status(track.id, `Audio error: ${errorText(error)}`);
             if (runtime) close(runtime);
             else void context?.close().catch(() => {});
-            if (currentGeneration === generation.current)
-              onFailure?.(`Recorded audio ${track.label}: ${errorText(error)}`);
-            if (transcriptMode === 'cached') throw error;
+            if (currentGeneration === generation.current) {
+              onFailure?.(
+                track.id,
+                `Recorded audio ${track.label}: ${errorText(error)}`,
+                'decoder',
+              );
+              // An enabled source failing at startup invalidates the entire Run.
+              throw error;
+            }
           }
         }),
       );
@@ -414,9 +426,35 @@ export const RecordedAudioInput = forwardRef<
           const failed = (error: unknown) => {
             if (!current()) return;
             status(track.id, 'Audio error: ' + errorText(error));
-            onFailure?.(`Recorded audio ${track.label}: ${errorText(error)}`);
+            onFailure?.(
+              track.id,
+              `Recorded audio ${track.label}: ${errorText(error)}`,
+              /PCM.*overflow/i.test(errorText(error))
+                ? 'pcm-overflow'
+                : /stall|timed out/i.test(errorText(error))
+                  ? 'stall'
+                  : /worklet|PCM|segment|Whisper/i.test(errorText(error))
+                    ? 'segment'
+                    : 'decoder',
+            );
             close(runtime);
             runtimes.current.delete(track.id);
+          };
+          const enqueuePcm = (samples: Float32Array) => {
+            if (runtime.pendingPcmChunks >= 128) {
+              failed(new Error('Recorded PCM submission queue overflowed.'));
+              return;
+            }
+            runtime.pendingPcmChunks++;
+            runtime.queue = runtime.queue
+              // Do not forward queued PCM after Stop or a fatal source failure.
+              .then(() => {
+                if (current()) return api.submitRecordedAudioPcm(samples, runtime.captureId);
+              })
+              .then(() => {
+                runtime.pendingPcmChunks--;
+              })
+              .catch(failed);
           };
           const clearStall = () => {
             if (runtime.stallTimer !== null) clearTimeout(runtime.stallTimer);
@@ -487,9 +525,7 @@ export const RecordedAudioInput = forwardRef<
               ) => {
                 if (event.data instanceof Float32Array) {
                   if (!runtime.cached && event.data.length > 0) {
-                    runtime.queue = runtime.queue.then(() =>
-                      api.submitRecordedAudioPcm(event.data as Float32Array, runtime.captureId),
-                    );
+                    enqueuePcm(event.data);
                   }
                 } else if (event.data?.type === 'flushed') {
                   runtime.node.port.onmessage = old;
@@ -644,9 +680,7 @@ export const RecordedAudioInput = forwardRef<
               pauseForBuffering();
               return;
             }
-            runtime.queue = runtime.queue
-              .then(() => api.submitRecordedAudioPcm(event.data as Float32Array, runtime.captureId))
-              .catch(failed);
+            enqueuePcm(event.data);
           };
           runtime.audio.onended = () => {
             void finish().catch(failed);
@@ -727,7 +761,10 @@ export const RecordedAudioInput = forwardRef<
         activeTracks.every(
           (track) =>
             !track.enabled ||
-            (track.durationMs !== null && !track.error && track.label.trim().length > 0),
+            (track.durationMs !== null &&
+              track.decoded &&
+              !track.error &&
+              track.label.trim().length > 0),
         ),
       count: activeTracks.filter((track) => track.enabled).length,
     });
@@ -763,6 +800,7 @@ export const RecordedAudioInput = forwardRef<
             url: video?.url ?? '',
             name: `Audio from ${video?.name ?? 'video'}`,
             durationMs: null,
+            decoded: false,
             error: null,
           } as RecordedAudioTrack;
         try {
@@ -774,6 +812,7 @@ export const RecordedAudioInput = forwardRef<
             url,
             name: item.path!.split(/[\\/]/).at(-1) ?? 'Audio',
             durationMs: null,
+            decoded: false,
             error: null,
           } as RecordedAudioTrack;
         } catch (reason) {
@@ -784,6 +823,7 @@ export const RecordedAudioInput = forwardRef<
             url: '',
             name: item.path!.split(/[\\/]/).at(-1) ?? 'Audio',
             durationMs: null,
+            decoded: false,
             error: `Missing file: ${String(reason)}. Relink or disable this source.`,
           } as RecordedAudioTrack;
         }
@@ -811,6 +851,7 @@ export const RecordedAudioInput = forwardRef<
         url,
         name: filePath.split(/[\\/]/).at(-1) ?? 'Audio',
         durationMs: null,
+        decoded: false,
         error: null,
       });
     } catch (reason) {
@@ -837,6 +878,7 @@ export const RecordedAudioInput = forwardRef<
         enabled: true,
         offsetMs: 0,
         durationMs: null,
+        decoded: false,
         error: null,
       };
     });
@@ -860,6 +902,7 @@ export const RecordedAudioInput = forwardRef<
         enabled: true,
         offsetMs: 0,
         durationMs: null,
+        decoded: false,
         error: null,
       },
     ]);
@@ -937,7 +980,7 @@ export const RecordedAudioInput = forwardRef<
           <div key={track.id} className="rounded-md border border-border p-3">
             {track.url && (
               <audio
-                preload="metadata"
+                preload="auto"
                 src={track.url}
                 className="hidden"
                 onLoadedMetadata={(event) => {
@@ -960,9 +1003,11 @@ export const RecordedAudioInput = forwardRef<
                         (missingTrack ? 'Selected embedded audio track is unavailable.' : null)),
                   });
                 }}
+                onCanPlay={() => patch(track.id, { decoded: true })}
                 onError={() =>
                   patch(track.id, {
                     durationMs: null,
+                    decoded: false,
                     error:
                       track.kind === 'video'
                         ? 'Embedded soundtrack cannot be decoded by Chromium.'
@@ -1068,9 +1113,11 @@ export const RecordedAudioInput = forwardRef<
               {track.error ??
                 (track.enabled && !track.label.trim() ? 'Enter a source label.' : null) ??
                 phases[track.id] ??
-                (track.durationMs !== null
+                (track.durationMs !== null && track.decoded
                   ? `Ready · ${(track.durationMs / 1000).toFixed(1)}s`
-                  : 'Checking decoder…')}
+                  : track.durationMs !== null
+                    ? 'Checking Chromium codec support…'
+                    : 'Checking decoder…')}
             </p>
           </div>
         ))}

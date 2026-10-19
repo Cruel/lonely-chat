@@ -20,6 +20,14 @@ const MIME: Record<string, string> = {
 };
 export const MEDIA_SCHEME = 'lonely-recorded-media';
 
+export function supportedRecordedMediaPath(file: string, kind: 'audio' | 'video'): boolean {
+  const extension = path.extname(file).toLowerCase();
+  if (!Object.hasOwn(MIME, extension)) return false;
+  return kind === 'video'
+    ? ['.mp4', '.m4v', '.webm', '.mov', '.mkv'].includes(extension)
+    : ['.wav', '.flac', '.mp3', '.ogg', '.oga', '.m4a', '.aac'].includes(extension);
+}
+
 /** Opaque per-process URLs, scoped to approved desktop file selections. No path in URLs. */
 export class RecordedMediaAccess {
   private readonly files = new Map<string, string>();

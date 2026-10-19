@@ -153,6 +153,7 @@ export interface DesktopInvocations {
   'video:list-displays': VideoSource[];
   'video:clock': number;
   'session:media-error': SessionSnapshot;
+  'session:media-issue': SessionSnapshot;
   'video:select': number;
   'video:frame': void;
   'audio:configuration:get': AudioInputConfiguration[];
@@ -254,6 +255,7 @@ export interface DesktopArguments {
   'video:list-displays': [];
   'video:clock': [];
   'session:media-error': [message: string];
+  'session:media-issue': [issue: import('./recorded-media-health').RecordedMediaIssue];
   'video:select': [sourceId: string | null];
   'video:frame': [frame: VideoFrame];
   'audio:configuration:get': [];
@@ -383,6 +385,9 @@ export interface DesktopAPI {
   chooseModelDirectory(): Promise<ModelManagerSnapshot>;
   getVideoClock(): Promise<number>;
   reportRecordedVideoError(message: string): Promise<SessionSnapshot>;
+  reportRecordedMediaIssue?(
+    issue: import('./recorded-media-health').RecordedMediaIssue,
+  ): Promise<SessionSnapshot>;
   listDisplaySources(): Promise<VideoSource[]>;
   /** Returns main-process observation time for aligning renderer capture timestamps. */
   selectVideoSource(sourceId: string | null): Promise<number>;

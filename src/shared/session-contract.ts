@@ -51,7 +51,7 @@ export interface SessionSnapshot {
   readonly phase: SessionPhase;
   readonly error: string | null;
   /** Stable machine-readable failure identity, independent of the displayed message. */
-  readonly failureKind?: 'recorded-video' | 'inference' | null;
+  readonly failureKind?: 'recorded-video' | 'recorded-media' | 'inference' | null;
   readonly warning: string | null;
   /** Recorded-media lifecycle; null for live sessions. */
   readonly recordedPlayback?: 'playing' | 'paused' | 'draining' | 'completed' | null;
@@ -89,9 +89,15 @@ export interface SessionSnapshot {
   readonly recentErrors?: readonly string[];
 }
 
-export function isRecordedVideoFailure(state: SessionSnapshot): boolean {
-  return state.phase === 'error' && state.failureKind === 'recorded-video';
+export function isRecordedMediaFailure(state: SessionSnapshot): boolean {
+  return (
+    state.phase === 'error' &&
+    (state.failureKind === 'recorded-video' || state.failureKind === 'recorded-media')
+  );
 }
+
+/** Kept for callers that only distinguish fatal media errors from retriable inference errors. */
+export const isRecordedVideoFailure = isRecordedMediaFailure;
 
 /** Decoder failures are fatal; recoverable inference errors retain recorded media. */
 export function allowsRecordedSessionMedia(state: SessionSnapshot): boolean {

@@ -1,6 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { Label } from '@/components/ui/label';
 import { RecordedVideoTimeline } from '../recorded-video-timeline';
+import { reportRecordedIssue } from '../recorded-media-health-client';
 import type { RecordedSegment } from '../recorded-preview-timeline';
 import {
   seekRecordedMedia,
@@ -123,13 +124,21 @@ export const RecordedVideoInput = forwardRef<
         };
         let synchronizing = false;
         let stalledAt: number | null = null;
+        let droppedFrames = element.getVideoPlaybackQuality?.().droppedVideoFrames ?? 0;
+        let lastDropReportAt = 0;
+        let lastDelayReportAt = 0;
         const failPlayback = (reason: unknown) => {
           if (generation !== epoch.current) return;
           const message =
             reason instanceof Error ? reason.message : 'Unable to synchronize recorded video.';
           setError(message);
           stop();
-          void api.reportRecordedVideoError(message).catch(() => {});
+          reportRecordedIssue({
+            kind: 'video',
+            sourceId: 'recorded:video',
+            code: /stall/i.test(message) ? 'stall' : 'decoder',
+            fatal: true,
+          });
         };
         const capture = () => {
           if (
@@ -155,8 +164,35 @@ export const RecordedVideoInput = forwardRef<
             return;
           }
           stalledAt = null;
+          const now = performance.now();
+          const quality = element.getVideoPlaybackQuality?.();
+          if (
+            quality &&
+            quality.droppedVideoFrames > droppedFrames &&
+            now - lastDropReportAt >= 1000
+          ) {
+            reportRecordedIssue({
+              kind: 'video',
+              sourceId: 'recorded:video',
+              code: 'frame-drop',
+              fatal: false,
+              count: quality.droppedVideoFrames - droppedFrames,
+            });
+            lastDropReportAt = now;
+          }
+          if (quality) droppedFrames = quality.droppedVideoFrames;
           const expected = expectedMediaMs();
           if (expected - element.currentTime * 1000 > VIDEO_CATCHUP_DRIFT_MS) {
+            if (now - lastDelayReportAt >= 1000) {
+              reportRecordedIssue({
+                kind: 'video',
+                sourceId: 'recorded:video',
+                code: 'decode-delay',
+                fatal: false,
+                count: Math.min(86_400_000, Math.round(expected - element.currentTime * 1000)),
+              });
+              lastDelayReportAt = now;
+            }
             synchronizing = true;
             void seekRecordedMedia(element, expected)
               .catch(failPlayback)
@@ -171,8 +207,14 @@ export const RecordedVideoInput = forwardRef<
           if (!Number.isFinite(scale) || scale <= 0) return;
           canvas.width = Math.max(1, Math.round(element.videoWidth * scale));
           canvas.height = Math.max(1, Math.round(element.videoHeight * scale));
-          context.drawImage(element, 0, 0, canvas.width, canvas.height);
-          const dataUrl = canvas.toDataURL('image/jpeg', 0.65);
+          let dataUrl: string;
+          try {
+            context.drawImage(element, 0, 0, canvas.width, canvas.height);
+            dataUrl = canvas.toDataURL('image/jpeg', 0.65);
+          } catch (error) {
+            failPlayback(error);
+            return;
+          }
           inFlight.current = true;
           void api
             .submitVideoFrame({
@@ -188,7 +230,12 @@ export const RecordedVideoInput = forwardRef<
                   reason instanceof Error ? reason.message : 'Unable to submit video frame.';
                 setError(message);
                 stop();
-                void api.reportRecordedVideoError(message).catch(() => {});
+                reportRecordedIssue({
+                  kind: 'video',
+                  sourceId: 'recorded:video',
+                  code: 'decoder',
+                  fatal: true,
+                });
               }
             })
             .finally(() => {
@@ -323,7 +370,13 @@ export const RecordedVideoInput = forwardRef<
     setError(reason);
     setReady(false);
     setStatus('Decoder failed');
-    if (running) void window.lonelyChat?.reportRecordedVideoError(reason).catch(() => {});
+    if (running)
+      reportRecordedIssue({
+        kind: 'video',
+        sourceId: 'recorded:video',
+        code: 'decoder',
+        fatal: true,
+      });
   };
 
   return (

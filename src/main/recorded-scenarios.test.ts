@@ -96,6 +96,33 @@ it('preflight rejects missing enabled media, allows explicitly disabled sources 
   expect(updated.config.audio[0].path).toBe(replacement);
 });
 
+it('blocks unsupported enabled containers before starting but ignores disabled invalid inputs', async () => {
+  const { video, audio } = await setup();
+  const config = sample(video, audio);
+  const unsupported = {
+    ...config,
+    audio: config.audio.map((item) =>
+      item.id === 'mic'
+        ? { ...item, path: path.join(path.dirname(audio), 'unsupported.txt') }
+        : item,
+    ),
+  };
+  await expect(verifyRecordedSources(unsupported)).rejects.toThrow(
+    /unsupported audio container.*Relink or disable/,
+  );
+  const ignored = {
+    ...unsupported,
+    audio: unsupported.audio.map((item) =>
+      item.id === 'mic' ? { ...item, enabled: false } : item,
+    ),
+  };
+  await verifyRecordedSources(ignored);
+  await rm(video);
+  await expect(verifyRecordedSources(ignored)).rejects.toThrow(
+    /Video: source file is missing or unreadable/,
+  );
+});
+
 it('creates separate immutable effective Run snapshots across edits, settings changes, deletes and restarts', async () => {
   const { root, store, video, audio } = await setup();
   const first = sample(video, audio);

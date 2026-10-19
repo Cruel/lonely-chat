@@ -16,6 +16,7 @@ export interface RecordedAudioRuntime {
   recovering: boolean;
   stalled: boolean;
   queue: Promise<void>;
+  pendingPcmChunks: number;
   flushResolver: (() => void) | null;
   pauseResolver: (() => void) | null;
   pauseToken: number;

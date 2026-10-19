@@ -149,6 +149,7 @@ async function selectFiles(page: ReturnType<typeof setup>, count: number) {
   for (const tag of tags) {
     Object.defineProperty(tag, 'duration', { configurable: true, value: 10 });
     fireEvent.loadedMetadata(tag);
+    fireEvent.canPlay(tag);
   }
   await waitFor(() => expect(page.selection).toHaveBeenLastCalledWith({ ready: true, count }));
   page.rerender(
@@ -187,6 +188,7 @@ it('uses the ordinary Whisper source identity, signed offset and chosen embedded
     ],
   });
   fireEvent.loadedMetadata(tag);
+  fireEvent.canPlay(tag);
   await waitFor(() => expect(page.selection).toHaveBeenLastCalledWith({ ready: true, count: 1 }));
   await selectOption('Embedded audio track', 'Game audio');
   fireEvent.change(screen.getByLabelText('Source label'), { target: { value: 'Game feed' } });
@@ -288,7 +290,7 @@ it('fails visibly instead of silently mixing audio when the decoder cannot selec
       video={video}
     />,
   );
-  await page.ref.current!.prepare();
+  await expect(page.ref.current!.prepare()).rejects.toThrow(/selected embedded audio track/);
   expect(page.start).not.toHaveBeenCalled();
   expect(
     await screen.findByText(/Audio error: The selected embedded audio track is unavailable/),
@@ -303,6 +305,7 @@ it('runs a selected clip through the same Whisper capture identity and flushes a
   const element = document.querySelector('audio')!;
   Object.defineProperty(element, 'duration', { configurable: true, value: 10 });
   fireEvent.loadedMetadata(element);
+  fireEvent.canPlay(element);
   fireEvent.change(screen.getByLabelText('Start (ms)'), { target: { value: '2000' } });
   fireEvent.change(screen.getByLabelText('End (ms, blank = automatic)'), {
     target: { value: '2200' },

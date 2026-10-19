@@ -38,6 +38,7 @@ import {
   type RecordedVideoMedia,
 } from '@/components/recorded-video-input';
 import { RecordedAudioInput, type RecordedAudioHandle } from '@/components/recorded-audio-input';
+import { reportRecordedIssue } from '../recorded-media-health-client';
 import type { RecordedSegment } from '../recorded-preview-timeline';
 import { DiagnosticCaptureControls } from '@/components/diagnostic-capture-controls';
 import { CompactRecordingControls } from '@/components/compact-recording-controls';
@@ -123,6 +124,7 @@ export function DesktopPage() {
   const [logFocus, setLogFocus] = useState<{
     source?: string;
     attemptId?: string;
+    recordedRunId?: string;
     nonce: number;
   } | null>(null);
   const [inspectorFocus, setInspectorFocus] = useState<{ attemptId: string; nonce: number } | null>(
@@ -133,8 +135,8 @@ export function DesktopPage() {
     if (next === 'logs') setLogFocus(null);
     setSection(next);
   };
-  const openLogs = (source: string) => {
-    setLogFocus({ source, nonce: Date.now() });
+  const openLogs = (source: string, recordedRunId?: string) => {
+    setLogFocus({ source, recordedRunId, nonce: Date.now() });
     setSection('logs');
   };
   const openAttempt = (attemptId: string) => {
@@ -195,12 +197,20 @@ export function DesktopPage() {
         ?.finishRecordedSession()
         .catch((error: unknown) => reportRendererFailure('simulation', 'operation', error));
   }, []);
-  const recordedSourceFailed = useCallback((message: string) => {
-    setMediaError(message);
-    void window.lonelyChat
-      ?.reportRecordedVideoError(message)
-      .catch((error: unknown) => reportRendererFailure('simulation', 'operation', error));
-  }, []);
+  const mediaFailureReported = useRef(false);
+  const recordedSourceFailed = useCallback(
+    (id: string, message: string, code: 'decoder' | 'stall' | 'segment' | 'pcm-overflow') => {
+      mediaFailureReported.current = true;
+      setMediaError(message);
+      reportRecordedIssue({ kind: 'audio', sourceId: id, code, fatal: true });
+      // Cancel remaining startup and decoding work, not just the affected source.
+      ++mediaStartGeneration.current;
+      expectedRecordedEnds.current = 0;
+      recordedAudio.current?.stop();
+      recordedPlayer.current?.stop();
+    },
+    [],
+  );
   const [recordedAudioSelection, setRecordedAudioSelection] = useState({ ready: true, count: 0 });
   const [recordedSegmentState, setRecordedSegmentState] = useState<{
     segment: RecordedSegment;
@@ -409,6 +419,16 @@ export function DesktopPage() {
     expectedRecordedEnds.current = 0;
     completedRecordedSources.current.clear();
     setMediaError(null);
+    mediaFailureReported.current = false;
+    if (
+      inputMode === 'recorded' &&
+      (!recordedSelection.ready || !recordedAudioSelection.ready || !recordedSegmentState.valid)
+    ) {
+      setMediaError(
+        'One or more enabled files are missing, unreadable or unsupported by Chromium. Relink or disable the affected source before Start.',
+      );
+      return;
+    }
     if (inputMode === 'recorded' && transcriptMode !== 'transcribe') {
       try {
         await recordedAudio.current?.verifyCache();
@@ -474,7 +494,13 @@ export function DesktopPage() {
       const message = error instanceof Error ? error.message : String(error);
       setMediaError(message);
       reportRendererFailure('simulation', 'operation', error);
-      await window.lonelyChat?.reportRecordedVideoError(message).catch(() => {});
+      if (!mediaFailureReported.current)
+        reportRecordedIssue({
+          kind: 'video',
+          sourceId: 'recorded:video',
+          code: 'decoder',
+          fatal: true,
+        });
     }
   };
 
@@ -504,7 +530,17 @@ export function DesktopPage() {
     try {
       await Promise.all([recordedPlayer.current?.resume(), recordedAudio.current?.resume()]);
     } catch (error) {
-      recordedSourceFailed(error instanceof Error ? error.message : String(error));
+      // Resume errors may originate from either producer. The audio producer reports
+      // its own source-specific faults; only otherwise report a video decoder failure.
+      if (!mediaFailureReported.current) {
+        setMediaError(error instanceof Error ? error.message : String(error));
+        reportRecordedIssue({
+          kind: 'video',
+          sourceId: 'recorded:video',
+          code: 'decoder',
+          fatal: true,
+        });
+      }
       return;
     }
     if (!(await session.resume())) {
@@ -937,6 +973,13 @@ export function DesktopPage() {
                                   cadence
                                 </p>
                                 {run.error && <p className="text-rose-300">{run.error}</p>}
+                                <Button
+                                  size="xs"
+                                  variant="link"
+                                  onClick={() => openLogs('media', run.id)}
+                                >
+                                  View media diagnostics in Logs (Run {run.sessionRunId})
+                                </Button>
                                 <JsonInspector
                                   title={`Run ${run.id} frozen configuration`}
                                   value={{
@@ -1113,6 +1156,12 @@ export function DesktopPage() {
                     {mediaError || session.actionError || session.status.error}
                   </p>
                 )}
+                {inputMode === 'recorded' &&
+                  (mediaError || session.status.failureKind === 'recorded-media') && (
+                    <Button variant="link" size="sm" onClick={() => openLogs('media')}>
+                      View recorded media diagnostics in Logs
+                    </Button>
+                  )}
                 {(nativeStatus?.phase === 'failed' || session.status.phase === 'error') && (
                   <Button
                     variant="link"

@@ -13,6 +13,30 @@ import { FakeClock, flushMicrotasks } from './test-support/fake-clock';
 const recorded = { inputMode: 'recorded' as const, publishToOverlay: false };
 
 describe('recorded Run pause, Stop and EOF', () => {
+  it('publishes one terminal media failure instead of first finalizing the Run as stopped', () => {
+    const session = new SessionController(new ChatService(), undefined, new FakeClock());
+    const stopped = vi.fn();
+    const audio = { stop: vi.fn() } as unknown as AudioService;
+    const media = new SessionMedia(session, audio, stopped);
+    session.start('source diagnostics', 'fake', null, recorded);
+    const terminal: Array<{ phase: string; failureKind?: string | null }> = [];
+    session.subscribe((status) =>
+      terminal.push({ phase: status.phase, failureKind: status.failureKind }),
+    );
+    terminal.length = 0;
+    const state = media.failRecordedMedia('Guest', 'decoder or playback stalled');
+    expect(state).toMatchObject({
+      phase: 'error',
+      failureKind: 'recorded-media',
+      error: 'Recorded Guest failed: decoder or playback stalled',
+    });
+    expect(terminal).toEqual([{ phase: 'error', failureKind: 'recorded-media' }]);
+    expect(audio.stop).toHaveBeenCalledTimes(1);
+    expect(stopped).toHaveBeenCalledTimes(1);
+    expect(() => session.finishRecorded()).toThrow(/No active recorded/);
+    session.stop();
+  });
+
   it('freezes both cycle starts and scheduled visible chat, then resumes with remaining delays', async () => {
     const clock = new FakeClock();
     const chat = new ChatService();

@@ -96,6 +96,7 @@ it('reopens saved audio references, retains offsets and permits a missing track 
   const firstAudio = document.querySelector('audio')!;
   Object.defineProperty(firstAudio, 'duration', { configurable: true, value: 3.5 });
   fireEvent.loadedMetadata(firstAudio);
+  fireEvent.canPlay(firstAudio);
   await waitFor(() => expect(selected).toHaveBeenLastCalledWith({ ready: false, count: 2 }));
   fireEvent.click(screen.getByLabelText('missing.wav'));
   await waitFor(() => expect(selected).toHaveBeenLastCalledWith({ ready: true, count: 1 }));
@@ -125,6 +126,9 @@ it('configures multiple independent file tracks, labels, offsets, enabled state 
   Object.defineProperty(media[1], 'duration', { configurable: true, value: 3 });
   fireEvent.loadedMetadata(media[0]);
   fireEvent.loadedMetadata(media[1]);
+  expect(selection).toHaveBeenLastCalledWith({ ready: false, count: 2 });
+  fireEvent.canPlay(media[0]);
+  fireEvent.canPlay(media[1]);
   await waitFor(() => expect(selection).toHaveBeenLastCalledWith({ ready: true, count: 2 }));
   fireEvent.change(sources[1], { target: { value: '' } });
   await waitFor(() => expect(selection).toHaveBeenLastCalledWith({ ready: false, count: 2 }));
@@ -189,6 +193,7 @@ it('does not opt a video into Whisper unless its audio is explicitly added; chan
     value: () => ({ getAudioTracks: () => [{ id: 'mixed' }] }),
   });
   fireEvent.loadedMetadata(media);
+  fireEvent.canPlay(media);
   await waitFor(() => expect(selection).toHaveBeenLastCalledWith({ ready: true, count: 1 }));
   expect((screen.getByLabelText('Source label') as HTMLInputElement).value).toBe(
     'Video soundtrack',
@@ -260,6 +265,7 @@ it('validates the preview segment against the longest enabled source and closes 
   const tag = document.querySelector('audio')!;
   Object.defineProperty(tag, 'duration', { configurable: true, value: 10 });
   fireEvent.loadedMetadata(tag);
+  fireEvent.canPlay(tag);
   await waitFor(() => expect(selection).toHaveBeenLastCalledWith({ ready: true, count: 1 }));
   fireEvent.change(screen.getByLabelText('Start (ms)'), { target: { value: '1500' } });
   fireEvent.change(screen.getByLabelText('End (ms, blank = automatic)'), {
@@ -322,8 +328,9 @@ it('rechecks cached transcript readiness whenever the selected speech model chan
   const audio = document.querySelector('audio')!;
   Object.defineProperty(audio, 'duration', { configurable: true, value: 4 });
   fireEvent.loadedMetadata(audio);
+  fireEvent.canPlay(audio);
   await waitFor(() => expect(selection).toHaveBeenLastCalledWith({ ready: true, count: 1 }));
-  expect(check).toHaveBeenCalledTimes(1);
+  expect(check).toHaveBeenCalledTimes(2);
   available = false;
   act(() => modelChanged?.());
   await waitFor(() => expect(selection).toHaveBeenLastCalledWith({ ready: false, count: 1 }));
@@ -331,7 +338,7 @@ it('rechecks cached transcript readiness whenever the selected speech model chan
   available = true;
   act(() => modelChanged?.());
   await waitFor(() => expect(selection).toHaveBeenLastCalledWith({ ready: true, count: 1 }));
-  expect(check).toHaveBeenCalledTimes(3);
+  expect(check).toHaveBeenCalledTimes(4);
 });
 
 it('blocks undecodable enabled files but does not block other enabled files when disabled', async () => {

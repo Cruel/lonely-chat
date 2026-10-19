@@ -24,6 +24,14 @@ export class SessionMedia {
     return this.session.stop();
   }
 
+  failRecordedMedia(source: string, message: string) {
+    const state = this.session.failRecordedMedia(source, message);
+    this.session.selectVideoSource(null);
+    this.audio.stop();
+    this.stopRendererCapture();
+    return state;
+  }
+
   failRecordedVideo(message: string) {
     const state = this.session.failRecordedVideo(message);
     this.session.selectVideoSource(null);
