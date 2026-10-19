@@ -6,10 +6,12 @@ import type { RecordedSegment } from '../renderer/recorded-preview-timeline';
 export interface RecordedScenarioConfig {
   readonly context: string;
   readonly mode: InferenceMode;
-  readonly video: { readonly path: string } | null;
+  readonly video: { readonly path: string; readonly offsetMs?: number } | null;
   readonly audio: readonly {
     readonly id: string;
-    readonly kind: 'file' | 'video';
+    readonly kind: 'file' | 'video' | 'device';
+    /** Local Chromium audioinput device identity; not a file path. */
+    readonly deviceId?: string | null;
     readonly path: string | null;
     readonly label: string;
     readonly enabled: boolean;

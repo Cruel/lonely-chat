@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/select';
 import {
   DEFAULT_FREEFORM_SAMPLING,
+  validateFreeformSchema,
   type FreeformRequest,
   type FreeformResult,
 } from '../../shared/playground-contract';
@@ -41,6 +42,10 @@ export function FreeformPlayground({
   const [topP, setTopP] = useState(String(DEFAULT_FREEFORM_SAMPLING.topP));
   const [topK, setTopK] = useState(String(DEFAULT_FREEFORM_SAMPLING.topK));
   const [maxTokens, setMaxTokens] = useState(String(DEFAULT_FREEFORM_SAMPLING.maxTokens));
+  const [structured, setStructured] = useState(false);
+  const [schemaText, setSchemaText] = useState(
+    '{"type":"object","properties":{"answer":{"type":"string"}}}',
+  );
   const [seedText, setSeedText] = useState(() => String(randomSeed()));
   const [seedLocked, setSeedLocked] = useState(false);
   const [serverBusy, setServerBusy] = useState(false);
@@ -118,7 +123,10 @@ export function FreeformPlayground({
       ...(frames.length ? { frames } : {}),
     };
     try {
-      const result = await window.lonelyChat.runFreeform(request);
+      const prepared: FreeformRequest = structured
+        ? { ...request, responseSchema: validateFreeformSchema(JSON.parse(schemaText)) }
+        : request;
+      const result = await window.lonelyChat.runFreeform(prepared);
       setLastFailure(null);
       const id = crypto.randomUUID();
       setHistory((previous) => [{ id, result }, ...previous].slice(0, 10));
@@ -262,6 +270,27 @@ export function FreeformPlayground({
             ? 'Every request uses this exact seed.'
             : 'A new seed is generated for each request unless locked.'}
         </p>
+        <div className="mt-5 space-y-3">
+          <label className="flex items-center gap-2 text-sm text-zinc-300">
+            <input
+              type="checkbox"
+              checked={structured}
+              onChange={(event) => setStructured(event.target.checked)}
+            />
+            Constrain response to a JSON schema
+          </label>
+          {structured && (
+            <div>
+              <Label htmlFor="freeform-response-schema">Response JSON schema</Label>
+              <Textarea
+                id="freeform-response-schema"
+                className="mt-2 min-h-28 font-mono"
+                value={schemaText}
+                onChange={(event) => setSchemaText(event.target.value)}
+              />
+            </div>
+          )}
+        </div>
         <div className="mt-5 flex items-center gap-3">
           <Button
             onClick={() => void submit()}

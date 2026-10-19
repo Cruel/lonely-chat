@@ -38,6 +38,7 @@ export class SpeechPlaygroundService {
   private nextSegment = 0;
   private captureSessionId = '';
   private retiring: Promise<void> = Promise.resolve();
+  private retiringWorkers = 0;
   private failedStartupReleased = false;
 
   constructor(
@@ -49,6 +50,11 @@ export class SpeechPlaygroundService {
 
   get busy(): boolean {
     return this.state.phase !== 'idle' && !this.failedStartupReleased;
+  }
+
+  /** A stopped worker may still own native resources until shutdown settles. */
+  get resourcesBusy(): boolean {
+    return this.busy || this.worker !== null || this.retiringWorkers > 0;
   }
 
   snapshot(): SpeechTestSnapshot {
@@ -295,11 +301,20 @@ export class SpeechPlaygroundService {
     this.worker = null;
     if (!worker) return;
     worker.stop();
+    ++this.retiringWorkers;
     const previous = this.retiring;
     this.retiring = Promise.all([
       previous.catch(() => {}),
       worker.shutdown?.() ?? Promise.resolve(),
-    ]).then(() => {});
+    ]).then(
+      () => {
+        --this.retiringWorkers;
+      },
+      (error: unknown) => {
+        --this.retiringWorkers;
+        throw error;
+      },
+    );
     await this.retiring;
   }
 

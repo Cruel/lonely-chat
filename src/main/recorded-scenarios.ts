@@ -31,7 +31,9 @@ export function validateScenarioConfig(value: unknown): RecordedScenarioConfig {
   if (
     !text(config.context, 2000) ||
     (config.mode !== 'fake' && config.mode !== 'native') ||
-    (video && !filePath(video.path)) ||
+    (video &&
+      (!filePath(video.path) ||
+        (video.offsetMs !== undefined && !integer(video.offsetMs, -86400000, 86400000)))) ||
     !Array.isArray(config.audio) ||
     config.audio.length > 32 ||
     !['transcribe', 'save', 'cached'].includes(String(config.transcriptMode)) ||
@@ -51,8 +53,18 @@ export function validateScenarioConfig(value: unknown): RecordedScenarioConfig {
       !text(track.id, 100) ||
       !track.id ||
       seen.has(track.id as string) ||
-      !['file', 'video'].includes(String(track.kind)) ||
-      (track.kind === 'file' ? !filePath(track.path) : track.path !== null || !video) ||
+      !['file', 'video', 'device'].includes(String(track.kind)) ||
+      (track.kind === 'file'
+        ? !filePath(track.path)
+        : track.kind === 'video'
+          ? track.path !== null || !video
+          : track.path !== null ||
+            (track.deviceId !== null &&
+              (typeof track.deviceId !== 'string' ||
+                !track.deviceId ||
+                /\s/.test(track.deviceId) ||
+                track.deviceId.length > 180)) ||
+            (track.enabled && !track.deviceId)) ||
       !text(track.label, 80) ||
       (track.enabled && !String(track.label).trim()) ||
       typeof track.enabled !== 'boolean' ||
@@ -73,7 +85,9 @@ export function validateScenarioConfig(value: unknown): RecordedScenarioConfig {
   return {
     context: config.context as string,
     mode: config.mode as RecordedScenarioConfig['mode'],
-    video: video ? { path: video.path as string } : null,
+    video: video
+      ? { path: video.path as string, offsetMs: (video.offsetMs as number | undefined) ?? 0 }
+      : null,
     audio: (config.audio as RecordedScenarioConfig['audio']).map((track) => ({
       id: track.id,
       kind: track.kind,
@@ -82,6 +96,7 @@ export function validateScenarioConfig(value: unknown): RecordedScenarioConfig {
       enabled: track.enabled,
       offsetMs: track.offsetMs,
       embeddedTrackIndex: track.embeddedTrackIndex,
+      ...(track.kind === 'device' ? { deviceId: track.deviceId ?? null } : {}),
     })),
     segment: { startMs: segment.startMs as number, endMs: segment.endMs as number | null },
     transcriptMode: config.transcriptMode as RecordedScenarioConfig['transcriptMode'],

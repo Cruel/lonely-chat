@@ -1,4 +1,9 @@
 import { useEffect, useState } from 'react';
+import { RefreshCw, Lock, LockOpen } from 'lucide-react';
+
+function randomSeed(): number {
+  return crypto.getRandomValues(new Uint32Array(1))[0] & 0x7fffffff;
+}
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -45,6 +50,8 @@ export function SimulationPlayground({
   const [context, setContext] = useState('Playing a game on stream.');
   const [cycle, setCycle] = useState('1');
   const [windowMs, setWindowMs] = useState('3000');
+  const [seedText, setSeedText] = useState(() => String(randomSeed()));
+  const [seedLocked, setSeedLocked] = useState(false);
   const [activity, setActivity] = useState<'quiet' | 'normal' | 'busy'>('normal');
   const [roster, setRoster] = useState(JSON.stringify(defaultRoster, null, 2));
   const [frames, setFrames] = useState<PlaygroundFrame[]>([]);
@@ -119,7 +126,7 @@ export function SimulationPlayground({
     };
   }, []);
 
-  function request(): SimulationExperimentRequest {
+  function request(seed = Number(seedText)): SimulationExperimentRequest {
     const readArray = (label: string, value: string): unknown[] => {
       let parsed: unknown;
       try {
@@ -152,6 +159,7 @@ export function SimulationPlayground({
     };
     return {
       modelId: selectedModelId,
+      seed,
       values,
       ...(frames.length ? { frames } : {}),
       ...(useRaw ? { rawRequestJson: rawJson } : {}),
@@ -253,7 +261,9 @@ export function SimulationPlayground({
     setErrorLogSource(null);
     let submittedToMain = false;
     try {
-      const payload = request();
+      const seed = seedLocked || useRaw ? Number(seedText) : randomSeed();
+      if (!seedLocked && !useRaw) setSeedText(String(seed));
+      const payload = request(seed);
       submittedToMain = true;
       const result = await window.lonelyChat.runSimulationExperiment(payload);
       const id = crypto.randomUUID();
@@ -453,6 +463,37 @@ export function SimulationPlayground({
             </Select>
           </div>
         </div>
+        <div className="flex flex-wrap items-end gap-3">
+          <div>
+            <Label htmlFor="simulation-seed">Effective inference seed</Label>
+            <Input
+              id="simulation-seed"
+              type="number"
+              min={0}
+              max={2147483647}
+              value={seedText}
+              onChange={(event) => {
+                setSeedText(event.target.value);
+                setSeedLocked(true);
+              }}
+            />
+          </div>
+          <Button variant="outline" onClick={() => setSeedText(String(randomSeed()))}>
+            <RefreshCw size={15} /> Regenerate seed
+          </Button>
+          <Button
+            variant="outline"
+            aria-pressed={seedLocked}
+            onClick={() => setSeedLocked(!seedLocked)}
+          >
+            {seedLocked ? <Lock size={15} /> : <LockOpen size={15} />}
+            {seedLocked ? 'Locked' : 'Unlocked'}
+          </Button>
+        </div>
+        <p className="text-xs text-zinc-400">
+          When unlocked, each structured execution generates and retains a new seed. Advanced raw
+          JSON may override it.
+        </p>
         <PlaygroundMediaPicker frames={frames} onChange={setFrames} />
         <p className="text-xs text-zinc-400">
           Provide JSON arrays for the roster and optional historical inputs. Each history item uses

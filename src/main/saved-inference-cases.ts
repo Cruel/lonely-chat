@@ -169,13 +169,18 @@ function usableAttempt(value: TraceAttempt): {
   };
 }
 /** Freeze captured evidence; never silently turn oversized results into empty results. */
-function sourceResult(attempt: TraceAttempt): SavedCaseSourceResult {
+function sourceResult(
+  attempt: TraceAttempt,
+  requestProvenance?: SavedCaseSourceResult['requestProvenance'],
+): SavedCaseSourceResult {
   const base = {
     stage: attempt.stage,
     errorStage: attempt.errorStage,
     error: attempt.error,
     durationMs: attempt.durationMs,
     usage: attempt.usage,
+    presentationClosed: attempt.presentationClosed ?? false,
+    ...(requestProvenance ? { requestProvenance } : {}),
   };
   const evidence = {
     ...base,
@@ -232,6 +237,12 @@ function validateManifest(value: unknown): Manifest {
     throw new Error('Saved case original input is incomplete.');
   if (record.sourceResult !== undefined) {
     const evidence = obj(record.sourceResult);
+    if (
+      evidence.requestProvenance !== undefined &&
+      evidence.requestProvenance !== 'current-builder-reconstruction' &&
+      evidence.requestProvenance !== 'exact-recorded-request'
+    )
+      throw new Error('Invalid saved case request provenance.');
     const stages = [
       'preparing',
       'transport',
@@ -251,6 +262,8 @@ function validateManifest(value: unknown): Manifest {
           !Number.isFinite(evidence.durationMs) ||
           evidence.durationMs < 0)) ||
       (evidence.omitted !== undefined && typeof evidence.omitted !== 'string') ||
+      (evidence.presentationClosed !== undefined &&
+        typeof evidence.presentationClosed !== 'boolean') ||
       [
         'rawNativeOutput',
         'normalizedResult',
@@ -345,7 +358,10 @@ export class SavedInferenceCases {
     }
     return results.sort((a, b) => b.savedAt.localeCompare(a.savedAt));
   }
-  async save(attempt: TraceAttempt): Promise<SavedCaseSummary> {
+  async save(
+    attempt: TraceAttempt,
+    requestProvenance?: SavedCaseSourceResult['requestProvenance'],
+  ): Promise<SavedCaseSummary> {
     const candidate = usableAttempt(attempt);
     const id = randomUUID();
     const savedAt = new Date().toISOString();
@@ -370,7 +386,7 @@ export class SavedInferenceCases {
         frames: candidate.frames.map((frame) => ({ ...frame, dataUrl: frame.ref })),
       },
       frames: candidate.frames,
-      sourceResult: sourceResult(attempt),
+      sourceResult: sourceResult(attempt, requestProvenance),
     };
     return this.commit(manifest, candidate.blobs);
   }

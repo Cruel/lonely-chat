@@ -42,6 +42,8 @@ describe('pre-run timeline', () => {
       track({ id: 'undecoded', durationMs: null, offsetMs: 20000 }),
     ];
     expect(recordedPreviewDuration(8000, tracks)).toBe(10000);
+    expect(recordedPreviewDuration(8000, [], 1750)).toBe(9750);
+    expect(recordedPreviewDuration(8000, [], -750)).toBe(7250);
     expect(recordedPreviewDuration(null, [track({ offsetMs: -5000 })])).toBe(5000);
     expect(recordedPreviewDuration(null, [track({ enabled: false })])).toBe(0);
     expect(resolveRecordedSegment({ startMs: 2500, endMs: null }, 10000)).toEqual({

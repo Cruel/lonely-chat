@@ -126,6 +126,6 @@ describe('persistent inference recording controls', () => {
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Save as rerunnable Playground case' }));
     await waitFor(() => expect(save).toHaveBeenCalledWith('attempt-1', recordingId));
-    expect(await screen.findByText(/Saved Exact case saved-case-1/)).toBeInTheDocument();
+    expect(await screen.findByText(/Saved case saved-case-1/)).toBeInTheDocument();
   });
 });

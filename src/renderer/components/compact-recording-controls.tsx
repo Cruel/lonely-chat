@@ -248,7 +248,11 @@ export function CompactRecordingControls() {
               value={selected.request}
             />
           )}
-          {selected.provenance === 'exact-recorded-request' && (
+          <JsonInspector
+            title="Recorded outcome and publication timeline"
+            value={selected.outcome ?? null}
+          />
+          {selected.request !== null && (
             <Button
               disabled={busy}
               variant="secondary"
@@ -267,7 +271,7 @@ export function CompactRecordingControls() {
           )}
           {savedCase && (
             <p role="status" className="text-sm text-zinc-300">
-              Saved Exact case {savedCase}. Open Playground → Saved cases to rerun.
+              Saved case {savedCase}. Open Playground → Saved cases to rerun.
             </p>
           )}
         </div>

@@ -153,6 +153,8 @@ const api: DesktopAPI = {
     invoke('session:start', manualContext, mode, options),
   stopSession: () => invoke('session:stop'),
   pauseSession: () => invoke('session:pause'),
+  prepareRecordedResume: () => invoke('session:resume:prepare'),
+  cancelRecordedResume: () => invoke('session:resume:cancel'),
   resumeSession: () => invoke('session:resume'),
   finishRecordedSession: () => invoke('session:recorded:eof'),
   onMediaStop: (listener) => {

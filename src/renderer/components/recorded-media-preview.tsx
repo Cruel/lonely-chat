@@ -125,12 +125,19 @@ export function RecordedMediaPreview({
     clock.current = { positionMs: clamped, startedMs: performance.now() };
     const element = videoRef.current;
     if (element) {
-      const videoEndMs = video?.durationMs ?? Infinity;
-      if (clamped >= videoEndMs) element.pause();
-      element.currentTime = Math.min(clamped, videoEndMs) / 1000;
+      const videoEndMs = (video?.durationMs ?? Infinity) + (video?.offsetMs ?? 0);
+      const mediaMs = previewMediaPosition(
+        clamped,
+        video?.offsetMs ?? 0,
+        video?.durationMs ?? Infinity,
+      );
+      if (mediaMs === null) element.pause();
+      element.currentTime =
+        Math.max(0, Math.min(clamped - (video?.offsetMs ?? 0), video?.durationMs ?? Infinity)) /
+        1000;
       // Seeking back from an audio-only tail must resume the video decoder too.
       // A paused preview still seeks without starting playback.
-      if (playingRef.current && clamped < endMs && clamped < videoEndMs && element.paused) {
+      if (playingRef.current && mediaMs !== null && clamped < endMs && element.paused) {
         void element.play().catch((reason: unknown) => {
           if (
             !playingRef.current ||
@@ -159,7 +166,11 @@ export function RecordedMediaPreview({
       // Begin all elements from the same user gesture (before awaiting the video).
       synchronize(from, true);
       // An expired video must stay paused while longer audio continues playing.
-      if (videoRef.current && from < (video?.durationMs ?? Infinity)) await videoRef.current.play();
+      if (
+        videoRef.current &&
+        previewMediaPosition(from, video?.offsetMs ?? 0, video?.durationMs ?? Infinity) !== null
+      )
+        await videoRef.current.play();
     } catch (reason) {
       pause();
       setError(reason instanceof Error ? reason.message : 'Unable to play recorded preview.');
@@ -176,11 +187,12 @@ export function RecordedMediaPreview({
       const wallPosition = clock.current.positionMs + performance.now() - clock.current.startedMs;
       const mediaPosition =
         element &&
-        wallPosition < (video?.durationMs ?? Infinity) &&
+        previewMediaPosition(wallPosition, video?.offsetMs ?? 0, video?.durationMs ?? Infinity) !==
+          null &&
         !element.paused &&
         !element.ended &&
         element.currentTime * 1000 < (video?.durationMs ?? Infinity)
-          ? element.currentTime * 1000
+          ? element.currentTime * 1000 + (video?.offsetMs ?? 0)
           : wallPosition;
       const nextMs = Math.min(endMs, Math.max(segment.startMs, mediaPosition));
       positionRef.current = nextMs;
@@ -188,6 +200,16 @@ export function RecordedMediaPreview({
       if (nextMs >= endMs) {
         pause();
         return;
+      }
+      // Start the decoder when a positively offset video enters the shared timeline.
+      if (
+        element &&
+        element.paused &&
+        previewMediaPosition(nextMs, video?.offsetMs ?? 0, video?.durationMs ?? Infinity) !==
+          null &&
+        !element.ended
+      ) {
+        void element.play().catch((error: unknown) => setError(String(error)));
       }
       synchronize(nextMs, true);
     }, 80);

@@ -30,7 +30,8 @@ function Entry({
   onOpenAttempt?: (id: string) => void;
 }) {
   const attemptId =
-    typeof entry.context?.attemptId === 'string' && /^attempt-\d+$/.test(entry.context.attemptId)
+    typeof entry.context?.attemptId === 'string' &&
+    /^attempt-(?:\d+|[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12})$/i.test(entry.context.attemptId)
       ? entry.context.attemptId
       : null;
   return (

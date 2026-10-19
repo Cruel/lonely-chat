@@ -46,7 +46,11 @@ export interface SavedCaseSourceResult {
   readonly accepted: unknown;
   readonly scheduled: unknown;
   readonly presented: unknown;
+  /** Whether the original Run published its explicit presentation-closed marker. */
+  readonly presentationClosed?: boolean;
   readonly transportError: unknown;
+  /** Compact cases freeze today's reconstruction, not the historical request. */
+  readonly requestProvenance?: 'current-builder-reconstruction' | 'exact-recorded-request';
   /** Large outcomes are explicitly omitted, not truncated or represented as success. */
   readonly omitted?: string;
 }

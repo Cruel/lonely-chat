@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { matchesTraceFilter, traceFacets, validateTraceFilter } from './trace-evidence';
 import type { CompactInferenceRecorder } from './compact-inference-recorder';
 import type {
@@ -64,7 +65,6 @@ type MutableAttempt = { -readonly [K in keyof TraceAttempt]: TraceAttempt[K] };
 export class InferenceTrace {
   private attempts: MutableAttempt[] = [];
   private dropped = 0;
-  private serial = 0;
   private listeners = new Set<(snapshot: TraceList) => void>();
   private recorder: CompactInferenceRecorder | null = null;
 
@@ -176,7 +176,8 @@ export class InferenceTrace {
       | 'presentationClosed'
     >,
   ): string {
-    const id = `attempt-${++this.serial}`;
+    // Stable across application launches: persisted operational links must never collide.
+    const id = `attempt-${randomUUID()}`;
     this.attempts.push({
       ...initial,
       id,

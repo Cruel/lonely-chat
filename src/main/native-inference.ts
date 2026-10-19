@@ -18,6 +18,7 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { AUDIENCE, type InferenceInput, type InferenceProvider } from './fake-inference';
 import { PrivateInferenceError } from './private-inference-error';
+import { executeNativeSimulation, SimulationExecutionError } from './simulation-execution';
 import { NativeWorkerLog, type WorkerLogSink, type WorkerStream } from './native-worker-log';
 import {
   AUTHOR_PLACEHOLDER,
@@ -64,6 +65,9 @@ export function nativeFreeformRequest(request: FreeformRequest) {
     top_k: request.topK,
     max_tokens: request.maxTokens,
     seed: request.seed,
+    ...(request.responseSchema
+      ? { response_format: { type: 'json_object', schema: request.responseSchema } }
+      : {}),
   };
 }
 
@@ -799,12 +803,23 @@ export class NativeInference implements InferenceProvider {
     trace?: InferenceTraceObserver,
   ): Promise<unknown> {
     const request = nativeChatRequest(input);
-    trace?.('request', request);
-    const response = await this.completeSimulationRequest(input, request, signal);
-    trace?.('response', response);
-    const normalized = extractNativeChat(response, input.roster ?? AUDIENCE);
-    trace?.('normalized', normalized);
-    return normalized;
+    try {
+      const outcome = await executeNativeSimulation(
+        input,
+        request,
+        signal,
+        (nativeRequest, activeSignal) =>
+          this.completeSimulationRequest(input, nativeRequest, activeSignal),
+        (raw, selected) => extractNativeChat(raw, selected.roster ?? AUDIENCE),
+        trace,
+      );
+      return outcome.normalizedResult;
+    } catch (error) {
+      // Preserve existing native transport/private diagnostics error identity for
+      // Session retry policy, while the shared seam records the exact failed stage.
+      if (error instanceof SimulationExecutionError) throw error.cause;
+      throw error;
+    }
   }
 
   private async complete(request: unknown, signal: AbortSignal): Promise<unknown> {

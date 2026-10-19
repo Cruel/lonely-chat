@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { SpeechPlaygroundService } from './speech-playground-service';
 import { ChatService } from './chat-service';
 import { SessionController } from './session-controller';
+import { canStartPausedSpeech } from './paused-speech-gate';
+import { FakeClock, flushMicrotasks } from './test-support/fake-clock';
+import type { AudioStatus } from '../shared/audio-contract';
 import type { NativeServiceStatus } from '../shared/native-service-contract';
 
 function fakeWorker(transcribe = vi.fn(async (_samples: Float32Array) => ' hello there ')) {
@@ -36,6 +39,45 @@ async function feed(service: SpeechPlaygroundService, samples: Float32Array, rat
 }
 
 describe('isolated speech Playground', () => {
+  it('uses the paused Recorded Run admission gate without modifying Session or Chat', async () => {
+    const clock = new FakeClock();
+    const chat = new ChatService();
+    const session = new SessionController(chat, undefined, clock);
+    const audio: AudioStatus = { revision: 0, sources: [], transcripts: [] };
+    const worker = fakeWorker();
+    const make = vi.fn(() => worker);
+    const service = new SpeechPlaygroundService(make, () =>
+      canStartPausedSpeech(session.canExecutePausedPlayground(), audio),
+    );
+    const start = {
+      mode: 'whole-file' as const,
+      sourceId: 'local-mic',
+      label: 'Guest',
+      sampleRate: 16000,
+    };
+    await expect(service.start(start)).rejects.toThrow(/Stop Simulation/);
+    session.start('Recorded test', 'fake', null, {
+      inputMode: 'recorded',
+      publishToOverlay: false,
+    });
+    await flushMicrotasks();
+    await expect(service.start(start)).rejects.toThrow(/Stop Simulation/);
+    session.pauseRecorded();
+    const before = session.snapshot();
+    const chatBefore = chat.snapshot();
+    await service.start(start);
+    expect(service.snapshot().phase).toBe('ready');
+    expect(service.busy).toBe(true); // Main-process Resume refuses this lock.
+    expect(session.snapshot()).toEqual(before);
+    expect(chat.snapshot()).toEqual(chatBefore);
+    expect(make).toHaveBeenCalledOnce();
+    await service.stop();
+    session.resumeRecorded();
+    expect(session.canExecutePausedPlayground()).toBe(false);
+    await expect(service.start(start)).rejects.toThrow(/Stop Simulation/);
+    session.stop();
+  });
+
   it('runs resampling and real live VAD over synthetic PCM, reports labeled boundaries and leaves chat/history untouched', async () => {
     const chat = new ChatService();
     const session = new SessionController(chat);
@@ -142,6 +184,28 @@ describe('isolated speech Playground', () => {
     );
     await service.stop();
     expect(service.snapshot().phase).toBe('idle');
+  });
+
+  it('retains resource ownership until asynchronous Whisper retirement completes', async () => {
+    let release!: () => void;
+    const shutdown = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const worker = fakeWorker();
+    worker.shutdown.mockImplementation(async () => shutdown);
+    const service = new SpeechPlaygroundService(() => worker);
+    await service.start({
+      mode: 'whole-file',
+      sourceId: 'mic',
+      label: 'Mic',
+      sampleRate: 16000,
+    });
+    const retiring = service.stop();
+    expect(service.busy).toBe(false);
+    expect(service.resourcesBusy).toBe(true);
+    release();
+    await retiring;
+    expect(service.resourcesBusy).toBe(false);
   });
 
   it('releases a failed startup so the user can activate a model and immediately retry', async () => {

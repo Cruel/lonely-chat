@@ -65,6 +65,78 @@ function start(trace: InferenceTrace, cycle = 1, inputOverride: Record<string, u
 }
 
 describe('opt-in compact inference evidence', () => {
+  it('allocates globally distinct attempt identities across trace instances', () => {
+    const one = start(new InferenceTrace());
+    const two = start(new InferenceTrace());
+    expect(one).toMatch(/^attempt-[0-9a-f-]{36}$/);
+    expect(two).not.toBe(one);
+  });
+
+  it('restores Exact outcome, later publication events, and closure into saved cases after restart', async () => {
+    const { root, recorder, trace } = await fixture();
+    await recorder.configure(true, 'exact');
+    const id = start(trace);
+    const request = nativeChatRequest(trace.get(id)!.input as InferenceInput);
+    trace.update(id, {
+      stage: 'scheduled',
+      request,
+      rawResponse: { choices: [{ message: { content: '{"events":[],"messages":[]}' } }] },
+      normalized: { events: [], messages: [{ author: 'viewer', text: 'Hi', offsetMs: 100 }] },
+      accepted: { events: [], messages: [{ author: 'viewer', text: 'Hi', offsetMs: 100 }] },
+      scheduled: {
+        messages: [{ author: 'viewer', text: 'Hi', offsetMs: 100 }],
+        events: [],
+        windowMs: 3000,
+      },
+    });
+    await recorder.flush();
+    trace.present(
+      id,
+      { id: 'message-1', author: 'viewer', text: 'Hi', presentedAt: 1500, timelineAt: 1350 },
+      0,
+    );
+    trace.closePresentation(3);
+    await recorder.flush();
+    const recordingId = recorder.status().recordingId!;
+    const reopened = new CompactInferenceRecorder(root);
+    const disk = await reopened.reconstruct(id, recordingId);
+    expect(disk?.outcome).toMatchObject({
+      stage: 'scheduled',
+      accepted: { messages: [{ text: 'Hi' }] },
+      presented: [{ id: 'message-1', presentedAt: 1500, timelineAt: 1350, scheduledIndex: 0 }],
+      presentationClosed: true,
+    });
+    const restored = await reopened.restoreExactAttempt(id, recordingId);
+    expect(restored.presented).toHaveLength(1);
+    expect(restored.presentationClosed).toBe(true);
+    const cases = new SavedInferenceCases(root);
+    const caseSummary = await cases.save(restored, 'exact-recorded-request');
+    expect((await cases.get(caseSummary.id)).sourceResult).toMatchObject({
+      presented: [{ id: 'message-1' }],
+      presentationClosed: true,
+      accepted: { messages: [{ text: 'Hi' }] },
+      requestProvenance: 'exact-recorded-request',
+    });
+  });
+
+  it('freezes a Compact reconstruction as an immutable case with an explicit provenance warning', async () => {
+    const { root, recorder, trace } = await fixture();
+    await recorder.configure(true, 'compact');
+    const id = start(trace);
+    trace.update(id, { stage: 'scheduled', accepted: { events: [], messages: [] } });
+    await recorder.flush();
+    const recordingId = recorder.status().recordingId!;
+    const reopened = new CompactInferenceRecorder(root);
+    const restored = await reopened.restoreRecordedAttempt(id, recordingId);
+    expect(restored.request).toMatchObject({ seed: 43 });
+    const cases = new SavedInferenceCases(root);
+    const saved = await cases.save(restored, 'current-builder-reconstruction');
+    expect((await cases.get(saved.id)).sourceResult).toMatchObject({
+      requestProvenance: 'current-builder-reconstruction',
+      accepted: { events: [], messages: [] },
+    });
+  });
+
   it('is off by default and remains independent of the ephemeral inspector', async () => {
     const { root, recorder, trace } = await fixture();
     const id = start(trace);
@@ -204,7 +276,7 @@ describe('opt-in compact inference evidence', () => {
     const secondTrace = new InferenceTrace();
     secondTrace.attachRecorder(reopened);
     const another = start(secondTrace);
-    expect(another).toBe(first); // IDs are unique only within a recording.
+    expect(another).not.toBe(first); // IDs remain distinct across application restarts.
     secondTrace.update(another, { stage: 'failed', error: 'failure' });
     await reopened.flush();
     expect((await reopened.list()).map((item) => item.recordingId)).toEqual([

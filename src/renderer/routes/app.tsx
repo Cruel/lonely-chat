@@ -529,10 +529,20 @@ export function DesktopPage() {
   };
 
   const resumeSimulation = async () => {
-    // Keep chat and inference paused until both decoders are playing again.
+    // Reserve resumption before media starts. This blocks concurrent Playground
+    // startup while decoders come back online; Session stays paused until ready.
+    try {
+      await window.lonelyChat!.prepareRecordedResume();
+    } catch (error) {
+      setMediaError(error instanceof Error ? error.message : String(error));
+      return;
+    }
     try {
       await Promise.all([recordedPlayer.current?.resume(), recordedAudio.current?.resume()]);
     } catch (error) {
+      await window.lonelyChat!.cancelRecordedResume().catch(() => {});
+      recordedPlayer.current?.pause();
+      recordedAudio.current?.pause();
       // Resume errors may originate from either producer. The audio producer reports
       // its own source-specific faults; only otherwise report a video decoder failure.
       if (!mediaFailureReported.current) {
@@ -547,6 +557,7 @@ export function DesktopPage() {
       return;
     }
     if (!(await session.resume())) {
+      await window.lonelyChat!.cancelRecordedResume().catch(() => {});
       recordedPlayer.current?.pause();
       recordedAudio.current?.pause();
     }
@@ -612,20 +623,26 @@ export function DesktopPage() {
             </div>
             <div hidden={playgroundTab !== 'freeform'}>
               <FreeformPlayground
-                simulationActive={running || session.busy || audience.busy}
+                simulationActive={
+                  (running && !session.status.playgroundAvailable) || session.busy || audience.busy
+                }
                 onViewLogs={() => openLogs('ipc')}
               />
             </div>
             {playgroundTab === 'simulation' && (
               <SimulationPlayground
                 caseFocus={caseFocus}
-                simulationActive={running || session.busy || audience.busy}
+                simulationActive={
+                  (running && !session.status.playgroundAvailable) || session.busy || audience.busy
+                }
                 onViewLogs={(source) => openLogs(source)}
               />
             )}
             {playgroundTab === 'speech' && (
               <SpeechPlayground
-                simulationActive={running || session.busy || audience.busy}
+                simulationActive={
+                  (running && !session.status.playgroundAvailable) || session.busy || audience.busy
+                }
                 onViewLogs={() => openLogs('whisper')}
               />
             )}
@@ -1113,6 +1130,7 @@ export function DesktopPage() {
                           ? {
                               key: scenarioRestore.key,
                               path: scenarioRestore.config.video?.path ?? null,
+                              offsetMs: scenarioRestore.config.video?.offsetMs ?? 0,
                             }
                           : undefined
                       }

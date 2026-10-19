@@ -4,11 +4,14 @@ import type {
   PlaygroundStatus,
   SimulationExperimentRequest,
   SimulationExperimentResult,
-  FreeformUsage,
 } from '../shared/playground-contract';
 import { validateFreeformRequest } from '../shared/playground-contract';
 import { extractNativeChat } from './native-inference';
-import { validateSimulationCycle } from './simulation-cycle';
+import {
+  acceptSimulationExecution,
+  executeNativeSimulation,
+  SimulationExecutionError,
+} from './simulation-execution';
 import {
   buildSimulationExperimentInput,
   constructedSimulationRequest,
@@ -21,6 +24,7 @@ import type { SavedInferenceCases } from './saved-inference-cases';
 import type { PlaygroundFrame } from '../shared/playground-media-contract';
 import { DEFAULT_PREFERENCES, type SessionPreferences } from '../shared/session-contract';
 import { PrivateInferenceError } from './private-inference-error';
+import { traceUsage } from './inference-trace';
 
 export interface PlaygroundProvider {
   completeFreeform(
@@ -33,22 +37,6 @@ export interface PlaygroundProvider {
     signal: AbortSignal,
   ): Promise<unknown>;
   stop(): Promise<void>;
-}
-
-function nativeUsage(response: unknown): FreeformUsage | null {
-  if (!response || typeof response !== 'object' || Array.isArray(response)) return null;
-  const usage = (response as { usage?: unknown }).usage;
-  if (!usage || typeof usage !== 'object' || Array.isArray(usage)) return null;
-  const values = usage as Record<string, unknown>;
-  const token = (key: string) => {
-    const value = values[key];
-    return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
-  };
-  return {
-    promptTokens: token('prompt_tokens'),
-    completionTokens: token('completion_tokens'),
-    totalTokens: token('total_tokens'),
-  };
 }
 
 /** Private, desktop-only inspector content; never enter the persistent operational log. */
@@ -166,12 +154,16 @@ export class PlaygroundService {
       Date.now(),
       this.historyLimits(),
       request.frames,
+      request.seed,
     );
     const constructedRequest = constructedSimulationRequest(cycleInput);
-    const submittedRequest =
+    const raw =
       request.rawRequestJson === undefined
-        ? constructedRequest
+        ? null
         : validateRawSimulationRequest(request.rawRequestJson, request.frames);
+    const submittedRequest = raw
+      ? { ...raw, seed: raw.seed ?? cycleInput.seed }
+      : constructedRequest;
     return { constructedRequest, submittedRequest };
   }
 
@@ -182,12 +174,16 @@ export class PlaygroundService {
       Date.now(),
       this.historyLimits(),
       request.frames,
+      request.seed,
     );
     const constructedRequest = constructedSimulationRequest(cycleInput);
-    const submittedRequest =
+    const raw =
       request.rawRequestJson === undefined
-        ? constructedRequest
+        ? null
         : validateRawSimulationRequest(request.rawRequestJson, request.frames);
+    const submittedRequest = raw
+      ? { ...raw, seed: raw.seed ?? cycleInput.seed }
+      : constructedRequest;
     return this.executeSimulation(
       request.modelId,
       cycleInput,
@@ -246,67 +242,59 @@ export class PlaygroundService {
         ...updates,
         durationMs: Math.round(performance.now() - start),
       });
-      let rawNativeOutput: unknown;
+      let rawNativeOutput: unknown = null;
+      let normalizedResult: unknown = null;
       try {
-        if (!provider.completeSimulationRequest)
-          throw new Error('Selected provider does not support structured Simulation requests.');
-        rawNativeOutput = await provider.completeSimulationRequest(
+        const transported = await executeNativeSimulation(
           cycleInput,
           submittedRequest,
           signal,
+          (nativeRequest, activeSignal) => {
+            if (!provider.completeSimulationRequest)
+              throw new Error('Selected provider does not support structured Simulation requests.');
+            return provider.completeSimulationRequest(cycleInput, nativeRequest, activeSignal);
+          },
+          (raw, selected) => extractNativeChat(raw, selected.roster),
         );
+        rawNativeOutput = transported.rawNativeOutput;
+        normalizedResult = transported.normalizedResult;
       } catch (error) {
+        const failed = error instanceof SimulationExecutionError ? error : null;
         return finish({
-          errorStage: 'transport',
-          error: errorMessage(error),
-          rawNativeOutput: boundedTransportDetails(error),
+          errorStage: failed?.stage ?? 'transport',
+          error: errorMessage(failed?.cause ?? error),
+          rawNativeOutput:
+            failed?.stage === 'transport'
+              ? boundedTransportDetails(failed.cause)
+              : (failed?.evidence.rawNativeOutput ?? boundedTransportDetails(error)),
+          usage: traceUsage(failed?.evidence.rawNativeOutput),
         });
       }
-      const usage = nativeUsage(rawNativeOutput);
-      let normalizedResult: unknown;
+      const usage = traceUsage(rawNativeOutput);
+      let parsedResult: SimulationExperimentResult['parsedResult'] = null;
       try {
-        normalizedResult = extractNativeChat(rawNativeOutput, cycleInput.roster);
-      } catch (error) {
-        return finish({
-          rawNativeOutput,
-          usage,
-          errorStage: 'normalization',
-          error: errorMessage(error),
-        });
-      }
-      let parsedResult: unknown = null;
-      try {
-        const { accepted } = validateSimulationCycle(
-          cycleInput,
-          normalizedResult,
-          true,
-          (parsed) => {
+        const { accepted } = acceptSimulationExecution(cycleInput, normalizedResult, {
+          playbackWindowMs,
+          onParsed: (parsed) => {
             parsedResult = parsed;
           },
-        );
-        // Production native chat clips accepted offsets to the playback window.
-        const scheduled = {
-          ...accepted,
-          messages: accepted.messages.map((message) => ({
-            ...message,
-            offsetMs: Math.min(message.offsetMs, playbackWindowMs),
-          })),
-        };
+        });
         return finish({
           rawNativeOutput,
           normalizedResult,
           parsedResult,
-          accepted: scheduled,
+          accepted,
           usage,
         });
       } catch (error) {
+        const failed = error instanceof SimulationExecutionError ? error : null;
         return finish({
           rawNativeOutput,
           normalizedResult,
-          parsedResult,
+          parsedResult: failed?.evidence.parsedResult ?? parsedResult,
           usage,
-          errorStage: 'validation',
-          error: errorMessage(error),
+          errorStage: failed?.stage ?? 'validation',
+          error: errorMessage(failed?.cause ?? error),
         });
       }
     });

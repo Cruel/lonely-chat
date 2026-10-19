@@ -17,6 +17,8 @@ import { OperationalLogger } from './operational-logger';
 import { serializeOperationalLogs } from './operational-log-export';
 import { validateRendererFailure } from '../shared/renderer-log-contract';
 import { PlaygroundService } from './playground-service';
+import { canStartPausedSpeech } from './paused-speech-gate';
+import { RecordedResumeReservation } from './recorded-resume-reservation';
 import { PromptPresetStore } from './prompt-preset-store';
 import { SpeechPlaygroundService } from './speech-playground-service';
 import { SpeechSegmentCapture } from './speech-segment-capture';
@@ -262,9 +264,13 @@ let videoSelectionGeneration = 0;
 let rosterRegenerating = false;
 let rosterGenerationAbort: AbortController | null = null;
 let speechSwitchBusy = false;
+// A trusted IPC reservation serializes model ownership while decoder playback
+// restarts; the Session timeline itself remains paused until the commit.
+const resumeReservation = new RecordedResumeReservation();
 
 /** Both desktop and tray Stop retire every producer, not only the VLM. */
 function stopSession() {
+  resumeReservation.cancel();
   return sessionMedia ? sessionMedia.stop() : session?.stop();
 }
 
@@ -391,8 +397,17 @@ function registerHandlers(): void {
       ),
     'compact:limits': (limits: import('../shared/compact-recording-contract').RecordingLimits) =>
       compactRecorder.setLimits(limits),
-    'compact:save-case': async (id: string, recordingId: string) =>
-      savedCases.save(await compactRecorder.restoreExactAttempt(id, recordingId)),
+    'compact:save-case': async (id: string, recordingId: string) => {
+      const evidence = await compactRecorder.reconstruct(id, recordingId);
+      if (!evidence || evidence.request === null)
+        throw new Error('Recorded attempt has no request to save.');
+      return savedCases.save(
+        await compactRecorder.restoreRecordedAttempt(id, recordingId),
+        evidence.provenance === 'current-builder-reconstruction'
+          ? 'current-builder-reconstruction'
+          : 'exact-recorded-request',
+      );
+    },
     'compact:list': () => compactRecorder.list(),
     'compact:reconstruct': (id: string, recordingId: string) =>
       compactRecorder.reconstruct(id, recordingId),
@@ -580,7 +595,10 @@ function registerHandlers(): void {
     'case:list': () => savedCases.list(),
     'case:get': (id: string) => savedCases.get(id),
     'case:save': (id: string) => {
-      if (typeof id !== 'string' || !/^attempt-\d{1,12}$/.test(id))
+      if (
+        typeof id !== 'string' ||
+        !/^attempt-(?:\d{1,12}|[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12})$/i.test(id)
+      )
         throw new Error('Invalid inference attempt ID.');
       const attempt = session.trace.get(id);
       if (!attempt) throw new Error('Inference attempt is no longer available in memory.');
@@ -616,7 +634,10 @@ function registerHandlers(): void {
     'trace:search': (filter: import('../shared/inference-trace-contract').TraceFilter) =>
       session.trace.search(filter),
     'trace:get': (id: string) => {
-      if (typeof id !== 'string' || !/^attempt-\d{1,12}$/.test(id))
+      if (
+        typeof id !== 'string' ||
+        !/^attempt-(?:\d{1,12}|[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12})$/i.test(id)
+      )
         throw new Error('Invalid inference attempt ID.');
       return session.trace.get(id);
     },
@@ -761,11 +782,19 @@ function registerHandlers(): void {
       return result;
     },
     'session:pause': () => {
+      resumeReservation.cancel();
       const state = session.pauseRecorded();
       audio.pauseRecorded();
       return state;
     },
+    'session:resume:prepare': () =>
+      resumeReservation.prepare(
+        session.snapshot().recordedPlayback === 'paused',
+        playground.busy || speechTest.resourcesBusy,
+      ),
+    'session:resume:cancel': () => resumeReservation.cancel(),
     'session:resume': () => {
+      resumeReservation.commit(playground.busy || speechTest.resourcesBusy);
       audio.resumeRecorded();
       return session.resumeRecorded();
     },
@@ -1196,11 +1225,13 @@ async function boot(): Promise<void> {
   playground = new PlaygroundService(
     () =>
       !quitting &&
+      !resumeReservation.reserved &&
       !rosterRegenerating &&
       !speechSwitchBusy &&
       !speechTest?.busy &&
       !session.switchingModel &&
-      ['stopped', 'error'].includes(session.snapshot().phase) &&
+      (['stopped', 'error'].includes(session.snapshot().phase) ||
+        session.canExecutePausedPlayground()) &&
       installs.snapshot().progress.phase === 'idle',
     (id, needsVision) => {
       if (packageE2E) return certificationPlaygroundProvider();
@@ -1218,7 +1249,7 @@ async function boot(): Promise<void> {
         };
       }, playgroundSettings);
     },
-    () => session.awaitShutdown(),
+    () => session.preparePausedPlayground(),
     () => session.getPreferences(),
   );
   speechTest = new SpeechPlaygroundService(
@@ -1233,11 +1264,13 @@ async function boot(): Promise<void> {
       }),
     () =>
       !quitting &&
+      !resumeReservation.reserved &&
       !playground.busy &&
       !rosterRegenerating &&
       !speechSwitchBusy &&
       !session.switchingModel &&
-      ['stopped', 'error'].includes(session.snapshot().phase) &&
+      (['stopped', 'error'].includes(session.snapshot().phase) ||
+        canStartPausedSpeech(session.canExecutePausedPlayground(), audio.snapshot())) &&
       installs.snapshot().progress.phase === 'idle',
     undefined,
     speechCapture,
@@ -1538,6 +1571,8 @@ app.on('will-quit', () => {
   ipcMain.removeHandler('session:start');
   ipcMain.removeHandler('session:stop');
   ipcMain.removeHandler('session:pause');
+  ipcMain.removeHandler('session:resume:prepare');
+  ipcMain.removeHandler('session:resume:cancel');
   ipcMain.removeHandler('session:resume');
   ipcMain.removeHandler('session:recorded:eof');
   ipcMain.removeHandler('session:retry');

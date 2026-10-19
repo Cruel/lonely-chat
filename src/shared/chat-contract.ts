@@ -147,6 +147,8 @@ export interface DesktopInvocations {
   'session:start': SessionSnapshot;
   'session:stop': SessionSnapshot;
   'session:pause': SessionSnapshot;
+  'session:resume:prepare': void;
+  'session:resume:cancel': void;
   'session:resume': SessionSnapshot;
   'session:recorded:eof': SessionSnapshot;
   'session:retry': SessionSnapshot;
@@ -260,6 +262,8 @@ export interface DesktopArguments {
   'session:start': [manualContext: string, mode?: InferenceMode, options?: SimulationInputOptions];
   'session:stop': [];
   'session:pause': [];
+  'session:resume:prepare': [];
+  'session:resume:cancel': [];
   'session:resume': [];
   'session:recorded:eof': [];
   'session:retry': [];
@@ -401,6 +405,8 @@ export interface DesktopAPI {
   ): Promise<SessionSnapshot>;
   stopSession(): Promise<SessionSnapshot>;
   pauseSession(): Promise<SessionSnapshot>;
+  prepareRecordedResume(): Promise<void>;
+  cancelRecordedResume(): Promise<void>;
   resumeSession(): Promise<SessionSnapshot>;
   finishRecordedSession(): Promise<SessionSnapshot>;
   onMediaStop(listener: () => void): () => void;

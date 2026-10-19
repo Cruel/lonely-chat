@@ -1,3 +1,4 @@
+import { randomInt } from 'node:crypto';
 import { AUDIENCE, type InferenceInput } from './fake-inference';
 import {
   validatePlaygroundFrames,
@@ -48,7 +49,8 @@ function entries(value: unknown, label: string): Record<string, unknown>[] {
 /** IPC input is bounded and cannot inject private frames or an unbounded session history. */
 export function validateSimulationExperiment(value: unknown): SimulationExperimentRequest {
   const v = object(value, 'simulation experiment');
-  fields(v, ['modelId', 'values', 'rawRequestJson', 'frames'], 'simulation experiment');
+  fields(v, ['modelId', 'values', 'rawRequestJson', 'frames', 'seed'], 'simulation experiment');
+  if (v.seed !== undefined) integer(v.seed, 'seed', 0, 2147483647);
   const frames = validatePlaygroundFrames(v.frames);
   const modelId = text(v.modelId, 'model', 200);
   if (
@@ -134,6 +136,7 @@ export function validateSimulationExperiment(value: unknown): SimulationExperime
   });
   return {
     modelId,
+    ...(v.seed === undefined ? {} : { seed: v.seed as number }),
     ...(frames.length ? { frames } : {}),
     values: {
       context,
@@ -156,6 +159,7 @@ export function buildSimulationExperimentInput(
   now: number,
   limits: Pick<SessionPreferences, 'historyMaxAgeMs' | 'historyMaxCount'> = DEFAULT_PREFERENCES,
   selectedFrames: SimulationExperimentRequest['frames'] = [],
+  seed: number = randomInt(0x80000000),
 ): InferenceInput {
   const history = new InferenceHistory(limits);
   history.reset(now - values.playbackWindowMs);
@@ -205,6 +209,7 @@ export function buildSimulationExperimentInput(
   );
   return {
     ...snapshot,
+    seed,
     chatActivity: values.chatActivity,
     // Preserve explicit selection order independent of source video time.
     frames:

@@ -14,7 +14,7 @@ const roots: string[] = [];
 const sample = (video: string, audio: string): RecordedScenarioConfig => ({
   context: 'Watch the scene',
   mode: 'native',
-  video: { path: video },
+  video: { path: video, offsetMs: 0 },
   audio: [
     {
       id: 'mic',
@@ -69,6 +69,48 @@ it('saves and reloads named Scenarios with exact media paths, audio offsets and 
   expect(bytes).toContain(video);
   expect(bytes).toContain('-125');
   expect(bytes).not.toContain('data:image/'); // only path metadata, not duplicated media data
+});
+
+it('persists signed video offsets and a live microphone source without treating a device as a file', async () => {
+  const { store, video, audio } = await setup();
+  const config = sample(video, audio);
+  const updated = validateScenarioConfig({
+    ...config,
+    video: { path: video, offsetMs: -1300 },
+    audio: [
+      ...config.audio,
+      {
+        kind: 'device',
+        id: 'device-source',
+        label: 'Guest mic',
+        path: null,
+        deviceId: 'microphone-123',
+        enabled: true,
+        offsetMs: 500,
+        embeddedTrackIndex: null,
+      },
+    ],
+  });
+  await verifyRecordedSources(updated);
+  const saved = await store.save('With hardware', updated);
+  expect(saved.config.video?.offsetMs).toBe(-1300);
+  expect(saved.config.audio[2]).toMatchObject({ kind: 'device', deviceId: 'microphone-123' });
+  expect(() =>
+    validateScenarioConfig({
+      ...updated,
+      audio: updated.audio.map((item) =>
+        item.kind === 'device' ? { ...item, deviceId: ' ' } : item,
+      ),
+    }),
+  ).toThrow(/source definition/);
+  expect(() =>
+    validateScenarioConfig({
+      ...updated,
+      audio: updated.audio.map((item) =>
+        item.kind === 'device' ? { ...item, path: '/not-a-file' } : item,
+      ),
+    }),
+  ).toThrow(/source definition/);
 });
 
 it('preflight rejects missing enabled media, allows explicitly disabled sources and relinking', async () => {

@@ -2,6 +2,20 @@ import { CHAT_ACTIVITY_LIMITS } from '../shared/audience-contract';
 import { AUDIENCE, parseInferenceResult, type InferenceInput } from './fake-inference';
 import { resolveChatAuthors } from './audience-service';
 
+/** Keep native playback-window clipping identical in Playground and Session. */
+export function clipSimulationWindow<T extends { messages: readonly { offsetMs: number }[] }>(
+  accepted: T,
+  windowMs: number,
+): T {
+  return {
+    ...accepted,
+    messages: accepted.messages.map((message) => ({
+      ...message,
+      offsetMs: Math.min(message.offsetMs, windowMs),
+    })),
+  } as T;
+}
+
 /** The one authoritative post-native validation and acceptance seam. No side effects. */
 export function validateSimulationCycle(
   input: InferenceInput,

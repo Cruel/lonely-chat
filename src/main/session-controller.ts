@@ -3,7 +3,8 @@ import type { OperationalErrorSink } from './operational-logger';
 import type { ChatService } from './chat-service';
 import { ChatScheduler, systemClock, type TimerClock } from './chat-scheduler';
 import { FakeInference, type InferenceProvider } from './fake-inference';
-import { validateSimulationCycle } from './simulation-cycle';
+import { clipSimulationWindow } from './simulation-cycle';
+import { acceptSimulationExecution } from './simulation-execution';
 import { InferenceHistory, type CycleInput } from './inference-history';
 import { VideoFrameBuffer } from './video-frame-buffer';
 import { PrivateInferenceError } from './private-inference-error';
@@ -119,8 +120,23 @@ export class SessionController {
     );
   }
 
+  canExecutePausedPlayground(): boolean {
+    return (
+      this.state.inputMode === 'recorded' &&
+      this.state.recordedPlayback === 'paused' &&
+      this.state.phase === 'running' &&
+      !this.attemptInFlight &&
+      !this.switchBusy &&
+      !this.retryWork
+    );
+  }
+
   snapshot(): SessionSnapshot {
-    return { ...this.state, events: [...this.state.events] };
+    return {
+      ...this.state,
+      playgroundAvailable: this.canExecutePausedPlayground(),
+      events: [...this.state.events],
+    };
   }
 
   getPreferences(): SessionPreferences {
@@ -624,6 +640,17 @@ export class SessionController {
     return this.snapshot();
   }
 
+  /**
+   * Release the paused Run's idle native worker before Playground acquires
+   * model resources. The resumed Run will prepare its provider afresh.
+   */
+  async preparePausedPlayground(): Promise<void> {
+    await this.awaitShutdown();
+    if (!this.canExecutePausedPlayground() || this.state.mode !== 'native') return;
+    this.shutdownPromise = this.stopProvider(this.activeInference);
+    await this.shutdownPromise;
+  }
+
   /** Wait for asynchronous native worker cleanup before any manual model action. */
   async awaitShutdown(): Promise<void> {
     await this.switchSettled;
@@ -800,12 +827,10 @@ export class SessionController {
       .then(async (raw) => {
         await this.waitUntilResumed();
         if (!this.active(epoch) || abort.signal.aborted) return;
-        const { parsed: result, accepted } = validateSimulationCycle(
-          effectiveInput,
-          raw,
-          Boolean(this.audience),
-          (parsed) => this.trace.update(traceId, { stage: 'validation', parsed }),
-        );
+        const { parsed: result, accepted } = acceptSimulationExecution(effectiveInput, raw, {
+          enforceAudience: Boolean(this.audience),
+          onParsed: (parsed) => this.trace.update(traceId, { stage: 'validation', parsed }),
+        });
         this.trace.update(traceId, { stage: 'accepted', accepted });
         const resolved = accepted.messages;
         // All validation precedes every state change, history acknowledgement and playback.
@@ -841,10 +866,7 @@ export class SessionController {
         // deterministic fixture offsets as-is to keep the playback/scheduler test surface.
         const messages =
           this.state.mode === 'native'
-            ? resolved.map((item) => ({
-                ...item,
-                offsetMs: Math.min(item.offsetMs, windowMs),
-              }))
+            ? clipSimulationWindow(accepted, windowMs).messages
             : resolved;
         const enqueuedPhysicalAt = this.clock.wallNow();
         this.trace.update(traceId, {
@@ -864,6 +886,7 @@ export class SessionController {
         this.scheduler.enqueue(messages, this.clock.now(), traceId);
         this.abort = null;
         this.attemptInFlight = false;
+        if (this.pausedAt !== null) this.setState({});
         if (this.state.mode === 'native' && provider.resourceMeasurements) {
           void provider
             .resourceMeasurements()

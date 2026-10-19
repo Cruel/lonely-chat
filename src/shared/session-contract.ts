@@ -57,6 +57,8 @@ export interface SessionSnapshot {
   readonly warning: string | null;
   /** Recorded-media lifecycle; null for live sessions. */
   readonly recordedPlayback?: 'playing' | 'paused' | 'draining' | 'completed' | null;
+  /** Main-process authority: paused Recorded Run with no in-flight inference. */
+  readonly playgroundAvailable?: boolean;
   readonly cycle: number;
   readonly retryAttempt: number;
   /** Base seed for this session (whether user-supplied or generated). */

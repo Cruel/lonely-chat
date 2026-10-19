@@ -31,6 +31,34 @@ const reply = (body: unknown) => ({
 afterEach(() => vi.restoreAllMocks());
 
 describe('structured Playground and production Session seam', () => {
+  it('generates a concrete seed for structured requests and preserves explicit seeds', async () => {
+    const service = new PlaygroundService(
+      () => true,
+      () => ({
+        completeFreeform: vi.fn(),
+        completeSimulationRequest: async () => reply({ events: [], messages: [] }),
+        stop: async () => {},
+      }),
+    );
+    const preview = service.previewSimulation(input);
+    const previewSeed = (preview.constructedRequest as { seed: number }).seed;
+    expect(previewSeed).toBeGreaterThanOrEqual(0);
+    expect(previewSeed).toBeLessThanOrEqual(2147483647);
+    const result = await service.runSimulation(input);
+    const submittedSeed = (result.submittedRequest as { seed: number }).seed;
+    expect((result.constructedRequest as { seed: number }).seed).toBe(submittedSeed);
+    expect(submittedSeed).toBeGreaterThanOrEqual(0);
+    const locked = await service.runSimulation({ ...input, seed: 876543 });
+    expect(locked.submittedRequest).toMatchObject({ seed: 876543 });
+    expect(() => service.previewSimulation({ ...input, seed: -2 })).toThrow(/seed/);
+    const raw = JSON.stringify({
+      ...(preview.constructedRequest as Record<string, unknown>),
+      seed: undefined,
+    });
+    const advanced = await service.runSimulation({ ...input, seed: 123, rawRequestJson: raw });
+    expect(advanced.submittedRequest).toMatchObject({ seed: 123 });
+  });
+
   it('submits the production builder/schema, validates the same result, and never mutates session/chat/roster', async () => {
     const chat = new ChatService();
     const session = new SessionController(chat);

@@ -1,5 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { Label } from '@/components/ui/label';
+import { Input } from '@/components/ui/input';
 import { RecordedVideoTimeline } from '../recorded-video-timeline';
 import { reportRecordedIssue } from '../recorded-media-health-client';
 import type { RecordedSegment } from '../recorded-preview-timeline';
@@ -17,6 +18,7 @@ export interface RecordedVideoMedia {
   path?: string;
   name: string;
   durationMs?: number | null;
+  offsetMs?: number;
 }
 
 export interface RecordedVideoHandle {
@@ -28,7 +30,7 @@ export interface RecordedVideoHandle {
   stop(): void;
   pause(): void;
   resume(): Promise<void>;
-  snapshot(): { path: string } | null;
+  snapshot(): { path: string; offsetMs: number } | null;
 }
 
 export const RecordedVideoInput = forwardRef<
@@ -38,7 +40,7 @@ export const RecordedVideoInput = forwardRef<
     onSelectionChange: (state: { hasFile: boolean; ready: boolean }) => void;
     onMediaChange?: (media: RecordedVideoMedia | null) => void;
     onEnded?: () => void;
-    restore?: { key: string; path: string | null };
+    restore?: { key: string; path: string | null; offsetMs?: number };
   }
 >(function RecordedVideoInput(
   { running, onSelectionChange, onMediaChange, onEnded, restore },
@@ -51,6 +53,8 @@ export const RecordedVideoInput = forwardRef<
   const [fileName, setFileName] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const [status, setStatus] = useState('No file (video optional)');
+  const [offsetMs, setOffsetMs] = useState(0);
+  const offsetRef = useRef(0);
   const [error, setError] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
   const epoch = useRef(0);
@@ -72,7 +76,8 @@ export const RecordedVideoInput = forwardRef<
     ref,
     () => ({
       stop,
-      snapshot: () => (selectedPath.current ? { path: selectedPath.current } : null),
+      snapshot: () =>
+        selectedPath.current ? { path: selectedPath.current, offsetMs: offsetRef.current } : null,
       pause() {
         if (suspendedAt.current !== null || !resumePlayback.current) return;
         suspendedAt.current = performance.now();
@@ -102,7 +107,7 @@ export const RecordedVideoInput = forwardRef<
         if (generation !== epoch.current) return;
         const mediaElapsedMs = () => Math.max(0, performance.now() - originMonotonicMs);
         const expectedMediaMs = () => {
-          const elapsed = segment.startMs + mediaElapsedMs();
+          const elapsed = segment.startMs + mediaElapsedMs() - offsetRef.current;
           const fileEnd = Number.isFinite(element.duration)
             ? Math.max(0, element.duration * 1000 - 10)
             : Infinity;
@@ -119,10 +124,52 @@ export const RecordedVideoInput = forwardRef<
         resumePlayback.current = async (elapsed) => {
           originMonotonicMs += elapsed;
           timeline.shiftObservationTime(elapsed);
-          if (generation !== epoch.current || element.ended) return;
+          if (generation !== epoch.current || element.ended || !started) return;
           await startRecordedMedia(element);
         };
         let synchronizing = false;
+        let started = false;
+        let starting = false;
+        let finished = false;
+        const complete = (message: string) => {
+          if (finished || generation !== epoch.current) return;
+          finished = true;
+          if (timer.current !== null) clearInterval(timer.current);
+          timer.current = null;
+          element.pause();
+          setStatus(message);
+          onEnded?.();
+        };
+        const outsideVideo = () =>
+          Number.isFinite(element.duration) &&
+          segment.startMs + mediaElapsedMs() - offsetRef.current >= element.duration * 1000;
+        const startWhenReady = async () => {
+          if (
+            finished ||
+            started ||
+            starting ||
+            expectedMediaMs() < 0 ||
+            outsideVideo() ||
+            generation !== epoch.current
+          )
+            return;
+          starting = true;
+          try {
+            await seekRecordedMedia(element, expectedMediaMs());
+            if (generation !== epoch.current || suspendedAt.current !== null) return;
+            await startRecordedMedia(element);
+            if (generation !== epoch.current) {
+              element.pause();
+              return;
+            }
+            started = true;
+            setStatus('Playing at 1×');
+          } catch (error) {
+            failPlayback(error);
+          } finally {
+            starting = false;
+          }
+        };
         let stalledAt: number | null = null;
         let droppedFrames = element.getVideoPlaybackQuality?.().droppedVideoFrames ?? 0;
         let lastDropReportAt = 0;
@@ -145,18 +192,25 @@ export const RecordedVideoInput = forwardRef<
             generation !== epoch.current ||
             suspendedAt.current !== null ||
             inFlight.current ||
-            synchronizing ||
-            element.ended
+            synchronizing
           )
             return;
           if (segment.endMs !== null && segment.startMs + mediaElapsedMs() >= segment.endMs) {
-            if (timer.current !== null) clearInterval(timer.current);
-            timer.current = null;
-            element.pause();
-            setStatus('End of selected video segment');
-            onEnded?.();
+            complete('End of selected video segment');
             return;
           }
+          if (!started) {
+            if (outsideVideo()) {
+              complete('Video ends before the selected presentation time');
+              return;
+            }
+            void startWhenReady();
+            return;
+          }
+          // Before first playback an EOF flag may belong to the preceding Run.
+          // Allow the seek in startWhenReady() to clear it; only guard a Run
+          // that has already started and subsequently reached its own EOF.
+          if (element.ended) return;
           if (element.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || element.paused) {
             stalledAt ??= performance.now();
             if (performance.now() - stalledAt >= AUDIO_STALL_TIMEOUT_MS)
@@ -243,23 +297,15 @@ export const RecordedVideoInput = forwardRef<
             });
         };
         try {
-          await seekRecordedMedia(element, expectedMediaMs());
-          if (generation !== epoch.current) return;
-          await startRecordedMedia(element);
-          if (generation !== epoch.current) {
-            element.pause();
-            return;
-          }
-          element.onended = () => {
+          if (expectedMediaMs() >= 0 && !outsideVideo()) {
+            await startWhenReady();
             if (generation !== epoch.current) return;
-            if (timer.current !== null) clearInterval(timer.current);
-            timer.current = null;
-            setStatus('End of video');
-            onEnded?.();
-          };
-          setStatus('Playing at 1×');
+          }
+          element.onended = () => complete('End of video');
+          if (!started) setStatus('Waiting for video offset');
           setError(null);
           capture();
+          if (finished) return;
           // Decode independently of inference (including in-flight retries). Polling also
           // works when requestVideoFrameCallback is throttled on a hidden desktop page.
           timer.current = setInterval(capture, Math.min(250, captureIntervalMs));
@@ -317,6 +363,7 @@ export const RecordedVideoInput = forwardRef<
       url: nextUrl,
       name: file.name,
       file,
+      offsetMs: offsetRef.current,
       ...(selectedPath.current ? { path: selectedPath.current } : {}),
     });
     setFileName(file.name);
@@ -345,7 +392,7 @@ export const RecordedVideoInput = forwardRef<
       const authorized = await window.lonelyChat!.openRecordedMedia!(filePath);
       if (selectedPath.current !== filePath) return;
       setUrl(authorized);
-      onMediaChange?.({ url: authorized, name, path: filePath });
+      onMediaChange?.({ url: authorized, name, path: filePath, offsetMs: offsetRef.current });
     } catch (reason) {
       if (selectedPath.current !== filePath) return;
       setUrl(null);
@@ -357,8 +404,36 @@ export const RecordedVideoInput = forwardRef<
   };
 
   useEffect(() => {
-    if (restore) void selectPath(restore.path);
+    if (restore) {
+      const offset = restore.offsetMs ?? 0;
+      offsetRef.current = offset;
+      setOffsetMs(offset);
+      void selectPath(restore.path);
+    }
   }, [restore?.key]);
+
+  const decoderReady = () => {
+    const element = video.current;
+    if (!element?.videoWidth || !element.videoHeight) return;
+    const durationMs = Math.round(element.duration * 1000);
+    if (!Number.isSafeInteger(durationMs) || durationMs <= 0) {
+      setReady(false);
+      setStatus('Waiting for finite video duration');
+      setError('Video duration is unavailable. Select a finite local video file.');
+      return;
+    }
+    onMediaChange?.({
+      url: url!,
+      ...(selectedFile.current ? { file: selectedFile.current } : {}),
+      ...(selectedPath.current ? { path: selectedPath.current } : {}),
+      name: fileName ?? 'Video',
+      offsetMs: offsetRef.current,
+      durationMs,
+    });
+    setReady(true);
+    setError(null);
+    if (!running) setStatus('Ready');
+  };
 
   const decoderError = () => {
     const mediaError = video.current?.error;
@@ -423,6 +498,37 @@ export const RecordedVideoInput = forwardRef<
           Remove video source
         </button>
       )}
+      <Label htmlFor="recorded-video-offset" className="mt-3 block text-sm text-zinc-200">
+        Video offset (ms; positive delays, negative skips start)
+      </Label>
+      <Input
+        id="recorded-video-offset"
+        className="mt-2 max-w-56"
+        type="number"
+        min={-86400000}
+        max={86400000}
+        step={1}
+        disabled={running}
+        value={offsetMs}
+        onChange={(event) => {
+          const value = Number(event.target.value);
+          if (!Number.isSafeInteger(value) || value < -86400000 || value > 86400000) return;
+          offsetRef.current = value;
+          setOffsetMs(value);
+          if (url)
+            onMediaChange?.({
+              url,
+              name: fileName ?? 'Video',
+              ...(selectedFile.current ? { file: selectedFile.current } : {}),
+              ...(selectedPath.current ? { path: selectedPath.current } : {}),
+              durationMs:
+                video.current?.duration && Number.isFinite(video.current.duration)
+                  ? Math.round(video.current.duration * 1000)
+                  : null,
+              offsetMs: value,
+            });
+        }}
+      />
       {url && (
         <video
           ref={video}
@@ -432,22 +538,8 @@ export const RecordedVideoInput = forwardRef<
           preload="auto"
           playsInline
           muted
-          onCanPlay={() => {
-            if (video.current?.videoWidth && video.current.videoHeight) {
-              const seconds = video.current.duration;
-              onMediaChange?.({
-                url,
-                ...(selectedFile.current ? { file: selectedFile.current } : {}),
-                ...(selectedPath.current ? { path: selectedPath.current } : {}),
-                name: fileName ?? 'Video',
-                durationMs:
-                  Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1000) : null,
-              });
-              setReady(true);
-              setError(null);
-              if (!running) setStatus('Ready');
-            }
-          }}
+          onCanPlay={decoderReady}
+          onDurationChange={decoderReady}
           onError={decoderError}
           onEnded={() => {
             if (timer.current !== null) clearInterval(timer.current);

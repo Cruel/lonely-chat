@@ -17,10 +17,11 @@ export interface PreviewTrack {
 export function recordedPreviewDuration(
   videoDurationMs: number | null,
   tracks: readonly PreviewTrack[],
+  videoOffsetMs = 0,
 ): number {
   return Math.max(
     0,
-    Number.isFinite(videoDurationMs) ? (videoDurationMs ?? 0) : 0,
+    Number.isFinite(videoDurationMs) ? Math.max(0, videoOffsetMs + (videoDurationMs ?? 0)) : 0,
     ...tracks
       .filter((track) => track.enabled && track.durationMs !== null)
       .map((track) => Math.max(0, track.offsetMs + track.durationMs!)),

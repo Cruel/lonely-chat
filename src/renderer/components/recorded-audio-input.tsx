@@ -32,11 +32,13 @@ import {
 import { RecordedMediaPreview } from './recorded-media-preview';
 import { recordedCacheQuery, verifyRecordedCaches } from '../recorded-transcript-cache-client';
 import { closeRecordedAudioRuntime, type RecordedAudioRuntime } from '../recorded-audio-runtime';
+import { RecordedLiveDevices } from '../recorded-live-devices';
 import type { RecordedTranscriptMode } from '../../shared/recorded-transcript-cache';
 import type { RecordedScenarioConfig } from '../../shared/recorded-scenario-contract';
 
 interface RecordedAudioTrack {
-  kind: 'file' | 'video';
+  kind: 'file' | 'video' | 'device';
+  deviceId?: string | null;
   file: File | null;
   path: string | null;
   embeddedTrackIndex: number | null;
@@ -99,28 +101,53 @@ export const RecordedAudioInput = forwardRef<
 ) {
   const [tracks, setTracks] = useState<RecordedAudioTrack[]>([]);
   const [restoring, setRestoring] = useState(false);
-  const [addType, setAddType] = useState<'file' | 'video'>('file');
+  const [addType, setAddType] = useState<'file' | 'video' | 'device'>('file');
+  const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
+  useEffect(() => {
+    let mounted = true;
+    const refresh = () =>
+      void navigator.mediaDevices
+        ?.enumerateDevices()
+        .then((entries) => {
+          if (mounted)
+            setDevices(entries.filter((entry) => entry.kind === 'audioinput' && entry.deviceId));
+        })
+        .catch(() => {});
+    refresh();
+    navigator.mediaDevices?.addEventListener?.('devicechange', refresh);
+    return () => {
+      mounted = false;
+      navigator.mediaDevices?.removeEventListener?.('devicechange', refresh);
+    };
+  }, []);
   const [segment, setSegment] = useState<RecordedSegment>({ startMs: 0, endMs: null });
   const [previewOpen, setPreviewOpen] = useState(false);
   // A soundtrack is attached to one specific video selection, never its replacement.
   const activeTracks = useMemo(
-    () => tracks.filter((track) => track.kind === 'file' || !track.url || track.url === video?.url),
+    () =>
+      tracks.filter((track) => track.kind !== 'video' || !track.url || track.url === video?.url),
     [tracks, video?.url],
   );
   const previewTracks = useMemo(
     () =>
-      activeTracks.map(({ id, url, label, enabled, offsetMs, durationMs, embeddedTrackIndex }) => ({
-        id,
-        url,
-        label,
-        enabled,
-        offsetMs,
-        durationMs,
-        embeddedTrackIndex,
-      })),
+      activeTracks
+        .filter((track) => track.kind !== 'device')
+        .map(({ id, url, label, enabled, offsetMs, durationMs, embeddedTrackIndex }) => ({
+          id,
+          url,
+          label,
+          enabled,
+          offsetMs,
+          durationMs,
+          embeddedTrackIndex,
+        })),
     [activeTracks],
   );
-  const previewDurationMs = recordedPreviewDuration(video?.durationMs ?? null, previewTracks);
+  const previewDurationMs = recordedPreviewDuration(
+    video?.durationMs ?? null,
+    previewTracks,
+    video?.offsetMs ?? 0,
+  );
   const hasMedia = Boolean(video) || activeTracks.some((track) => track.enabled);
   const segmentValid =
     previewDurationMs === 0
@@ -145,7 +172,7 @@ export const RecordedAudioInput = forwardRef<
   tracksRef.current = activeTracks;
   useEffect(() => {
     setTracks((previous) =>
-      previous.filter((track) => track.kind === 'file' || !track.url || track.url === video?.url),
+      previous.filter((track) => track.kind !== 'video' || !track.url || track.url === video?.url),
     );
   }, [video?.url]);
   // A saved soundtrack with no usable video remains visible and invalid until the user
@@ -177,6 +204,11 @@ export const RecordedAudioInput = forwardRef<
     onSegmentChange?.({ segment, valid: segmentValid });
   }, [segment, segmentValid, onSegmentChange]);
   const runtimes = useRef(new Map<string, RecordedAudioRuntime>());
+  const liveDevices = useRef<RecordedLiveDevices | null>(null);
+  liveDevices.current ??= new RecordedLiveDevices(
+    (id) => onTrackEnded?.(id),
+    (id, message) => onFailure?.(id, message, 'segment'),
+  );
   const urls = useRef(new Set<string>());
   const generation = useRef(0);
   const playbackControls = useRef<{ pause(): void; resume(): Promise<void> } | null>(null);
@@ -197,27 +229,47 @@ export const RecordedAudioInput = forwardRef<
     ++generation.current;
     for (const runtime of runtimes.current.values()) close(runtime);
     runtimes.current.clear();
+    liveDevices.current?.stop();
   };
 
-  const cacheDuration = () => recordedPreviewDuration(video?.durationMs ?? null, tracksRef.current);
-  const makeCacheQuery = (track: RecordedAudioTrack, sampleRate: number) =>
-    recordedCacheQuery(
-      { ...track, path: track.kind === 'video' ? (video?.path ?? null) : track.path },
+  const cacheDuration = () =>
+    recordedPreviewDuration(video?.durationMs ?? null, tracksRef.current, video?.offsetMs ?? 0);
+  const makeCacheQuery = (track: RecordedAudioTrack, sampleRate: number) => {
+    if (track.kind === 'device') throw new Error('Live devices cannot use transcript caches.');
+    return recordedCacheQuery(
+      {
+        ...track,
+        kind: track.kind,
+        path: track.kind === 'video' ? (video?.path ?? null) : track.path,
+      },
       sampleRate,
       segmentRef.current,
       cacheDuration(),
     );
+  };
 
   const verifyCache = async (): Promise<void> => {
+    if (
+      transcriptMode !== 'transcribe' &&
+      tracksRef.current.some((track) => track.enabled && track.kind === 'device')
+    )
+      throw new Error(
+        'Live devices require real-time Whisper transcription, not saved media transcript caches.',
+      );
     if (transcriptMode === 'transcribe') return;
     const api = window.lonelyChat;
     if (!api) throw new Error('Desktop transcript cache integration is unavailable.');
     await verifyRecordedCaches(
       transcriptMode,
-      tracksRef.current.map((track) => ({
-        ...track,
-        path: track.kind === 'video' ? (video?.path ?? null) : track.path,
-      })),
+      tracksRef.current
+        .filter(
+          (track): track is RecordedAudioTrack & { kind: 'file' | 'video' } =>
+            track.kind !== 'device',
+        )
+        .map((track) => ({
+          ...track,
+          path: track.kind === 'video' ? (video?.path ?? null) : track.path,
+        })),
       segmentRef.current,
       cacheDuration(),
       (query) => api.checkRecordedAudioCache(query),
@@ -252,7 +304,7 @@ export const RecordedAudioInput = forwardRef<
     stop,
     snapshot: () => ({
       audio: tracksRef.current.map(
-        ({ id, kind, path, label, enabled, offsetMs, embeddedTrackIndex }) => ({
+        ({ id, kind, path, deviceId, label, enabled, offsetMs, embeddedTrackIndex }) => ({
           id,
           kind,
           path: kind === 'file' ? path : null,
@@ -260,12 +312,18 @@ export const RecordedAudioInput = forwardRef<
           enabled,
           offsetMs,
           embeddedTrackIndex,
+          ...(kind === 'device' ? { deviceId: deviceId ?? null } : {}),
         }),
       ),
       segment: segmentRef.current,
     }),
-    pause: () => playbackControls.current?.pause(),
-    resume: async () => playbackControls.current?.resume(),
+    pause: () => {
+      playbackControls.current?.pause();
+      liveDevices.current?.pause();
+    },
+    resume: async () => {
+      await Promise.all([playbackControls.current?.resume(), liveDevices.current?.resume()]);
+    },
     verifyCache,
     async prepare() {
       stop();
@@ -405,6 +463,24 @@ export const RecordedAudioInput = forwardRef<
           }
         }),
       );
+      if (currentGeneration === generation.current) {
+        if (
+          transcriptMode !== 'transcribe' &&
+          tracksRef.current.some((track) => track.enabled && track.kind === 'device')
+        )
+          throw new Error('Live device audio cannot use transcript caching. Select Real Whisper.');
+        await liveDevices.current?.prepare(
+          tracksRef.current
+            .filter((track) => track.enabled && track.kind === 'device')
+            .map((track) => ({
+              id: track.id,
+              deviceId: track.deviceId!,
+              label: track.label,
+              offsetMs: track.offsetMs,
+            })),
+          segmentRef.current,
+        );
+      }
     },
     async begin(origin, segment = { startMs: 0, endMs: null }) {
       // Shift the media coordinate while preserving observedAt at the start of the clip.
@@ -773,6 +849,13 @@ export const RecordedAudioInput = forwardRef<
           }
         }),
       );
+      await liveDevices.current?.begin(
+        {
+          observedAt: origin.observedAt + segment.startMs,
+          monotonicMs: origin.monotonicMs + segment.startMs,
+        },
+        segment,
+      );
     },
   }));
 
@@ -785,14 +868,27 @@ export const RecordedAudioInput = forwardRef<
         activeTracks.every(
           (track) =>
             !track.enabled ||
-            (track.durationMs !== null &&
-              track.decoded &&
-              !track.error &&
-              track.label.trim().length > 0),
+            (track.kind === 'device'
+              ? Boolean(track.deviceId) &&
+                devices.some((device) => device.deviceId === track.deviceId) &&
+                track.label.trim().length > 0 &&
+                transcriptMode === 'transcribe'
+              : track.durationMs !== null &&
+                track.decoded &&
+                !track.error &&
+                track.label.trim().length > 0),
         ),
       count: activeTracks.filter((track) => track.enabled).length,
     });
-  }, [activeTracks, onSelectionChange, restoring, segmentValid, transcriptMode, cacheState.ready]);
+  }, [
+    activeTracks,
+    onSelectionChange,
+    restoring,
+    segmentValid,
+    transcriptMode,
+    cacheState.ready,
+    devices,
+  ]);
 
   useEffect(() => {
     if (!running) stop();
@@ -815,6 +911,17 @@ export const RecordedAudioInput = forwardRef<
     setSegment(restore.config.segment);
     void Promise.all(
       restore.config.audio.map(async (item) => {
+        if (item.kind === 'device')
+          return {
+            ...item,
+            file: null,
+            embeddedTracks: null,
+            url: '',
+            name: 'Live audio device',
+            durationMs: null,
+            decoded: true,
+            error: item.deviceId ? null : 'Select a local input device to relink this source.',
+          } as RecordedAudioTrack;
         if (item.kind === 'video')
           return {
             ...item,
@@ -921,6 +1028,31 @@ export const RecordedAudioInput = forwardRef<
     setTracks((previous) => [...previous, ...additions]);
   };
 
+  const addDevice = () => {
+    const device = devices[0];
+    if (!device || running) return;
+    setTracks((previous) => [
+      ...previous,
+      {
+        kind: 'device',
+        deviceId: device.deviceId,
+        file: null,
+        path: null,
+        embeddedTrackIndex: null,
+        embeddedTracks: null,
+        id: `recorded-audio-${crypto.randomUUID()}`,
+        url: '',
+        name: device.label || 'Live audio device',
+        label: (device.label || 'Live microphone').slice(0, 80),
+        enabled: true,
+        offsetMs: 0,
+        durationMs: null,
+        decoded: true,
+        error: null,
+      },
+    ]);
+  };
+
   const addVideoAudio = () => {
     if (!video || running) return;
     setTracks((previous) => [
@@ -968,9 +1100,10 @@ export const RecordedAudioInput = forwardRef<
         items={[
           { value: 'file', label: 'Audio files' },
           { value: 'video', label: 'Audio from video' },
+          { value: 'device', label: 'Live input device' },
         ]}
         value={addType}
-        onValueChange={(value) => setAddType(value as 'file' | 'video')}
+        onValueChange={(value) => setAddType(value as 'file' | 'video' | 'device')}
         disabled={running}
       >
         <SelectTrigger id="recorded-audio-type" className="mt-2">
@@ -979,6 +1112,7 @@ export const RecordedAudioInput = forwardRef<
         <SelectContent>
           <SelectItem value="file">Audio files</SelectItem>
           <SelectItem value="video">Audio from video</SelectItem>
+          <SelectItem value="device">Live input device</SelectItem>
         </SelectContent>
       </Select>
       {addType === 'file' ? (
@@ -999,6 +1133,25 @@ export const RecordedAudioInput = forwardRef<
             className="mt-2 block w-full text-sm text-zinc-300 file:mr-3 file:rounded-md file:border-0 file:bg-secondary file:px-3 file:py-2 file:text-secondary-foreground"
           />
         </>
+      ) : addType === 'device' ? (
+        <div className="mt-3 space-y-2">
+          <Button
+            variant="secondary"
+            disabled={running || devices.length === 0}
+            onClick={addDevice}
+          >
+            Add live audio device
+          </Button>
+          <p className="text-xs text-zinc-400">
+            Live samples are captured during the Run; they are not seekable or cached. Device
+            capture is stopped on Run Stop, and requires microphone permission.
+          </p>
+          {devices.length === 0 && (
+            <p className="text-xs text-amber-300">
+              No input device detected. Connect a microphone and grant Chromium permission.
+            </p>
+          )}
+        </div>
       ) : (
         <div className="mt-3">
           <Button variant="secondary" disabled={running || !video} onClick={addVideoAudio}>
@@ -1105,6 +1258,31 @@ export const RecordedAudioInput = forwardRef<
                 </Select>
               </div>
             )}
+            {track.kind === 'device' && (
+              <div className="mt-3">
+                <Label htmlFor={`audio-device-${track.id}`}>Live audio device</Label>
+                <Select
+                  value={track.deviceId ?? ''}
+                  items={devices.map((device) => ({
+                    value: device.deviceId,
+                    label: device.label || 'Microphone',
+                  }))}
+                  disabled={running}
+                  onValueChange={(value) => patch(track.id, { deviceId: value, error: null })}
+                >
+                  <SelectTrigger id={`audio-device-${track.id}`} className="mt-1">
+                    <SelectValue placeholder="Select an available device" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {devices.map((device) => (
+                      <SelectItem key={device.deviceId} value={device.deviceId}>
+                        {device.label || 'Microphone'}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             {track.kind === 'file' && (
               <Button
                 size="xs"
@@ -1150,11 +1328,13 @@ export const RecordedAudioInput = forwardRef<
               {track.error ??
                 (track.enabled && !track.label.trim() ? 'Enter a source label.' : null) ??
                 phases[track.id] ??
-                (track.durationMs !== null && track.decoded
-                  ? `Ready · ${(track.durationMs / 1000).toFixed(1)}s`
-                  : track.durationMs !== null
-                    ? 'Checking Chromium codec support…'
-                    : 'Checking decoder…')}
+                (track.kind === 'device'
+                  ? 'Live input ready to capture on Start'
+                  : track.durationMs !== null && track.decoded
+                    ? `Ready · ${(track.durationMs / 1000).toFixed(1)}s`
+                    : track.durationMs !== null
+                      ? 'Checking Chromium codec support…'
+                      : 'Checking decoder…')}
             </p>
           </div>
         ))}

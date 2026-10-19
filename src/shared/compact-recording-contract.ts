@@ -1,3 +1,5 @@
+import type { TraceAttempt } from './inference-trace-contract';
+
 export type InferenceRecordingMode = 'compact' | 'exact';
 
 export interface RecordingLimits {
@@ -55,4 +57,6 @@ export interface CompactReconstruction {
   readonly currentBuilderVersion: string;
   readonly warning: string;
   readonly attempt: CompactAttemptSummary;
+  /** Frozen outcome and subsequent publication/close records from the archive. */
+  readonly outcome?: Partial<TraceAttempt>;
 }

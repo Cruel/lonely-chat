@@ -44,9 +44,11 @@ export function portableConfig(config: RecordedScenarioConfig): PortableConfig {
       entry: null,
       kind: 'video',
     });
-    snapshot.video = { path: 'portable-source:video' };
+    snapshot.video = { ...snapshot.video, path: 'portable-source:video' };
   }
   snapshot.audio = snapshot.audio.map((track, index) => {
+    // A local hardware identity is neither portable nor safe to export.
+    if (track.kind === 'device') return { ...track, enabled: false, deviceId: null };
     if (track.kind !== 'file' || !track.path) return track;
     const key = 'audio-' + index;
     sources.push({ key, filename: safeFilename(track.path), entry: null, kind: 'audio' });
@@ -163,7 +165,7 @@ export async function restorePortableConfig(
       } else {
         missing.push(source.filename);
       }
-      if (source.key === 'video') config.video = { path: target };
+      if (source.key === 'video') config.video = { ...config.video!, path: target };
       else
         config.audio = config.audio.map((track, trackIndex) =>
           source.key === 'audio-' + trackIndex ? { ...track, path: target } : track,

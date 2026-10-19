@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ChatService } from './chat-service';
 import { SessionController } from './session-controller';
 import { AudienceService } from './audience-service';
@@ -12,6 +12,90 @@ import { FakeClock, flushMicrotasks as flush } from './test-support/fake-clock';
 import type { InferenceProvider } from './fake-inference';
 
 describe('session lifecycle with deterministic clock', () => {
+  it('permits Playground only while Recorded playback is paused and inference is idle', async () => {
+    const clock = new FakeClock();
+    const session = new SessionController(new ChatService(), undefined, clock, {
+      cycleIntervalMs: 1500,
+    });
+    expect(session.canExecutePausedPlayground()).toBe(false);
+    session.start('scene', 'fake', null, {
+      inputMode: 'recorded',
+      publishToOverlay: false,
+    });
+    expect(session.snapshot().playgroundAvailable).toBe(false);
+    await flush();
+    session.pauseRecorded();
+    expect(session.snapshot()).toMatchObject({
+      phase: 'running',
+      recordedPlayback: 'paused',
+      playgroundAvailable: true,
+    });
+    expect(session.canExecutePausedPlayground()).toBe(true);
+    await session.preparePausedPlayground();
+    session.resumeRecorded();
+    expect(session.snapshot().playgroundAvailable).toBe(false);
+    session.stop();
+    expect(session.snapshot().playgroundAvailable).toBe(false);
+  });
+
+  it('releases the idle native model for paused Playground and prepares it again on resume', async () => {
+    const clock = new FakeClock();
+    const prepare = vi.fn(async () => {});
+    const stop = vi.fn(async () => {});
+    const native: InferenceProvider = {
+      prepare,
+      stop,
+      generate: async () => ({ messages: [] }),
+    };
+    const session = new SessionController(
+      new ChatService(),
+      undefined,
+      clock,
+      {
+        cycleIntervalMs: 1500,
+      },
+      native,
+    );
+    session.start('scene', 'native', 'model', { inputMode: 'recorded', publishToOverlay: false });
+    await flush();
+    const preparedBefore = prepare.mock.calls.length;
+    expect(preparedBefore).toBeGreaterThan(0);
+    session.pauseRecorded();
+    expect(session.canExecutePausedPlayground()).toBe(true);
+    await session.preparePausedPlayground();
+    expect(stop).toHaveBeenCalledOnce();
+    session.resumeRecorded();
+    clock.advance(1500);
+    await flush();
+    expect(prepare.mock.calls.length).toBeGreaterThan(preparedBefore);
+    session.stop();
+  });
+
+  it('keeps Playground unavailable when a paused Run still owns an in-flight completion', async () => {
+    const clock = new FakeClock();
+    let resolve!: (value: { events: never[]; messages: never[] }) => void;
+    const response = new Promise<{ events: never[]; messages: never[] }>((done) => {
+      resolve = done;
+    });
+    const inference: InferenceProvider = {
+      generate: () => response,
+    };
+    const session = new SessionController(new ChatService(), inference, clock, {
+      cycleIntervalMs: 1500,
+    });
+    session.start('scene', 'fake', null, {
+      inputMode: 'recorded',
+      publishToOverlay: false,
+    });
+    await flush();
+    session.pauseRecorded();
+    expect(session.snapshot().playgroundAvailable).toBe(false);
+    resolve({ events: [], messages: [] });
+    await flush();
+    expect(session.canExecutePausedPlayground()).toBe(false);
+    session.stop();
+  });
+
   it('captures a preset revision and runtime settings until Stop, including subsequent cycles', async () => {
     const clock = new FakeClock();
     const session = new SessionController(new ChatService(), undefined, clock, {

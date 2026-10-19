@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { PlaygroundService, type PlaygroundProvider } from './playground-service';
-import { DEFAULT_FREEFORM_SAMPLING } from '../shared/playground-contract';
+import { DEFAULT_FREEFORM_SAMPLING, validateFreeformRequest } from '../shared/playground-contract';
+import { nativeFreeformRequest } from './native-inference';
 import { ChatService } from './chat-service';
 import { SessionController } from './session-controller';
 import { AudienceService } from './audience-service';
@@ -14,6 +15,30 @@ const request = {
 };
 
 describe('Playground worker ownership and isolation', () => {
+  it('accepts a bounded optional response schema and forwards it to llama.cpp', () => {
+    const input = {
+      ...request,
+      responseSchema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['answer'],
+        properties: { answer: { type: 'string' } },
+      },
+    };
+    const validated = validateFreeformRequest(input);
+    expect(nativeFreeformRequest(validated)).toMatchObject({
+      response_format: { type: 'json_object', schema: input.responseSchema },
+      seed: 1234,
+    });
+    expect(() => validateFreeformRequest({ ...input, responseSchema: null })).toThrow(/schema/i);
+    expect(() =>
+      validateFreeformRequest({
+        ...input,
+        responseSchema: { text: 'x'.repeat(40_000) },
+      }),
+    ).toThrow(/32 KiB/);
+  });
+
   it('serializes resources with Simulation in both directions; edits and snapshots stay available', async () => {
     let simulationRunning = false;
     let unlock!: () => void;

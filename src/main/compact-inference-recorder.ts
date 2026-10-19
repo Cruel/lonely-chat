@@ -62,7 +62,8 @@ const BUILDER_VERSION = `native-chat-request-v1:${createHash('sha256')
   .digest('hex')
   .slice(0, 16)}`;
 const JPEG = /^data:image\/jpeg;base64,([A-Za-z0-9+/]+={0,2})$/;
-const ATTEMPT_ID = /^attempt-\d{1,12}$/;
+const ATTEMPT_ID =
+  /^attempt-(?:\d{1,12}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
 const RECORDING_ID = /^recording-[A-Za-z0-9-]{15,110}$/;
 
 function object(value: unknown): Record<string, unknown> {
@@ -1421,6 +1422,48 @@ export class CompactInferenceRecorder {
       provenance = 'current-builder-reconstruction';
       warning = ''; // Compact reconstruction caveat is applied below.
     }
+    const {
+      builderVersion: _version,
+      originalSelection: _selection,
+      ...details
+    } = selected.details;
+    const presented = new Map<number, NonNullable<TraceAttempt['presented']>[number]>();
+    for (const item of (Array.isArray(details.presented) ? details.presented : []) as NonNullable<
+      TraceAttempt['presented']
+    >)
+      presented.set(item.scheduledIndex, item);
+    let presentationClosed = details.presentationClosed === true;
+    // Outcome chunks precede subsequent presentation and Run-closure chunks.
+    for (const item of index.slice(index.indexOf(target) + 1)) {
+      if (
+        !(item.type === 'presentation' && item.attemptId === id) &&
+        !(item.type === 'presentation-closed' && item.attemptId === `run-${selected.summary.runId}`)
+      )
+        continue;
+      const rows = await this.readChunk(dir, item.chunk, item.sha256);
+      for (const row of rows) {
+        if (row.type === 'presentation' && row.attemptId === id)
+          presented.set(row.scheduledIndex, {
+            id: row.id,
+            author: row.author,
+            text: row.text,
+            presentedAt: row.presentedAt,
+            timelineAt: row.timelineAt,
+            scheduledIndex: row.scheduledIndex,
+          });
+        if (
+          row.type === 'presentation-closed' &&
+          row.runId === selected.summary.runId &&
+          row.attemptIds.includes(id)
+        )
+          presentationClosed = true;
+      }
+    }
+    const outcome = {
+      ...details,
+      presented: [...presented.values()].sort((a, b) => a.scheduledIndex - b.scheduledIndex),
+      presentationClosed,
+    } as Partial<TraceAttempt>;
     const currentBuilderVersion = BUILDER_VERSION;
     const recordedBuilderVersion =
       typeof selected.details.builderVersion === 'string'
@@ -1441,28 +1484,16 @@ export class CompactInferenceRecorder {
             'Reconstructed with the current native request builder. This is not the byte-exact ' +
             'historical request; builder/schema/version changes can alter the prompt and output.',
       attempt: { ...selected.summary, mode, chunk: target.chunk },
+      outcome,
     };
   }
 
-  /** Turn a disk-backed Exact attempt into a standalone immutable saved case source. */
-  async restoreExactAttempt(id: string, recordingId: string): Promise<TraceAttempt> {
+  /** Freeze the reconstructed request and all original outcome evidence in a standalone case. */
+  async restoreRecordedAttempt(id: string, recordingId: string): Promise<TraceAttempt> {
     const rebuilt = await this.reconstruct(id, recordingId);
     if (!rebuilt) throw new Error('Recorded inference attempt was not found.');
-    if (rebuilt.provenance !== 'exact-recorded-request')
-      throw new Error('This attempt has no constructed Exact native request.');
-    const dir = path.join(this.root, 'compact-inference', recordingId);
-    const index = await this.readIndex(dir);
-    const target = index.find((row) => row.type === 'attempt' && row.attemptId === id);
-    if (!target) throw new Error('Recorded attempt index is missing.');
-    const stored = (await this.readChunk(dir, target.chunk, target.sha256)).find(
-      (row): row is AttemptRecord => row.type === 'attempt' && row.summary.id === id,
-    );
-    if (!stored) throw new Error('Recorded Exact attempt is missing.');
-    const {
-      builderVersion: _builderVersion,
-      originalSelection: _selection,
-      ...details
-    } = stored.details;
+    if (rebuilt.request === null)
+      throw new Error('This attempt has no constructed native request.');
     return {
       errorStage: null,
       error: null,
@@ -1476,10 +1507,18 @@ export class CompactInferenceRecorder {
       presented: [],
       presentationClosed: false,
       ...rebuilt.attempt,
-      ...details,
+      ...rebuilt.outcome,
       input: rebuilt.input,
       request: rebuilt.request,
     } as unknown as TraceAttempt;
+  }
+
+  /** Compatibility with older Exact-only callers. */
+  async restoreExactAttempt(id: string, recordingId: string): Promise<TraceAttempt> {
+    const rebuilt = await this.reconstruct(id, recordingId);
+    if (!rebuilt || rebuilt.provenance !== 'exact-recorded-request')
+      throw new Error('This attempt has no constructed Exact native request.');
+    return this.restoreRecordedAttempt(id, recordingId);
   }
 
   private async readChunk(dir: string, name: string, digest?: string): Promise<Row[]> {

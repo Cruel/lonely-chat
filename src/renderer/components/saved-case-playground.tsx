@@ -189,6 +189,12 @@ export function SavedCasePlayground({
             {selected.seed} · {selected.frameCount} selected frames · {selected.childCount} child
             experiments
           </p>
+          {source.sourceResult?.requestProvenance === 'current-builder-reconstruction' && (
+            <p className="text-xs text-amber-300" role="status">
+              This case freezes a current-builder reconstruction of a Compact recording; the
+              original historical request was not captured and may have differed.
+            </p>
+          )}
           <JsonInspector
             title="Immutable original native request (frame references)"
             value={source.request}
@@ -197,6 +203,12 @@ export function SavedCasePlayground({
             title="Immutable captured input and selection metadata"
             value={source.input}
           />
+          {source.sourceResult && (
+            <JsonInspector
+              title="Frozen original outcome and publication evidence"
+              value={source.sourceResult}
+            />
+          )}
           <div className="flex flex-wrap items-center gap-3 text-xs">
             <label htmlFor="saved-case-model">Experiment model</label>
             <select

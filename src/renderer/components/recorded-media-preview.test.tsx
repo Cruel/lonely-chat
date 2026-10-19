@@ -80,6 +80,27 @@ it('scrubs video and every enabled audio against PTS and signed offsets without 
   expect(publish).not.toHaveBeenCalled();
 });
 
+it('seeks a signed-offset video independently of audio track alignment', () => {
+  vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
+  render(
+    <RecordedMediaPreview
+      video={{ url: 'blob:scene', name: 'scene.mp4', durationMs: 3000, offsetMs: 850 }}
+      tracks={tracks}
+      segment={{ startMs: 0, endMs: 3200 }}
+      durationMs={3850}
+      onClose={vi.fn()}
+    />,
+  );
+  const video = screen.getByLabelText('Preview video') as HTMLVideoElement;
+  const mic = screen.getByLabelText('Preview audio: Mic') as HTMLAudioElement;
+  fireEvent.change(screen.getByLabelText('Seek (ms)'), { target: { value: '1250' } });
+  expect(video.currentTime).toBeCloseTo(0.4);
+  expect(mic.currentTime).toBeCloseTo(1.5);
+  fireEvent.change(screen.getByLabelText('Seek (ms)'), { target: { value: '500' } });
+  expect(video.currentTime).toBe(0);
+  expect(mic.currentTime).toBeCloseTo(0.75);
+});
+
 it('keeps monitoring muted unless explicitly enabled; solo suppresses other monitored tracks', async () => {
   const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(async function (
     this: HTMLMediaElement,
