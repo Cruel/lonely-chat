@@ -30,7 +30,7 @@ import {
   CertificationSpeechWorker,
 } from './certification-workers';
 import { observationNow } from '../shared/observation-clock';
-import { pathToFileURL } from 'node:url';
+import { trustedDesktopURL } from './desktop-renderer-origin';
 import {
   app,
   BrowserWindow,
@@ -289,9 +289,11 @@ function trustedSender(event: Electron.IpcMainEvent | Electron.IpcMainInvokeEven
     event.senderFrame !== event.sender.mainFrame
   )
     return false;
-  const url = event.senderFrame.url;
-  if (devOrigin) return url === devOrigin || url === `${devOrigin}/`;
-  return url === pathToFileURL(path.join(rendererDirectory, 'index.html')).href;
+  return trustedDesktopURL(
+    event.senderFrame.url,
+    path.join(rendererDirectory, 'index.html'),
+    devOrigin,
+  );
 }
 
 function requireDesktop(event: Electron.IpcMainInvokeEvent): void {
@@ -1194,8 +1196,9 @@ function openMainWindow(): void {
     return { action: 'deny' };
   });
   window.webContents.on('will-navigate', (event, url) => {
-    const expected = devOrigin ?? pathToFileURL(path.join(rendererDirectory, 'index.html')).href;
-    if (url !== expected && url !== `${expected}/`) event.preventDefault();
+    if (!trustedDesktopURL(url, path.join(rendererDirectory, 'index.html'), devOrigin)) {
+      event.preventDefault();
+    }
   });
   if (packageE2E) {
     installPackagedE2E(window, {

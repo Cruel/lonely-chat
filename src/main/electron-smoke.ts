@@ -108,26 +108,35 @@ export function installElectronSmoke(
     })()`);
     if (!captureInitial.visible || captureInitial.privileged)
       throw new Error('Floating capture did not receive safe public chat');
-    const beforeFloatingMessage = chat.snapshot().sequence;
-    await window.webContents.executeJavaScript('window.lonelyChat.publishSample()');
-    const latestText = chat.snapshot().messages.at(-1)?.text;
+    // The running Simulation can publish chat during this verification. Publish a
+    // unique marker and wait for that message, not the latest text or an exact
+    // global sequence delta (neither is stable under concurrent playback).
+    const sample = chat.publish({
+      author: 'smoke-test',
+      text: `Floating capture delivery ${process.pid}-${Date.now()}`,
+      color: '#ffffff',
+    });
     const captureUpdated = await captureWindow.webContents.executeJavaScript(`(async () => {
       for (let attempt = 0; attempt < 100; attempt++) {
-        if (document.querySelector('[role="log"]')?.textContent?.includes(${JSON.stringify(latestText)})) return true;
+        if (document.querySelector('[role="log"]')?.textContent?.includes(${JSON.stringify(sample.text)})) return true;
         await new Promise(resolve => setTimeout(resolve, 50));
       }
       return false;
     })()`);
+    if (!captureUpdated)
+      throw new Error(`Floating capture did not receive published message ${sample.id}`);
     const floatingClosed = await window.webContents.executeJavaScript(
       'window.lonelyChat.closeFloatingChat()',
     );
-    if (
-      !captureUpdated ||
-      floatingClosed.open ||
-      chat.snapshot().sequence !== beforeFloatingMessage + 1
-    ) {
-      throw new Error('Floating capture changed chat delivery or failed to close');
+    if (floatingClosed.open || floating.snapshot().open)
+      throw new Error('Floating capture controller failed to close');
+    for (let attempt = 0; !captureWindow.isDestroyed() && attempt < 100; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
     }
+    if (!captureWindow.isDestroyed())
+      throw new Error('Floating capture native window failed to close');
+    if (!chat.snapshot().messages.some((message) => message.id === sample.id))
+      throw new Error('Floating capture lost the published chat message');
     const requestedTray = await window.webContents.executeJavaScript(
       'window.lonelyChat.setCloseToTray(true)',
     );
@@ -140,8 +149,15 @@ export function installElectronSmoke(
       if (!floating.snapshot().open || (await fetch(overlay.snapshot().url!)).status !== 200) {
         throw new Error('Background presentation failed after hiding main window');
       }
-      await new Promise((resolve) => setTimeout(resolve, 1700));
-      if (chat.snapshot().sequence <= beforeFloatingMessage + 1)
+      const beforeBackgroundPlayback = chat.snapshot().sequence;
+      for (
+        let attempt = 0;
+        chat.snapshot().sequence <= beforeBackgroundPlayback && attempt < 100;
+        attempt++
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      if (chat.snapshot().sequence <= beforeBackgroundPlayback)
         throw new Error('Simulation stopped advancing with hidden configuration window');
       lifecycle.show();
       if (!window.isVisible()) throw new Error('Tray Show failed to restore main window');

@@ -101,6 +101,47 @@ describe('one authoritative chat across overlay and capture clients', () => {
     await once(browser, 'close');
     floating.close();
   });
+
+  it('delivers a particular marker and closes while simulation messages arrive concurrently', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'lonely-floating-test-'));
+    await writeFile(path.join(directory, 'index.html'), '<html>overlay</html>');
+    const chat = new ChatService();
+    const server = new OverlayServer(chat, directory);
+    directoryCleanup.push(async () => {
+      await server.stop();
+      await rm(directory, { recursive: true, force: true });
+    });
+    const url = await server.start();
+    let capture: CaptureWindow | null = null;
+    const floating = new FloatingChatWindowController(
+      (options) => {
+        capture = new CaptureWindow(options);
+        return capture;
+      },
+      () => url,
+    );
+    expect(floating.open().open).toBe(true);
+    await waitFor(() => capture !== null && capture.events.length === 1);
+
+    const sample = chat.publish({
+      author: 'smoke-test',
+      text: 'Floating capture delivery marker',
+      color: '#ffffff',
+    });
+    // The scheduled Simulation remains active while the smoke test waits for
+    // the marker. It must not make a global sequence-delta check fail.
+    chat.publish({ author: 'simulation', text: 'A concurrent message', color: '#ffffff' });
+    await waitFor(
+      () =>
+        capture !== null &&
+        capture.events.some((event) => event.type === 'append' && event.message.id === sample.id),
+    );
+    expect(chat.snapshot().sequence).toBe(2);
+    expect(capture!.events).toContainEqual({ type: 'append', sequence: 1, message: sample });
+    expect(floating.close().open).toBe(false);
+    expect(capture!.destroyed).toBe(true);
+    expect(chat.snapshot().messages).toContainEqual(sample);
+  });
 });
 
 async function waitFor(predicate: () => boolean) {

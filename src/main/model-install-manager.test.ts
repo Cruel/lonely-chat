@@ -189,7 +189,9 @@ describe('managed model packages via public model-manager service', () => {
     const projector = installed.installations.find((item) => item.projectorOnly)!;
     expect(projector.candidateId).toBe(namedProjector);
     expect(installed.projectorAssignments?.[first.id]).toBe(projector.id);
-    expect((await app.manager.visionFiles(first.id)).projectorPath).toContain(namedProjector);
+    expect((await app.manager.visionFiles(first.id)).projectorPath).toBe(
+      path.join(installed.storageDirectory, 'installed', projector.id, 'files', namedProjector),
+    );
     expect(app.requests.length).toBe(before + 1);
     const second = (
       await app.manager.install({
@@ -236,8 +238,8 @@ describe('managed model packages via public model-manager service', () => {
       projectorId: other,
     });
     expect(result.installations[0].files.map((file) => file.path)).toEqual([q4, q4b, other]);
-    expect((await app.manager.visionFiles(result.installations[0].id)).projectorPath).toContain(
-      other,
+    expect((await app.manager.visionFiles(result.installations[0].id)).projectorPath).toBe(
+      path.join(result.storageDirectory, 'installed', result.installations[0].id, 'files', other),
     );
   });
 

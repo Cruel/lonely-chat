@@ -118,7 +118,8 @@ it('bundles original media only when explicitly requested; rejects unsafe paths 
 it('round-trips multi-megabyte media entries without regex stack overflow', () => {
   const content = Buffer.alloc(4 * 1024 * 1024, 0xab);
   const archive = makeArchive('scenario', { version: 1 }, new Map([['media/clip.webm', content]]));
-  expect(openArchive(archive, 'scenario').files.get('media/clip.webm')).toEqual(content);
+  const restored = openArchive(archive, 'scenario').files.get('media/clip.webm');
+  expect(restored?.equals(content)).toBe(true);
   const altered = JSON.parse(archive);
   altered.entries[0].data = '*' + altered.entries[0].data.slice(1);
   expect(() => openArchive(JSON.stringify(altered), 'scenario')).toThrow(/payload/);
