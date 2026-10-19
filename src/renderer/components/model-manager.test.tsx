@@ -14,6 +14,8 @@ const emptyModels: ModelManagerSnapshot = {
   progress: { phase: 'idle', file: null, receivedBytes: 0, totalBytes: null },
 };
 const modelAPI = {
+  setModelProjector: async () => emptyModels,
+  installModelProjector: async () => emptyModels,
   getModelsSnapshot: async () => emptyModels,
   onModelsChange: () => () => {},
   installModel: async () => emptyModels,
@@ -112,7 +114,10 @@ it('changes a preselected model through a Select without retaining an incompatib
   await user.click(model);
   await user.click(await screen.findByRole('option', { name: /model-Q8_0.gguf/i }));
   expect(model.textContent).toContain('model-Q8_0.gguf');
-  expect(screen.queryByRole('combobox', { name: /^Vision projector candidate/ })).toBeNull();
+  expect(screen.getByRole('button', { name: /Add Projector Model/ })).toBeTruthy();
+  expect(
+    screen.getByRole('combobox', { name: /^Vision projector candidate/ }).textContent,
+  ).toContain('Choose a projector');
   expect(screen.getByText(/Selected 1 model file/).textContent).not.toContain('projector:');
   expect(screen.queryByText(/Select a projector explicitly for model-Q4_K_M.gguf/)).toBeNull();
 });
@@ -183,6 +188,151 @@ it('installs selected weights/projector, activates them, and removes managed pac
   expect(chooseModelDirectory).toHaveBeenCalledOnce();
 });
 
+it('lets the user override automatic recognition with any other GGUF in the repository', async () => {
+  const extra = {
+    ...discovered.candidates[0],
+    id: 'unrecognized-Q8_0.gguf',
+    quantization: 'Q8_0',
+    files: [{ path: 'unrecognized-Q8_0.gguf', sizeBytes: 1024 }],
+    compatibleProjectorIds: [],
+    suggestedProjectorId: null,
+  };
+  const installModel = vi.fn(async () => emptyModels);
+  window.lonelyChat = {
+    ...modelAPI,
+    discoverModels: async () => ({
+      ...discovered,
+      projectors: [],
+      candidates: [
+        { ...discovered.candidates[0], compatibleProjectorIds: [], suggestedProjectorId: null },
+        extra,
+      ],
+    }),
+    installModel,
+  } as unknown as DesktopAPI;
+  render(<ModelManager />);
+  fireEvent.change(screen.getByLabelText('Repository or file URL'), {
+    target: { value: 'acme/stream-model' },
+  });
+  const user = userEvent.setup();
+  await user.click(screen.getByRole('button', { name: 'Discover files' }));
+  await screen.findByRole('combobox', { name: 'Choose model weights' });
+  await user.click(screen.getByRole('button', { name: /Add Projector Model/ }));
+  await user.click(screen.getByRole('combobox', { name: /^Vision projector candidate/ }));
+  await user.click(
+    await screen.findByRole('option', { name: /Same repository: unrecognized-Q8_0.gguf/ }),
+  );
+  await user.click(screen.getByRole('button', { name: 'Install selected model' }));
+  await waitFor(() =>
+    expect(installModel).toHaveBeenCalledWith({
+      source: 'acme/stream-model',
+      candidateId: 'model-Q4_K_M.gguf',
+      projectorId: 'unrecognized-Q8_0.gguf',
+    }),
+  );
+});
+
+it('can assign another installed GGUF as projector without downloading files again', async () => {
+  const base = {
+    id: '0123456789abcdef0123456789abcdef',
+    repo: 'acme/stream-model',
+    revision: 'main',
+    candidateId: 'base-Q4_K_M.gguf',
+    projectorId: null,
+    role: 'vision-language' as const,
+    installedAt: 1,
+    files: [
+      {
+        path: 'base-Q4_K_M.gguf',
+        relativePath: 'files/base-Q4_K_M.gguf',
+        sizeBytes: 3,
+        sha256: 'a'.repeat(64),
+      },
+    ],
+  };
+  const provider = {
+    ...base,
+    id: '123456789abcdef0123456789abcdef0',
+    candidateId: 'other-Q8_0.gguf',
+  };
+  const state = { ...emptyModels, installations: [base, provider] };
+  const setModelProjector = vi.fn(async () => ({
+    ...state,
+    projectorAssignments: { [base.id]: provider.id },
+  }));
+  window.lonelyChat = {
+    ...modelAPI,
+    getModelsSnapshot: async () => state,
+    discoverModels: async () => discovered,
+    setModelProjector,
+  } as unknown as DesktopAPI;
+  render(<ModelManager />);
+  const user = userEvent.setup();
+  await user.click((await screen.findAllByRole('button', { name: /Manage Projector/ }))[0]);
+  await user.click(screen.getByRole('button', { name: /Add Projector Model/ }));
+  await user.click(screen.getByRole('combobox', { name: /^Vision projector candidate/ }));
+  await user.click(
+    await screen.findByRole('option', { name: /Installed: acme\/stream-model \/ other-Q8_0.gguf/ }),
+  );
+  await user.click(screen.getByRole('button', { name: 'Save projector' }));
+  await waitFor(() => expect(setModelProjector).toHaveBeenCalledWith(base.id, provider.id));
+});
+
+it('allows choosing a GGUF in another Hugging Face repository after installation', async () => {
+  const base = {
+    id: '0123456789abcdef0123456789abcdef',
+    repo: 'acme/stream-model',
+    revision: 'main',
+    candidateId: 'base-Q4_K_M.gguf',
+    projectorId: null,
+    role: 'vision-language' as const,
+    installedAt: 1,
+    files: [
+      {
+        path: 'base-Q4_K_M.gguf',
+        relativePath: 'files/base-Q4_K_M.gguf',
+        sizeBytes: 3,
+        sha256: 'a'.repeat(64),
+      },
+    ],
+  };
+  const state = { ...emptyModels, installations: [base] };
+  const installModelProjector = vi.fn(async () => state);
+  window.lonelyChat = {
+    ...modelAPI,
+    getModelsSnapshot: async () => state,
+    discoverModels: async (source: string) =>
+      source === 'other/projector'
+        ? {
+            ...discovered,
+            repo: 'other/projector',
+            candidates: [],
+            projectors: [discovered.projectors[0]],
+          }
+        : discovered,
+    installModelProjector,
+  } as unknown as DesktopAPI;
+  render(<ModelManager />);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('button', { name: /Manage Projector/ }));
+  await user.click(screen.getByRole('button', { name: /Add Projector Model/ }));
+  fireEvent.change(screen.getByLabelText('Other Hugging Face repository or file URL'), {
+    target: { value: 'other/projector' },
+  });
+  await user.click(screen.getByRole('button', { name: 'Find GGUFs' }));
+  await screen.findByText(/Found 1 GGUF artifacts/);
+  await user.click(screen.getByRole('combobox', { name: /^Vision projector candidate/ }));
+  await user.click(await screen.findByRole('option', { name: /Hugging Face: mmproj-F16.gguf/ }));
+  await user.click(screen.getByRole('button', { name: 'Save projector' }));
+  await waitFor(() =>
+    expect(installModelProjector).toHaveBeenCalledWith(
+      base.id,
+      'other/projector',
+      'mmproj-F16.gguf',
+    ),
+  );
+});
+
 it('allows live VLM switching but not deactivation during an active native session', async () => {
   const installed = (id: string) => ({
     id,
@@ -221,6 +371,9 @@ it('allows live VLM switching but not deactivation during an active native sessi
   expect((await screen.findByRole('button', { name: 'Deactivate' })).hasAttribute('disabled')).toBe(
     true,
   );
+  expect(
+    screen.getAllByRole('button', { name: /Manage Projector/ })[0].hasAttribute('disabled'),
+  ).toBe(false);
   fireEvent.click(screen.getByRole('button', { name: 'Switch to this model' }));
   await waitFor(() => expect(activateModel).toHaveBeenCalledWith('vision-language', replacement));
 });

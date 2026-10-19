@@ -74,7 +74,10 @@ export function SimulationPlayground({
   const [loadedRevision, setLoadedRevision] = useState<number | null>(null);
   const [revisions, setRevisions] = useState<PromptPreset[]>([]);
 
-  const installed = models?.installations.filter((entry) => entry.role === 'vision-language') ?? [];
+  const installed =
+    models?.installations.filter(
+      (entry) => entry.role === 'vision-language' && !entry.projectorOnly,
+    ) ?? [];
   const active = models?.active['vision-language'];
   const selectedModelId = installed.some((item) => item.id === modelId)
     ? modelId

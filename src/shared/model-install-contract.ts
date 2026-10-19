@@ -17,6 +17,8 @@ export interface InstalledModel {
   readonly role: ModelRole;
   readonly files: readonly InstalledModelFile[];
   readonly installedAt: number;
+  /** Standalone GGUF installed for reuse as a projector, not a selectable inference model. */
+  readonly projectorOnly?: boolean;
 }
 
 export interface InstallProgress {
@@ -31,11 +33,18 @@ export interface ModelManagerSnapshot {
   readonly installations: readonly InstalledModel[];
   readonly active: Readonly<Record<ModelRole, string | null>>;
   readonly progress: InstallProgress;
+  /** Overrides for installed model IDs. null means explicitly text-only. */
+  readonly projectorAssignments?: Readonly<Record<string, string | null>>;
 }
+
+/** A reference to another installed GGUF, a bundled companion, or no projector. */
+export type ProjectorAssignment = string | 'bundled' | null;
 
 export interface ModelInstallRequest {
   readonly source: string;
   readonly candidateId: string;
   /** 'none' opts into text-only operation even when visual projectors are present. */
   readonly projectorId: string | null;
+  /** Reuse an existing verified GGUF without downloading its bytes again. */
+  readonly installedProjectorId?: string;
 }

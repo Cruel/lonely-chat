@@ -17,6 +17,7 @@ import type { ModelFile, ModelRole } from '../shared/model-contract';
 import type {
   InstalledModel,
   InstalledModelFile,
+  ProjectorAssignment,
   ModelInstallRequest,
   ModelManagerSnapshot,
   InstallProgress,
@@ -28,6 +29,7 @@ type Configuration = {
   storageDirectory: string;
   installations: InstalledModel[];
   active: Record<ModelRole, string | null>;
+  projectorAssignments?: Record<string, string | null>;
 };
 const VERSION = 1;
 const CONFIG = 'model-manager.json';
@@ -114,7 +116,9 @@ function validateInstall(value: unknown): InstalledModel {
     (item.projectorId !== null && typeof item.projectorId !== 'string') ||
     !Array.isArray(item.files) ||
     !item.files.length ||
-    !Number.isFinite(item.installedAt)
+    !Number.isFinite(item.installedAt) ||
+    (item.projectorOnly !== undefined &&
+      (item.projectorOnly !== true || item.role !== 'vision-language' || item.projectorId !== null))
   ) {
     throw new Error('Invalid installed-model registry entry.');
   }
@@ -162,6 +166,7 @@ export class ModelInstallManager {
       storageDirectory: path.join(userData, 'models'),
       installations: [],
       active: { 'vision-language': null, 'speech-to-text': null },
+      projectorAssignments: {},
     };
   }
 
@@ -187,11 +192,27 @@ export class ModelInstallManager {
       ) {
         throw new Error('Unsupported or invalid model-manager configuration.');
       }
+      if (
+        state.projectorAssignments !== undefined &&
+        (state.projectorAssignments === null ||
+          typeof state.projectorAssignments !== 'object' ||
+          Array.isArray(state.projectorAssignments) ||
+          Object.entries(state.projectorAssignments).some(
+            ([id, provider]) =>
+              !ID_PATTERN.test(id) || (provider !== null && !ID_PATTERN.test(provider)),
+          ))
+      ) {
+        throw new Error('Invalid model projector assignments.');
+      }
       const installations = state.installations.map(validateInstall);
       if (new Set(installations.map((item) => item.id)).size !== installations.length) {
         throw new Error('Duplicate model registry entries.');
       }
-      this.config = { ...state, installations };
+      this.config = {
+        ...state,
+        installations,
+        projectorAssignments: state.projectorAssignments ?? {},
+      };
     }
     await mkdir(this.config.storageDirectory, { recursive: true });
     this.config.storageDirectory = await realpath(this.config.storageDirectory);
@@ -208,6 +229,16 @@ export class ModelInstallManager {
     }
     let changed = verified.length !== this.config.installations.length;
     this.config.installations = verified;
+    const assignments = this.config.projectorAssignments ?? {};
+    for (const [id, provider] of Object.entries(assignments)) {
+      if (
+        !verified.some((item) => item.id === id && item.role === 'vision-language') ||
+        (provider !== null && !verified.some((item) => item.id === provider))
+      ) {
+        delete assignments[id];
+        changed = true;
+      }
+    }
     for (const role of ['vision-language', 'speech-to-text'] as const) {
       if (
         this.config.active[role] &&
@@ -231,6 +262,7 @@ export class ModelInstallManager {
       })),
       active: { ...this.config.active },
       progress: { ...this.progress },
+      projectorAssignments: { ...this.config.projectorAssignments },
     };
   }
 
@@ -306,7 +338,11 @@ export class ModelInstallManager {
         ? null
         : this.config.installations.find((entry) => entry.id === id && entry.role === role);
     if (id !== null && !chosen) throw new Error('Select an installed model of the requested role.');
-    if (chosen) await this.verifyInstallation(chosen);
+    if (chosen) {
+      if (chosen.projectorOnly)
+        throw new Error('A projector-only artifact cannot be activated as a model.');
+      await this.verifyInstallation(chosen);
+    }
     const previous = this.config.active[role];
     this.config.active[role] = id;
     try {
@@ -317,6 +353,109 @@ export class ModelInstallManager {
     }
     this.notify();
     return this.snapshot();
+  }
+
+  private availableProjectorProvider(providerId: string, targetId: string): InstalledModel {
+    const provider = this.config.installations.find((item) => item.id === providerId);
+    if (
+      providerId === targetId ||
+      !provider ||
+      provider.role !== 'vision-language' ||
+      provider.projectorId !== null ||
+      (this.config.projectorAssignments?.[providerId] !== undefined &&
+        this.config.projectorAssignments[providerId] !== null)
+    ) {
+      throw new Error('Choose another installed GGUF without an attached projector.');
+    }
+    return provider;
+  }
+
+  /** A projector assignment changes configuration, never verified package manifests. */
+  async setProjector(id: string, source: ProjectorAssignment): Promise<ModelManagerSnapshot> {
+    this.requireReady();
+    if (this.busy) throw new Error('Wait for the current download to finish.');
+    const target = this.config.installations.find(
+      (item) => item.id === id && item.role === 'vision-language' && !item.projectorOnly,
+    );
+    if (!target) throw new Error('Choose an installed GGUF model to configure.');
+    if (source !== 'bundled' && source !== null && typeof source !== 'string') {
+      throw new Error('Invalid projector assignment.');
+    }
+    if (source !== 'bundled' && source !== null) {
+      const provider = this.availableProjectorProvider(source, id);
+      await this.verifyInstallation(provider);
+    }
+    await this.verifyInstallation(target);
+    const before = this.config.projectorAssignments ?? {};
+    const updated = { ...before };
+    if (source === 'bundled') delete updated[id];
+    else updated[id] = source;
+    this.config.projectorAssignments = updated;
+    try {
+      await this.save();
+    } catch (error) {
+      this.config.projectorAssignments = before;
+      throw error;
+    }
+    this.notify();
+    return this.snapshot();
+  }
+
+  /** Resolve or download the artifact before changing a running native worker. */
+  async prepareProjector(
+    targetId: string,
+    source: string,
+    candidateId: string,
+  ): Promise<ProjectorAssignment> {
+    this.requireReady();
+    const target = this.config.installations.find(
+      (item) => item.id === targetId && item.role === 'vision-language' && !item.projectorOnly,
+    );
+    if (!target) throw new Error('Choose an installed GGUF model to configure.');
+    if (typeof candidateId !== 'string') throw new Error('Choose a GGUF projector candidate.');
+    const parsed = parseHuggingFaceInput(source);
+    if (
+      parsed.repo === target.repo &&
+      parsed.revision === target.revision &&
+      target.projectorId === candidateId
+    ) {
+      return 'bundled';
+    }
+    const existing = this.config.installations.find(
+      (item) =>
+        item.repo === parsed.repo &&
+        item.revision === parsed.revision &&
+        item.candidateId === candidateId &&
+        item.role === 'vision-language' &&
+        item.projectorId === null &&
+        item.id !== targetId &&
+        this.config.projectorAssignments?.[item.id] == null,
+    );
+    if (existing) {
+      await this.verifyInstallation(existing);
+      return existing.id;
+    }
+    const result = await this.installSelected({ source, candidateId, projectorId: null }, true);
+    const artifact = result.installations.find(
+      (item) =>
+        item.repo === parsed.repo &&
+        item.revision === parsed.revision &&
+        item.candidateId === candidateId &&
+        item.projectorOnly,
+    );
+    if (!artifact) throw new Error('Downloaded projector was not registered.');
+    return artifact.id;
+  }
+
+  /** Download a GGUF candidate (even one recognized as a projector), then assign it.
+   * Existing verified standalone GGUFs are reused rather than fetched twice. */
+  async installProjector(
+    targetId: string,
+    source: string,
+    candidateId: string,
+  ): Promise<ModelManagerSnapshot> {
+    const assignment = await this.prepareProjector(targetId, source, candidateId);
+    return this.setProjector(targetId, assignment);
   }
 
   /** Resolve only manager-verified bytes for a new native inference session. */
@@ -331,7 +470,7 @@ export class ModelInstallManager {
   async visionFiles(id: string): Promise<{ modelPath: string; projectorPath: string | null }> {
     this.requireReady();
     const entry = this.config.installations.find(
-      (item) => item.id === id && item.role === 'vision-language',
+      (item) => item.id === id && item.role === 'vision-language' && !item.projectorOnly,
     );
     if (!entry) throw new Error('Select an installed vision/language GGUF model.');
     await this.verifyInstallation(entry);
@@ -339,6 +478,24 @@ export class ModelInstallManager {
     const base = (value: string) => value.replace(/-\d{5}-of-\d{5}(?=\.gguf$)/i, '');
     const model = entry.files.find((file) => base(file.path) === entry.candidateId);
     if (!model) throw new Error('Installed GGUF model files do not match their selection.');
+    const assignments = this.config.projectorAssignments ?? {};
+    if (Object.hasOwn(assignments, id)) {
+      const providerId = assignments[id];
+      if (providerId === null) {
+        return { modelPath: checkedPath(root, model.relativePath), projectorPath: null };
+      }
+      const provider = this.availableProjectorProvider(providerId!, id);
+      await this.verifyInstallation(provider);
+      const source = provider.files.find((file) => base(file.path) === provider.candidateId);
+      if (!source) throw new Error('Installed projector files do not match their selection.');
+      return {
+        modelPath: checkedPath(root, model.relativePath),
+        projectorPath: checkedPath(
+          path.join(this.config.storageDirectory, 'installed', provider.id),
+          source.relativePath,
+        ),
+      };
+    }
     const projector = entry.projectorId
       ? entry.files.find((file) => base(file.path) === entry.projectorId)
       : null;
@@ -373,6 +530,11 @@ export class ModelInstallManager {
     if (this.busy) throw new Error('Wait for the current download to finish.');
     const chosen = this.config.installations.find((entry) => entry.id === id);
     if (!chosen) throw new Error('Model is not registered in managed storage.');
+    if (Object.values(this.config.projectorAssignments ?? {}).includes(id)) {
+      throw new Error(
+        'This GGUF is used as a projector. Detach it from dependent models before removing it.',
+      );
+    }
     const destination = path.join(this.config.storageDirectory, 'installed', chosen.id);
     // Refuse deletion of a directory without our matching manifest or with symlink contents.
     await this.checkManifest(chosen);
@@ -381,6 +543,9 @@ export class ModelInstallManager {
     this.config = {
       ...old,
       installations: old.installations.filter((item) => item.id !== id),
+      projectorAssignments: Object.fromEntries(
+        Object.entries(old.projectorAssignments ?? {}).filter(([target]) => target !== id),
+      ),
       active: {
         'vision-language':
           old.active['vision-language'] === id ? null : old.active['vision-language'],
@@ -403,13 +568,21 @@ export class ModelInstallManager {
   }
 
   async install(raw: ModelInstallRequest): Promise<ModelManagerSnapshot> {
+    return this.installSelected(raw, false);
+  }
+
+  private async installSelected(
+    raw: ModelInstallRequest,
+    projectorOnly: boolean,
+  ): Promise<ModelManagerSnapshot> {
     this.requireReady();
     if (this.busy) throw new Error('Another model installation is already in progress.');
     if (
       !raw ||
       typeof raw.source !== 'string' ||
       typeof raw.candidateId !== 'string' ||
-      (raw.projectorId !== null && typeof raw.projectorId !== 'string')
+      (raw.projectorId !== null && typeof raw.projectorId !== 'string') ||
+      (raw.installedProjectorId !== undefined && typeof raw.installedProjectorId !== 'string')
     ) {
       throw new Error('Invalid model selection.');
     }
@@ -420,25 +593,61 @@ export class ModelInstallManager {
     try {
       // Always re-discover on the trusted main process; renderer-supplied paths are never trusted.
       const found = await this.discovery.discover(raw.source);
-      const candidate = found.candidates.find((item) => item.id === raw.candidateId);
-      if (!candidate) throw new Error('The selected GGUF/speech model is no longer available.');
+      const weights = found.candidates.find((item) => item.id === raw.candidateId);
+      const standaloneProjector = projectorOnly
+        ? found.projectors.find((item) => item.id === raw.candidateId)
+        : null;
+      const candidate =
+        weights ??
+        (standaloneProjector
+          ? {
+              ...standaloneProjector,
+              role: 'vision-language' as const,
+              format: 'gguf' as const,
+              compatibleProjectorIds: [],
+              suggestedProjectorId: null,
+            }
+          : null);
+      if (!candidate || (projectorOnly && candidate.role !== 'vision-language')) {
+        throw new Error('The selected GGUF model/projector is no longer available.');
+      }
       let projectorId = raw.projectorId;
       if (candidate.role === 'speech-to-text' && projectorId !== null) {
         throw new Error('Speech models cannot have vision projectors.');
       }
-      if (candidate.role === 'vision-language') {
+      if (projectorOnly && projectorId !== null) {
+        throw new Error('Standalone projector artifacts cannot themselves have a projector.');
+      }
+      if (candidate.role === 'vision-language' && !projectorOnly) {
         if (projectorId === null && candidate.compatibleProjectorIds.length > 1) {
           throw new Error('Choose a vision projector or explicitly select text-only.');
         }
         if (projectorId === null) projectorId = candidate.suggestedProjectorId;
       }
+      const installedProviderId = raw.installedProjectorId ?? null;
+      if (installedProviderId) {
+        if (
+          projectorOnly ||
+          candidate.role !== 'vision-language' ||
+          (projectorId !== null && projectorId !== 'none')
+        ) {
+          throw new Error(
+            'An installed projector may only be assigned to standalone GGUF weights.',
+          );
+        }
+        const provider = this.availableProjectorProvider(installedProviderId, '');
+        await this.verifyInstallation(provider);
+      }
       const projector =
-        projectorId && projectorId !== 'none'
-          ? found.projectors.find(
-              (item) =>
-                item.id === projectorId && candidate.compatibleProjectorIds.includes(item.id),
-            )
+        projectorId && projectorId !== 'none' && !projectorOnly
+          ? (found.projectors.find((item) => item.id === projectorId) ??
+            found.candidates.find(
+              (item) => item.id === projectorId && item.role === 'vision-language',
+            ))
           : null;
+      if (projector && projector.id === candidate.id) {
+        throw new Error('A model cannot use itself as its vision projector.');
+      }
       if (projectorId && projectorId !== 'none' && !projector) {
         throw new Error('The selected projector does not match the model.');
       }
@@ -452,7 +661,15 @@ export class ModelInstallManager {
       const source = parseHuggingFaceInput(raw.source);
       const normalizedProjector = projector?.id ?? null;
       const identity = createHash('sha256')
-        .update(JSON.stringify([source.repo, source.revision, candidate.id, normalizedProjector]))
+        .update(
+          JSON.stringify([
+            source.repo,
+            source.revision,
+            candidate.id,
+            normalizedProjector,
+            ...(projectorOnly ? ['projector-only'] : []),
+          ]),
+        )
         .digest('hex')
         .slice(0, 32);
       if (this.config.installations.some((entry) => entry.id === identity)) {
@@ -475,6 +692,7 @@ export class ModelInstallManager {
           orphan.revision !== source.revision ||
           orphan.candidateId !== candidate.id ||
           orphan.projectorId !== normalizedProjector ||
+          (orphan.projectorOnly === true) !== projectorOnly ||
           orphan.role !== candidate.role ||
           orphan.files.length !== files.length ||
           files.some(
@@ -489,7 +707,7 @@ export class ModelInstallManager {
           );
         }
         await this.verifyInstallation(orphan);
-        await this.register(orphan);
+        await this.register(orphan, installedProviderId);
         return this.snapshot();
       }
       await safeDirectory(staged, root);
@@ -551,6 +769,7 @@ export class ModelInstallManager {
         role: candidate.role,
         files: savedFiles,
         installedAt: Date.now(),
+        ...(projectorOnly ? { projectorOnly: true } : {}),
       };
       const stagedManifest = path.join(staged, MANIFEST);
       await safeFile(stagedManifest, root);
@@ -559,7 +778,7 @@ export class ModelInstallManager {
       await writeFile(stagedManifest, JSON.stringify(record), { flag: 'wx', mode: 0o600 });
       await rename(staged, installed);
       try {
-        await this.register(record);
+        await this.register(record, installedProviderId);
       } catch (error) {
         await rename(installed, staged);
         throw error;
@@ -573,9 +792,18 @@ export class ModelInstallManager {
     }
   }
 
-  private async register(entry: InstalledModel): Promise<void> {
+  private async register(
+    entry: InstalledModel,
+    installedProviderId: string | null = null,
+  ): Promise<void> {
     const before = this.config;
-    this.config = { ...before, installations: [...before.installations, entry] };
+    this.config = {
+      ...before,
+      installations: [...before.installations, entry],
+      projectorAssignments: installedProviderId
+        ? { ...before.projectorAssignments, [entry.id]: installedProviderId }
+        : before.projectorAssignments,
+    };
     try {
       await this.save();
     } catch (error) {

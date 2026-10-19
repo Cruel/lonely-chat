@@ -158,6 +158,18 @@ describe('Hugging Face discovery', () => {
     expect(result.warnings.join(' ')).toMatch(/choose|select|ambiguous/i);
   });
 
+  it('recognizes projectors with a repository/model prefix before mmproj', async () => {
+    const { discovery } = hub([
+      { type: 'file', path: 'Huihui-Qwen3.5-0.8B-abliterated-Q4_K_M.gguf', size: 40 },
+      { type: 'file', path: 'Huihui-Qwen3.5-0.8B-abliterated.mmproj-Q8_0.gguf', size: 11 },
+      { type: 'file', path: 'Huihui-Qwen3.5-0.8B-abliterated.mmproj-f16.gguf', size: 12 },
+    ]);
+    const result = await discovery.discover('acme/stream-model');
+    expect(result.candidates).toHaveLength(1);
+    expect(result.projectors.map((item) => item.quantization)).toEqual(['F16', 'Q8_0']);
+    expect(result.candidates[0].compatibleProjectorIds).toHaveLength(2);
+  });
+
   it('does not arbitrarily attach projectors in other folders to unrelated models', async () => {
     const { discovery } = hub([
       { type: 'file', path: 'alpha/model-Q4_K_M.gguf', size: 40 },

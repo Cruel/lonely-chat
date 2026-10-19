@@ -18,6 +18,8 @@ const emptyModels: ModelManagerSnapshot = {
   progress: { phase: 'idle', file: null, receivedBytes: 0, totalBytes: null },
 };
 const modelsAPI = {
+  setModelProjector: async () => emptyModels,
+  installModelProjector: async () => emptyModels,
   getCompactRecording: async () => ({
     mode: 'compact' as const,
     enabled: false,

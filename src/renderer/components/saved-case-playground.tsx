@@ -146,7 +146,10 @@ export function SavedCasePlayground({
     }
   };
   const selected = source?.summary;
-  const installed = models?.installations.filter((item) => item.role === 'vision-language') ?? [];
+  const installed =
+    models?.installations.filter(
+      (item) => item.role === 'vision-language' && !item.projectorOnly,
+    ) ?? [];
   return (
     <section
       aria-label="Saved inference cases"

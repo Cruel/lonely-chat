@@ -855,6 +855,61 @@ function registerHandlers(): void {
     'models:snapshot': () => installs.snapshot(),
     'models:install': (selection: import('../shared/model-install-contract').ModelInstallRequest) =>
       installs.install(selection),
+    'models:projector:set': async (
+      id: string,
+      source: import('../shared/model-install-contract').ProjectorAssignment,
+    ) => {
+      if (
+        playground.busy ||
+        speechTest.busy ||
+        rosterRegenerating ||
+        speechSwitchBusy ||
+        session.switchingModel ||
+        session.snapshot().phase === 'switching'
+      ) {
+        throw new Error('Another model transition is in progress.');
+      }
+      const current = session.snapshot();
+      if (
+        current.mode === 'native' &&
+        ['starting', 'running', 'error'].includes(current.phase) &&
+        installs.snapshot().active['vision-language'] === id
+      ) {
+        await session.switchNativeModel(() => installs.setProjector(id, source).then(() => {}), id);
+        return installs.snapshot();
+      }
+      return installs.setProjector(id, source);
+    },
+    'models:projector:install': async (id: string, source: string, candidateId: string) => {
+      if (
+        playground.busy ||
+        speechTest.busy ||
+        rosterRegenerating ||
+        speechSwitchBusy ||
+        session.switchingModel ||
+        session.snapshot().phase === 'switching'
+      ) {
+        throw new Error('Another model transition is in progress.');
+      }
+      // Download before stopping the live worker. Only reassignment needs a worker reload.
+      const projector = await installs.prepareProjector(id, source, candidateId);
+      const current = session.snapshot();
+      if (
+        current.mode === 'native' &&
+        ['starting', 'running', 'error'].includes(current.phase) &&
+        installs.snapshot().active['vision-language'] === id
+      ) {
+        await session.switchNativeModel(
+          () => installs.setProjector(id, projector).then(() => {}),
+          id,
+        );
+        return installs.snapshot();
+      }
+      if (session.switchingModel || current.phase === 'switching') {
+        throw new Error('Another model transition is in progress.');
+      }
+      return installs.setProjector(id, projector);
+    },
     'models:cancel': () => installs.cancel(),
     'models:activate': async (
       role: import('../shared/model-contract').ModelRole,
@@ -1584,6 +1639,8 @@ app.on('will-quit', () => {
   ipcMain.removeHandler('models:discover');
   ipcMain.removeHandler('models:snapshot');
   ipcMain.removeHandler('models:install');
+  ipcMain.removeHandler('models:projector:set');
+  ipcMain.removeHandler('models:projector:install');
   ipcMain.removeHandler('models:cancel');
   ipcMain.removeHandler('models:activate');
   ipcMain.removeHandler('models:remove');

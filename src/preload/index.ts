@@ -195,6 +195,9 @@ const api: DesktopAPI = {
     return () => ipcRenderer.removeListener('models:change', receive);
   },
   installModel: (selection) => invoke('models:install', selection),
+  setModelProjector: (id, source) => invoke('models:projector:set', id, source),
+  installModelProjector: (id, source, candidateId) =>
+    invoke('models:projector:install', id, source, candidateId),
   cancelModelDownload: () => invoke('models:cancel'),
   activateModel: (role, id) => invoke('models:activate', role, id),
   removeModel: (id) => invoke('models:remove', id),

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { AlertTriangle, Download, Search, FolderOpen, Trash2, Square, Check } from 'lucide-react';
+import { ProjectorPicker, type ProjectorChoice } from './projector-picker';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -41,13 +42,18 @@ export function ModelManager({
   const [discovery, setDiscovery] = useState<ModelDiscoveryResult | null>(null);
   const [discoveredInput, setDiscoveredInput] = useState('');
   const [selectedId, setSelectedId] = useState('');
-  const [selectedProjector, setSelectedProjector] = useState('');
+  const [projectorChoice, setProjectorChoice] = useState<ProjectorChoice | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingDiscovery, setEditingDiscovery] = useState<ModelDiscoveryResult | null>(null);
+  const [editingChoice, setEditingChoice] = useState<ProjectorChoice | null>(null);
+  const [editingError, setEditingError] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [manager, setManager] = useState<ModelManagerSnapshot | null>(null);
   const [managementError, setManagementError] = useState('');
   const [managementBusy, setManagementBusy] = useState(false);
   const request = useRef(0);
+  const editRequest = useRef(0);
 
   useEffect(() => {
     const api = window.lonelyChat;
@@ -92,18 +98,13 @@ export function ModelManager({
   const isDownloading = manager?.progress.phase !== 'idle' && !!manager;
 
   const selected = discovery?.candidates.find((candidate) => candidate.id === selectedId);
-  const projectors =
-    selected?.compatibleProjectorIds.map((id) => {
-      const projector = discovery?.projectors.find((item) => item.id === id);
-      return { value: id, label: `${id} · ${bytes(projector?.sizeBytes ?? null)}` };
-    }) ?? [];
-  const needsProjector = selected?.role === 'vision-language' && projectors.length > 1;
+  const needsProjector =
+    selected?.role === 'vision-language' && selected.compatibleProjectorIds.length > 1;
   const modelOptions =
     discovery?.candidates.map((candidate) => ({
       value: candidate.id,
       label: modelLabel(candidate),
     })) ?? [];
-  const projectorOptions = [{ value: 'none', label: 'No projector (text-only)' }, ...projectors];
   // A warning belongs to the currently selected model. Do not repeat it for every quantization.
   const warnings =
     discovery?.warnings.filter(
@@ -112,11 +113,11 @@ export function ModelManager({
 
   function pickCandidate(candidate: ModelCandidate, explicitProjector?: string | null) {
     setSelectedId(candidate.id);
-    setSelectedProjector(
+    const preferred =
       explicitProjector && candidate.compatibleProjectorIds.includes(explicitProjector)
         ? explicitProjector
-        : (candidate.suggestedProjectorId ?? ''),
-    );
+        : candidate.suggestedProjectorId;
+    setProjectorChoice(preferred ? { kind: 'repo', id: preferred } : null);
   }
 
   async function search(event: FormEvent) {
@@ -127,7 +128,7 @@ export function ModelManager({
     setDiscovery(null);
     setDiscoveredInput('');
     setSelectedId('');
-    setSelectedProjector('');
+    setProjectorChoice(null);
     try {
       if (!window.lonelyChat)
         throw new Error('Model discovery is only available in the desktop app.');
@@ -137,7 +138,8 @@ export function ModelManager({
       setDiscoveredInput(source);
       const chosen = result.candidates.find((item) => item.id === result.preselectedCandidateId);
       if (chosen) pickCandidate(chosen, result.preselectedProjectorId);
-      else if (result.preselectedProjectorId) setSelectedProjector(result.preselectedProjectorId);
+      else if (result.preselectedProjectorId)
+        setProjectorChoice({ kind: 'repo', id: result.preselectedProjectorId });
     } catch (failure) {
       if (request.current === current) {
         setError(failure instanceof Error ? failure.message : 'Hugging Face discovery failed.');
@@ -145,6 +147,108 @@ export function ModelManager({
     } finally {
       if (request.current === current) setBusy(false);
     }
+  }
+
+  async function installSelectedModel() {
+    if (!selected || !discovery) throw new Error('Choose model weights first.');
+    const alternative = projectorChoice?.kind === 'remote';
+    const installed = await window.lonelyChat!.installModel({
+      source: discoveredInput,
+      candidateId: selected.id,
+      ...(projectorChoice?.kind === 'installed'
+        ? { installedProjectorId: projectorChoice.id }
+        : {}),
+      projectorId:
+        alternative || projectorChoice?.kind === 'installed' || projectorChoice?.kind === 'none'
+          ? 'none'
+          : projectorChoice?.kind === 'repo'
+            ? projectorChoice.id
+            : null,
+    });
+    if (!alternative) return installed;
+    const entry = installed.installations.find(
+      (item) =>
+        item.repo === discovery.repo &&
+        item.revision === discovery.revision &&
+        item.candidateId === selected.id &&
+        !(manager?.installations.some((existing) => existing.id === item.id) ?? false),
+    );
+    if (!entry) throw new Error('Installed model not found for projector assignment.');
+    return projectorChoice?.kind === 'remote'
+      ? window.lonelyChat!.installModelProjector(
+          entry.id,
+          projectorChoice.source,
+          projectorChoice.id,
+        )
+      : installed;
+  }
+
+  async function editProjector(
+    entry: import('../../shared/model-install-contract').InstalledModel,
+  ) {
+    const current = ++editRequest.current;
+    if (editingId === entry.id) {
+      setEditingId(null);
+      return;
+    }
+    setEditingId(entry.id);
+    setEditingDiscovery(null);
+    setEditingError('');
+    const assigned = manager?.projectorAssignments?.[entry.id];
+    setEditingChoice(
+      assigned === null && Object.hasOwn(manager?.projectorAssignments ?? {}, entry.id)
+        ? { kind: 'none' }
+        : assigned
+          ? { kind: 'installed', id: assigned }
+          : entry.projectorId
+            ? { kind: 'bundled' }
+            : { kind: 'none' },
+    );
+    try {
+      const source =
+        entry.revision === 'main'
+          ? entry.repo
+          : `https://huggingface.co/${entry.repo}/tree/${encodeURIComponent(entry.revision)}`;
+      const result = await window.lonelyChat!.discoverModels(source);
+      if (editRequest.current === current) setEditingDiscovery(result);
+    } catch (error) {
+      if (editRequest.current === current) {
+        setEditingError(
+          error instanceof Error ? error.message : 'Unable to load upstream GGUF files.',
+        );
+      }
+    }
+  }
+
+  function saveProjector(
+    id: string,
+    entry: import('../../shared/model-install-contract').InstalledModel,
+  ) {
+    if (!editingChoice) return;
+    const choice = editingChoice;
+    void manage(async () => {
+      const result =
+        choice.kind === 'repo' || choice.kind === 'remote'
+          ? await window.lonelyChat!.installModelProjector(
+              id,
+              choice.kind === 'remote'
+                ? choice.source
+                : entry.revision === 'main'
+                  ? entry.repo
+                  : `https://huggingface.co/${entry.repo}/tree/${encodeURIComponent(entry.revision)}`,
+              choice.id,
+            )
+          : await window.lonelyChat!.setModelProjector(
+              id,
+              choice.kind === 'installed'
+                ? choice.id
+                : choice.kind === 'bundled'
+                  ? 'bundled'
+                  : null,
+            );
+      setEditingId(null);
+      return result;
+    });
   }
 
   return (
@@ -245,33 +349,16 @@ export function ModelManager({
               </div>
             )}
 
-            {selected?.role === 'vision-language' && projectors.length > 0 && (
+            {selected?.role === 'vision-language' && (
               <div className="space-y-2">
-                <Label htmlFor="model-projector">
-                  Vision projector candidate (unverified until native Start)
-                </Label>
-                <Select
-                  items={projectorOptions}
-                  value={selectedProjector || null}
-                  onValueChange={(projector) => setSelectedProjector(projector ?? '')}
-                >
-                  <SelectTrigger id="model-projector" className="h-9 w-full min-w-0 text-sm">
-                    <SelectValue placeholder="Choose a projector…" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {projectors.map((projector) => (
-                      <SelectItem
-                        key={projector.value}
-                        value={projector.value}
-                        title={projector.label}
-                      >
-                        <span className="block max-w-[70ch] truncate">{projector.label}</span>
-                      </SelectItem>
-                    ))}
-                    <SelectItem value="none">No projector (text-only)</SelectItem>
-                  </SelectContent>
-                </Select>
-                {projectors.length > 1 && !selectedProjector && (
+                <ProjectorPicker
+                  discovery={discovery}
+                  selectedModelId={selected.id}
+                  manager={manager}
+                  value={projectorChoice}
+                  onChange={setProjectorChoice}
+                />
+                {needsProjector && !projectorChoice && (
                   <p className="text-xs text-amber-300">
                     Several companions are available. Select one explicitly.
                   </p>
@@ -295,22 +382,13 @@ export function ModelManager({
                     isDownloading ||
                     managementBusy ||
                     source !== discoveredInput ||
-                    (needsProjector && !selectedProjector)
+                    (needsProjector && !projectorChoice)
                   }
-                  onClick={() =>
-                    void manage(() =>
-                      window.lonelyChat!.installModel({
-                        source: discoveredInput,
-                        candidateId: selected.id,
-                        projectorId:
-                          selectedProjector === 'none' ? 'none' : selectedProjector || null,
-                      }),
-                    )
-                  }
+                  onClick={() => void manage(installSelectedModel)}
                 >
                   <Download size={15} /> Install selected model
                 </Button>
-                {needsProjector && !selectedProjector && (
+                {needsProjector && !projectorChoice && (
                   <span className="text-xs text-amber-300">
                     Choose a projector or text-only before installing.
                   </span>
@@ -321,8 +399,8 @@ export function ModelManager({
             {selected && (
               <p className="text-xs text-muted-foreground" aria-live="polite">
                 Selected {selected.files.length} model file(s) · {bytes(selected.sizeBytes)}
-                {selectedProjector && selectedProjector !== 'none'
-                  ? ` · projector: ${selectedProjector}`
+                {projectorChoice && projectorChoice.kind !== 'none'
+                  ? ` · projector: ${projectorChoice.kind === 'bundled' ? 'bundled' : projectorChoice.id}`
                   : ''}
                 . Installation is managed locally; runtime compatibility is checked when native
                 inference is integrated.
@@ -405,39 +483,59 @@ export function ModelManager({
                 <p className="text-xs text-muted-foreground">
                   {entry.role === 'speech-to-text' ? 'Speech-to-text' : 'Vision/language'} ·{' '}
                   {bytes(entry.files.reduce((sum, file) => sum + file.sizeBytes, 0))}
-                  {entry.projectorId ? ` · projector: ${entry.projectorId}` : ' · no projector'}
+                  {entry.projectorOnly
+                    ? ' · reusable projector artifact'
+                    : Object.hasOwn(manager.projectorAssignments ?? {}, entry.id)
+                      ? manager.projectorAssignments?.[entry.id]
+                        ? ` · projector: ${manager.installations.find((item) => item.id === manager.projectorAssignments?.[entry.id])?.candidateId ?? 'missing'}`
+                        : ' · text-only'
+                      : entry.projectorId
+                        ? ` · projector: ${entry.projectorId}`
+                        : ' · no projector'}
                 </p>
                 <div className="flex flex-wrap gap-2">
-                  <Button
-                    size="sm"
-                    variant={active ? 'secondary' : 'default'}
-                    disabled={
-                      isDownloading ||
-                      managementBusy ||
-                      sessionPhase === 'switching' ||
-                      (active &&
-                        entry.role === 'vision-language' &&
+                  {!entry.projectorOnly && (
+                    <Button
+                      size="sm"
+                      variant={active ? 'secondary' : 'default'}
+                      disabled={
+                        isDownloading ||
+                        managementBusy ||
+                        sessionPhase === 'switching' ||
+                        (active &&
+                          entry.role === 'vision-language' &&
+                          sessionMode === 'native' &&
+                          ['starting', 'running', 'error'].includes(sessionPhase))
+                      }
+                      onClick={() =>
+                        void manage(() =>
+                          window.lonelyChat!.activateModel(entry.role, active ? null : entry.id),
+                        )
+                      }
+                    >
+                      {active ? (
+                        <>
+                          <Check size={14} /> Deactivate
+                        </>
+                      ) : entry.role === 'vision-language' &&
                         sessionMode === 'native' &&
-                        ['starting', 'running', 'error'].includes(sessionPhase))
-                    }
-                    onClick={() =>
-                      void manage(() =>
-                        window.lonelyChat!.activateModel(entry.role, active ? null : entry.id),
-                      )
-                    }
-                  >
-                    {active ? (
-                      <>
-                        <Check size={14} /> Deactivate
-                      </>
-                    ) : entry.role === 'vision-language' &&
-                      sessionMode === 'native' &&
-                      ['starting', 'running', 'error'].includes(sessionPhase) ? (
-                      'Switch to this model'
-                    ) : (
-                      'Activate'
-                    )}
-                  </Button>
+                        ['starting', 'running', 'error'].includes(sessionPhase) ? (
+                        'Switch to this model'
+                      ) : (
+                        'Activate'
+                      )}
+                    </Button>
+                  )}
+                  {entry.role === 'vision-language' && !entry.projectorOnly && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={isDownloading || managementBusy || sessionPhase === 'switching'}
+                      onClick={() => void editProjector(entry)}
+                    >
+                      Manage Projector…
+                    </Button>
+                  )}
                   <Button
                     variant="destructive"
                     size="sm"
@@ -447,6 +545,31 @@ export function ModelManager({
                     <Trash2 size={14} /> Remove
                   </Button>
                 </div>
+                {editingId === entry.id && (
+                  <div className="space-y-3 border-t border-border pt-3">
+                    <ProjectorPicker
+                      discovery={editingDiscovery}
+                      selectedModelId={entry.candidateId}
+                      targetInstalledId={entry.id}
+                      bundledProjectorId={entry.projectorId}
+                      manager={manager}
+                      value={editingChoice}
+                      onChange={setEditingChoice}
+                    />
+                    {editingError && (
+                      <p role="alert" className="text-xs text-amber-300">
+                        Upstream discovery failed: {editingError}. Installed GGUFs remain available.
+                      </p>
+                    )}
+                    <Button
+                      size="sm"
+                      disabled={!editingChoice || managementBusy || isDownloading}
+                      onClick={() => saveProjector(entry.id, entry)}
+                    >
+                      Save projector
+                    </Button>
+                  </div>
+                )}
               </div>
             );
           })}

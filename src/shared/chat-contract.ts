@@ -160,6 +160,8 @@ export interface DesktopInvocations {
   'models:discover': ModelDiscoveryResult;
   'models:snapshot': ModelManagerSnapshot;
   'models:install': ModelManagerSnapshot;
+  'models:projector:set': ModelManagerSnapshot;
+  'models:projector:install': ModelManagerSnapshot;
   'models:cancel': void;
   'models:activate': ModelManagerSnapshot;
   'models:remove': ModelManagerSnapshot;
@@ -275,6 +277,11 @@ export interface DesktopArguments {
   'models:discover': [source: string];
   'models:snapshot': [];
   'models:install': [selection: ModelInstallRequest];
+  'models:projector:set': [
+    id: string,
+    source: import('./model-install-contract').ProjectorAssignment,
+  ];
+  'models:projector:install': [id: string, source: string, candidateId: string];
   'models:cancel': [];
   'models:activate': [role: ModelRole, id: string | null];
   'models:remove': [id: string];
@@ -422,6 +429,15 @@ export interface DesktopAPI {
   getModelsSnapshot(): Promise<ModelManagerSnapshot>;
   onModelsChange(listener: (snapshot: ModelManagerSnapshot) => void): () => void;
   installModel(selection: ModelInstallRequest): Promise<ModelManagerSnapshot>;
+  setModelProjector(
+    id: string,
+    source: import('./model-install-contract').ProjectorAssignment,
+  ): Promise<ModelManagerSnapshot>;
+  installModelProjector(
+    id: string,
+    source: string,
+    candidateId: string,
+  ): Promise<ModelManagerSnapshot>;
   cancelModelDownload(): Promise<void>;
   activateModel(role: ModelRole, id: string | null): Promise<ModelManagerSnapshot>;
   removeModel(id: string): Promise<ModelManagerSnapshot>;

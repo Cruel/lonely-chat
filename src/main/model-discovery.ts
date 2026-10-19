@@ -232,7 +232,7 @@ function groupGguf(files: readonly ModelFile[], warnings: string[]): ModelProjec
 }
 
 function isProjector(path: string): boolean {
-  return /^(?:mmproj|mm-projector)(?:[-_.]|$)/i.test(path.split('/').at(-1) ?? '');
+  return /(?:^|[-_.])(?:mmproj|mm-projector)(?=[-_.]|$)/i.test(path.split('/').at(-1) ?? '');
 }
 
 function folder(path: string): string {

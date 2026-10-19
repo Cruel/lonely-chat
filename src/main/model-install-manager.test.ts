@@ -21,6 +21,8 @@ const q4 = 'weights/vision-Q4_K_M-00001-of-00002.gguf';
 const q4b = 'weights/vision-Q4_K_M-00002-of-00002.gguf';
 const proj = 'weights/mmproj-F16.gguf';
 const speech = 'ggml-base.en.bin';
+const other = 'weights/other-Q8_0.gguf';
+const namedProjector = 'weights/Huihui-Qwen3.5-0.8B.mmproj-f16.gguf';
 const selection: ModelInstallRequest = {
   source: 'acme/vision',
   candidateId: 'weights/vision-Q4_K_M.gguf',
@@ -34,6 +36,8 @@ async function fixture(options?: { capacity?: number }) {
     [q4]: Buffer.from('first shard'),
     [q4b]: Buffer.from('second shard'),
     [proj]: Buffer.from('vision projector'),
+    [other]: Buffer.from('alternate weights'),
+    [namedProjector]: Buffer.from('named vision projector'),
     [speech]: Buffer.from('speech weights'),
   };
   const requests: { file: string; range: string | undefined }[] = [];
@@ -140,6 +144,103 @@ afterEach(async () => {
 });
 
 describe('managed model packages via public model-manager service', () => {
+  it('persists a verified projector reference, reuses local files, and guards provider removal', async () => {
+    const app = await fixture();
+    const first = (await app.manager.install(selection)).installations[0];
+    const provider = (
+      await app.manager.install({
+        source: 'acme/vision',
+        candidateId: other,
+        projectorId: 'none',
+      })
+    ).installations.find((item) => item.candidateId === other)!;
+    await app.manager.setProjector(first.id, provider.id);
+    const expected = path.join(
+      app.manager.snapshot().storageDirectory,
+      'installed',
+      provider.id,
+      'files',
+      other,
+    );
+    expect((await app.manager.visionFiles(first.id)).projectorPath).toBe(expected);
+    expect((await app.make().open()).projectorAssignments?.[first.id]).toBe(provider.id);
+    await expect(app.manager.remove(provider.id)).rejects.toThrow(/used as a projector/i);
+    await app.manager.setProjector(first.id, null);
+    expect((await app.manager.visionFiles(first.id)).projectorPath).toBeNull();
+    await app.manager.setProjector(first.id, 'bundled');
+    expect((await app.manager.visionFiles(first.id)).projectorPath).toContain('mmproj-F16');
+    await app.manager.setProjector(first.id, provider.id);
+    await app.manager.remove(first.id);
+    expect(app.manager.snapshot().projectorAssignments?.[first.id]).toBeUndefined();
+    await app.manager.remove(provider.id);
+  });
+
+  it('installs prefixed projectors as reusable standalone GGUFs without re-downloading them', async () => {
+    const app = await fixture();
+    const first = (
+      await app.manager.install({
+        source: 'acme/vision',
+        candidateId: 'weights/vision-Q4_K_M.gguf',
+        projectorId: 'none',
+      })
+    ).installations[0];
+    const before = app.requests.length;
+    const installed = await app.manager.installProjector(first.id, 'acme/vision', namedProjector);
+    const projector = installed.installations.find((item) => item.projectorOnly)!;
+    expect(projector.candidateId).toBe(namedProjector);
+    expect(installed.projectorAssignments?.[first.id]).toBe(projector.id);
+    expect((await app.manager.visionFiles(first.id)).projectorPath).toContain(namedProjector);
+    expect(app.requests.length).toBe(before + 1);
+    const second = (
+      await app.manager.install({
+        source: 'acme/vision',
+        candidateId: other,
+        projectorId: 'none',
+      })
+    ).installations.find((item) => item.candidateId === other)!;
+    const beforeReuse = app.requests.length;
+    await app.manager.installProjector(second.id, 'acme/vision', namedProjector);
+    expect(app.requests.length).toBe(beforeReuse);
+    expect(app.manager.snapshot().projectorAssignments?.[second.id]).toBe(projector.id);
+    await expect(app.manager.setActive('vision-language', projector.id)).rejects.toThrow(
+      /projector-only/,
+    );
+  });
+
+  it('atomically records a referenced installed projector with a new model package', async () => {
+    const app = await fixture();
+    const provider = (
+      await app.manager.install({
+        source: 'acme/vision',
+        candidateId: other,
+        projectorId: 'none',
+      })
+    ).installations[0];
+    const result = await app.manager.install({
+      source: 'acme/vision',
+      candidateId: 'weights/vision-Q4_K_M.gguf',
+      projectorId: 'none',
+      installedProjectorId: provider.id,
+    });
+    const target = result.installations.find((item) => item.id !== provider.id)!;
+    expect(target.files.map((file) => file.path)).toEqual([q4, q4b]);
+    expect(result.projectorAssignments?.[target.id]).toBe(provider.id);
+    expect((await app.make().open()).projectorAssignments?.[target.id]).toBe(provider.id);
+  });
+
+  it('supports arbitrary model weights as an explicitly selected projector', async () => {
+    const app = await fixture();
+    const result = await app.manager.install({
+      source: 'acme/vision',
+      candidateId: 'weights/vision-Q4_K_M.gguf',
+      projectorId: other,
+    });
+    expect(result.installations[0].files.map((file) => file.path)).toEqual([q4, q4b, other]);
+    expect((await app.manager.visionFiles(result.installations[0].id)).projectorPath).toContain(
+      other,
+    );
+  });
+
   it('atomically installs model shards and its projector, reports progress, persists and activates', async () => {
     const app = await fixture();
     const events: number[] = [];
