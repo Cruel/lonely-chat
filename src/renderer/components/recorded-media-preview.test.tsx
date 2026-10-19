@@ -200,6 +200,56 @@ it('plays audio beyond video EOF without restarting the expired video or reversi
   expect(screen.getByRole('status').textContent).toMatch(/^3\./);
 });
 
+it('resumes video after seeking back from an audio-only tail during playback', async () => {
+  const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(async function (
+    this: HTMLMediaElement,
+  ) {
+    Object.defineProperty(this, 'paused', { configurable: true, value: false });
+  });
+  vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(function (
+    this: HTMLMediaElement,
+  ) {
+    Object.defineProperty(this, 'paused', { configurable: true, value: true });
+  });
+  render(
+    <RecordedMediaPreview
+      video={{ url: 'blob:short', name: 'short.mp4', durationMs: 1000 }}
+      tracks={[
+        {
+          id: 'voice',
+          url: 'blob:voice',
+          label: 'Voice',
+          enabled: true,
+          offsetMs: 0,
+          durationMs: 5000,
+          embeddedTrackIndex: null,
+        },
+      ]}
+      segment={{ startMs: 0, endMs: 5000 }}
+      durationMs={5000}
+      onClose={vi.fn()}
+    />,
+  );
+  const video = screen.getByLabelText('Preview video') as HTMLVideoElement;
+  const audio = screen.getByLabelText('Preview audio: Voice') as HTMLAudioElement;
+  fireEvent.change(screen.getByLabelText('Seek (ms)'), { target: { value: '3000' } });
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Play preview' })));
+  expect(video.paused).toBe(true);
+  expect(play.mock.instances).not.toContain(video);
+  await act(async () => {
+    fireEvent.change(screen.getByLabelText('Seek (ms)'), { target: { value: '500' } });
+  });
+  expect(video.currentTime).toBeCloseTo(0.5);
+  expect(audio.currentTime).toBeCloseTo(0.5);
+  expect(video.paused).toBe(false);
+  expect(play.mock.instances).toContain(video);
+  expect(screen.getByRole('button', { name: 'Pause preview' })).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Pause preview' }));
+  expect(video.paused).toBe(true);
+  fireEvent.change(screen.getByLabelText('Seek (ms)'), { target: { value: '750' } });
+  expect(video.paused).toBe(true);
+});
+
 it('pauses independent decoders on close and never touches recorded session APIs', async () => {
   const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(async function (
     this: HTMLMediaElement,

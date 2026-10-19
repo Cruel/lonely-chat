@@ -128,6 +128,20 @@ export function RecordedMediaPreview({
       const videoEndMs = video?.durationMs ?? Infinity;
       if (clamped >= videoEndMs) element.pause();
       element.currentTime = Math.min(clamped, videoEndMs) / 1000;
+      // Seeking back from an audio-only tail must resume the video decoder too.
+      // A paused preview still seeks without starting playback.
+      if (playingRef.current && clamped < endMs && clamped < videoEndMs && element.paused) {
+        void element.play().catch((reason: unknown) => {
+          if (
+            !playingRef.current ||
+            videoRef.current !== element ||
+            positionRef.current >= videoEndMs
+          )
+            return;
+          pause();
+          setError(reason instanceof Error ? reason.message : 'Unable to play recorded preview.');
+        });
+      }
     }
     synchronize(clamped, playingRef.current, true);
     if (clamped >= endMs) pause();
@@ -163,6 +177,7 @@ export function RecordedMediaPreview({
       const mediaPosition =
         element &&
         wallPosition < (video?.durationMs ?? Infinity) &&
+        !element.paused &&
         !element.ended &&
         element.currentTime * 1000 < (video?.durationMs ?? Infinity)
           ? element.currentTime * 1000
