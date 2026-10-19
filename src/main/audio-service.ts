@@ -44,6 +44,10 @@ interface Source {
     captured: CachedTranscript[];
     pending: Set<Promise<void>>;
     playbackTimers: Set<unknown>;
+    cachedPending: Map<number, { entry: CachedTranscript; dueAt: number; timer: unknown | null }>;
+    cachedPausedAt: number | null;
+    cachedDone: Promise<void> | null;
+    finishCached: (() => void) | null;
   } | null;
 }
 
@@ -188,6 +192,10 @@ export class AudioService {
         captured: [],
         pending: new Set(),
         playbackTimers: new Set(),
+        cachedPending: new Map(),
+        cachedPausedAt: null,
+        cachedDone: null,
+        finishCached: null,
       };
     }
     return result;
@@ -212,21 +220,83 @@ export class AudioService {
       const track = source.recorded;
       const epoch = source.epoch;
       const entries = this.transcriptCache!.read(track.cacheQuery!, track.cacheModel!);
-      for (const entry of entries) {
-        const delay = Math.max(0, originMs + entry.availableMs - this.now());
-        const timer = this.clock.setTimeout(() => {
-          track.playbackTimers.delete(timer);
-          if (source.epoch !== epoch || source.recorded !== track) return;
-          this.emitTranscript(source, {
-            sourceId: source.status.id,
-            source: source.status.label,
-            text: entry.text,
-            observedAt: originMs + entry.observedMs,
-          });
-        }, delay);
-        track.playbackTimers.add(timer);
+      track.cachedDone = new Promise<void>((resolve) => {
+        track.finishCached = resolve;
+      });
+      entries.forEach((entry, index) => {
+        const pending = {
+          entry,
+          dueAt: originMs + entry.availableMs,
+          timer: null as unknown | null,
+        };
+        track.cachedPending.set(index, pending);
+        this.scheduleCached(source, track, epoch, index, pending);
+      });
+      if (!entries.length) track.finishCached?.();
+    }
+  }
+
+  /** Suspend cached transcript availability as well as the renderer's decoded PCM. */
+  pauseRecorded(): void {
+    for (const source of this.sources.values()) {
+      const track = source.recorded;
+      if (
+        !track ||
+        (track.finished && track.cacheMode !== 'cached') ||
+        track.cachedPausedAt !== null
+      )
+        continue;
+      track.cachedPausedAt = this.now();
+      for (const pending of track.cachedPending.values()) {
+        if (pending.timer !== null) {
+          this.clock.clearTimeout(pending.timer);
+          track.playbackTimers.delete(pending.timer);
+          pending.timer = null;
+        }
       }
     }
+  }
+
+  resumeRecorded(): void {
+    for (const source of this.sources.values()) {
+      const track = source.recorded;
+      if (!track || track.cachedPausedAt === null) continue;
+      const elapsed = Math.max(0, this.now() - track.cachedPausedAt);
+      track.cachedPausedAt = null;
+      if (track.originMs !== null) track.originMs += elapsed;
+      for (const [index, pending] of track.cachedPending) {
+        pending.dueAt += elapsed;
+        this.scheduleCached(source, track, source.epoch, index, pending);
+      }
+    }
+  }
+
+  private scheduleCached(
+    source: Source,
+    track: NonNullable<Source['recorded']>,
+    epoch: number,
+    index: number,
+    pending: { entry: CachedTranscript; dueAt: number; timer: unknown | null },
+  ): void {
+    const timer = this.clock.setTimeout(
+      () => {
+        track.playbackTimers.delete(timer);
+        pending.timer = null;
+        if (source.epoch !== epoch || source.recorded !== track || track.cachedPausedAt !== null)
+          return;
+        track.cachedPending.delete(index);
+        this.emitTranscript(source, {
+          sourceId: source.status.id,
+          source: source.status.label,
+          text: pending.entry.text,
+          observedAt: track.originMs! + pending.entry.observedMs,
+        });
+        if (track.cachedPending.size === 0) track.finishCached?.();
+      },
+      Math.max(0, pending.dueAt - this.now()),
+    );
+    pending.timer = timer;
+    track.playbackTimers.add(timer);
   }
 
   /** Discontinuity barrier after a seek/stall: finish any prior partial speech,
@@ -242,13 +312,17 @@ export class AudioService {
       source.status.phase !== 'ready' ||
       track.originMs === null ||
       track.finished ||
-      track.originMs !== originMs ||
+      !Number.isFinite(originMs) ||
+      originMs < 0 ||
+      Math.abs(track.originMs - originMs) > 500 ||
       !Number.isFinite(mediaStartMs) ||
       mediaStartMs < track.seekMs ||
       !Number.isFinite(mediaStartMs + track.offsetMs) ||
       mediaStartMs + track.offsetMs < 0
     )
       throw new Error('Recorded audio cannot resynchronize at this position.');
+    // Renderer and main clocks can differ slightly after independently measuring a pause.
+    track.originMs = originMs;
     if (track.cacheMode === 'cached') return; // Cached transcript clocks continue across renderer buffering.
     if (track.receivedPcm) track.cacheInvalid = true;
     const partial = track.segmenter.flushDetailed();
@@ -302,7 +376,10 @@ export class AudioService {
     const track = source?.recorded;
     if (!source || !track || track.originMs === null || track.finished) return;
     track.finished = true;
-    if (track.cacheMode === 'cached') return;
+    if (track.cacheMode === 'cached') {
+      await track.cachedDone;
+      return;
+    }
     const slice = track.segmenter.flushDetailed();
     if (slice && source.status.phase === 'ready')
       this.submit(
@@ -587,6 +664,8 @@ export class AudioService {
     if (source.recorded) {
       for (const timer of source.recorded.playbackTimers) this.clock.clearTimeout(timer);
       source.recorded.playbackTimers.clear();
+      source.recorded.finishCached?.();
+      source.recorded.cachedPending.clear();
     }
     this.retireWorker(source);
     source.captureId = null;

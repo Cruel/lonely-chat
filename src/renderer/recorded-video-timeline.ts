@@ -8,12 +8,18 @@ export class RecordedVideoTimeline {
   private lastObservedMs = -Infinity;
   private firstMediaMs: number | null = null;
   private firstObservedMs = 0;
+  private observationShiftMs = 0;
 
   constructor(
     private readonly originObservationMs: number,
     private readonly originMonotonicMs: number,
     private readonly intervalMs: number,
   ) {}
+
+  /** User pause shifts observation availability, not the decoded media PTS. */
+  shiftObservationTime(ms: number): void {
+    this.observationShiftMs += ms;
+  }
 
   sample(
     mediaTimeSeconds: number,
@@ -24,8 +30,11 @@ export class RecordedVideoTimeline {
     // media PTS, not decoder callback jitter, determines observation timestamps.
     const observedAt =
       this.firstMediaMs === null
-        ? this.originObservationMs + nowMonotonicMs - this.originMonotonicMs
-        : this.firstObservedMs + (mediaTimeMs - this.firstMediaMs);
+        ? this.originObservationMs +
+          this.observationShiftMs +
+          nowMonotonicMs -
+          this.originMonotonicMs
+        : this.firstObservedMs + this.observationShiftMs + (mediaTimeMs - this.firstMediaMs);
     if (
       !Number.isFinite(mediaTimeMs) ||
       mediaTimeMs < 0 ||

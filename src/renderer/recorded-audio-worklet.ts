@@ -10,6 +10,11 @@ class RecordedAudioProcessor extends AudioWorkletProcessor {
       if (event.data === 'start') {
         this.length = 0;
         this.active = true;
+      } else if (event.data === 'hold') {
+        // User pause preserves incomplete PCM; decoder and media clock both stop.
+        this.active = false;
+      } else if (event.data === 'continue') {
+        this.active = true;
       } else if (event.data === 'pause' || event.data?.type === 'pause') {
         // A seek/buffering discontinuity must not emit leftover pre-seek samples
         // under a new media timestamp.

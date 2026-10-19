@@ -177,6 +177,9 @@ const modelsAPI = {
   resyncRecordedAudio: async () => {},
   submitRecordedAudioPcm: async () => {},
   finishRecordedAudio: async () => {},
+  pauseSession: async () => ({ ...emptyStatus, recordedPlayback: 'paused' as const }),
+  resumeSession: async () => ({ ...emptyStatus, recordedPlayback: 'playing' as const }),
+  finishRecordedSession: async () => ({ ...emptyStatus, recordedPlayback: 'draining' as const }),
 };
 
 const emptyStatus: SessionSnapshot = {

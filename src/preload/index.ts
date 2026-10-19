@@ -120,6 +120,9 @@ const api: DesktopAPI = {
   startSession: (manualContext, mode, options) =>
     invoke('session:start', manualContext, mode, options),
   stopSession: () => invoke('session:stop'),
+  pauseSession: () => invoke('session:pause'),
+  resumeSession: () => invoke('session:resume'),
+  finishRecordedSession: () => invoke('session:recorded:eof'),
   onMediaStop: (listener) => {
     const receive = () => listener();
     ipcRenderer.on('media:stop', receive);

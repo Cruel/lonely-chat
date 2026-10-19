@@ -96,6 +96,9 @@ export function useSession() {
     start: (context: string, mode: InferenceMode = 'fake', options?: SimulationInputOptions) =>
       perform(() => window.lonelyChat!.startSession(context, mode, options)),
     stop: () => perform(() => window.lonelyChat!.stopSession()),
+    pause: () => perform(() => window.lonelyChat!.pauseSession()),
+    resume: () => perform(() => window.lonelyChat!.resumeSession()),
+    finishRecorded: () => perform(() => window.lonelyChat!.finishRecordedSession()),
     retry: () => perform(() => window.lonelyChat!.retrySession()),
     updatePreferences,
   };

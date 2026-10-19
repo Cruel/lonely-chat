@@ -4,6 +4,7 @@ import {
   ExternalLink,
   MessageSquareText,
   Monitor,
+  Pause,
   Play,
   Radio,
   Sparkles,
@@ -164,6 +165,22 @@ export function DesktopPage() {
   const recordedPlayer = useRef<RecordedVideoHandle>(null);
   const recordedAudio = useRef<RecordedAudioHandle>(null);
   const mediaStartGeneration = useRef(0);
+  const expectedRecordedEnds = useRef(0);
+  const completedRecordedSources = useRef(new Set<string>());
+  const recordedSourceEnded = useCallback((source: string) => {
+    if (!expectedRecordedEnds.current || completedRecordedSources.current.has(source)) return;
+    completedRecordedSources.current.add(source);
+    if (completedRecordedSources.current.size === expectedRecordedEnds.current)
+      void window.lonelyChat
+        ?.finishRecordedSession()
+        .catch((error: unknown) => reportRendererFailure('simulation', 'operation', error));
+  }, []);
+  const recordedSourceFailed = useCallback((message: string) => {
+    setMediaError(message);
+    void window.lonelyChat
+      ?.reportRecordedVideoError(message)
+      .catch((error: unknown) => reportRendererFailure('simulation', 'operation', error));
+  }, []);
   const [recordedAudioSelection, setRecordedAudioSelection] = useState({ ready: true, count: 0 });
   const [recordedSegmentState, setRecordedSegmentState] = useState<{
     segment: RecordedSegment;
@@ -268,6 +285,8 @@ export function DesktopPage() {
 
   const startSimulation = async () => {
     const generation = ++mediaStartGeneration.current;
+    expectedRecordedEnds.current = 0;
+    completedRecordedSources.current.clear();
     setMediaError(null);
     if (inputMode === 'recorded' && transcriptMode !== 'transcribe') {
       try {
@@ -291,6 +310,7 @@ export function DesktopPage() {
         : {}),
     });
     if (!started || inputMode !== 'recorded') return;
+    expectedRecordedEnds.current = recordedAudioSelection.count + Number(recordedSelection.hasFile);
     try {
       await recordedAudio.current?.prepare();
       if (generation !== mediaStartGeneration.current) return;
@@ -321,9 +341,34 @@ export function DesktopPage() {
 
   const stopSimulation = () => {
     ++mediaStartGeneration.current;
+    expectedRecordedEnds.current = 0;
+    completedRecordedSources.current.clear();
     recordedPlayer.current?.stop();
     recordedAudio.current?.stop();
     void session.stop();
+  };
+
+  const pauseSimulation = async () => {
+    recordedPlayer.current?.pause();
+    recordedAudio.current?.pause();
+    const next = await session.pause();
+    if (!next) {
+      await Promise.all([recordedPlayer.current?.resume(), recordedAudio.current?.resume()]);
+    }
+  };
+
+  const resumeSimulation = async () => {
+    // Keep chat and inference paused until both decoders are playing again.
+    try {
+      await Promise.all([recordedPlayer.current?.resume(), recordedAudio.current?.resume()]);
+    } catch (error) {
+      recordedSourceFailed(error instanceof Error ? error.message : String(error));
+      return;
+    }
+    if (!(await session.resume())) {
+      recordedPlayer.current?.pause();
+      recordedAudio.current?.pause();
+    }
   };
 
   return (
@@ -593,6 +638,7 @@ export function DesktopPage() {
                       running={mediaActive}
                       onSelectionChange={updateRecordedSelection}
                       onMediaChange={updateRecordedVideoMedia}
+                      onEnded={() => recordedSourceEnded('video')}
                     />
                     <div className="mt-4">
                       <Label htmlFor="recorded-transcript-mode">Recorded speech processing</Label>
@@ -641,6 +687,8 @@ export function DesktopPage() {
                       onSelectionChange={updateRecordedAudioSelection}
                       onSegmentChange={updateRecordedSegment}
                       video={recordedVideoMedia}
+                      onTrackEnded={recordedSourceEnded}
+                      onFailure={recordedSourceFailed}
                     />
                     <label className="mt-4 flex items-center gap-2 text-sm text-zinc-300">
                       <input
@@ -657,7 +705,7 @@ export function DesktopPage() {
                   </>
                 )}
                 <div className="mt-4 flex flex-wrap items-center gap-3">
-                  {running ? (
+                  {mediaActive ? (
                     <Button disabled={!session.ready || session.busy} onClick={stopSimulation}>
                       <Square size={15} /> Stop simulation
                     </Button>
@@ -677,6 +725,28 @@ export function DesktopPage() {
                       <Play size={15} /> Start simulation
                     </Button>
                   )}
+                  {mediaActive &&
+                    inputMode === 'recorded' &&
+                    session.status.recordedPlayback !== 'draining' && (
+                      <Button
+                        variant="secondary"
+                        disabled={!session.ready || session.busy}
+                        onClick={() =>
+                          void (session.status.recordedPlayback === 'paused'
+                            ? resumeSimulation()
+                            : pauseSimulation())
+                        }
+                      >
+                        {session.status.recordedPlayback === 'paused' ? (
+                          <Play size={15} />
+                        ) : (
+                          <Pause size={15} />
+                        )}
+                        {session.status.recordedPlayback === 'paused'
+                          ? 'Resume playback'
+                          : 'Pause playback'}
+                      </Button>
+                    )}
                   {session.status.phase === 'error' && !isRecordedVideoFailure(session.status) && (
                     <Button
                       variant="secondary"
@@ -687,15 +757,21 @@ export function DesktopPage() {
                     </Button>
                   )}
                   <span role="status" aria-live="polite" className="text-sm text-zinc-400">
-                    {running
-                      ? session.status.phase === 'switching'
-                        ? 'Switching local llama.cpp model…'
-                        : session.status.phase === 'starting'
-                          ? 'Loading local llama.cpp model…'
-                          : `Running · cycle ${session.status.cycle} · ${session.status.pendingMessages} queued`
-                      : session.status.phase === 'error'
-                        ? 'Simulation error'
-                        : 'Stopped'}
+                    {running && session.status.recordedPlayback === 'paused'
+                      ? 'Paused · media, inference cycles and chat are frozen'
+                      : running && session.status.recordedPlayback === 'draining'
+                        ? `Finishing recorded Run · ${session.status.pendingMessages} queued`
+                        : running
+                          ? session.status.phase === 'switching'
+                            ? 'Switching local llama.cpp model…'
+                            : session.status.phase === 'starting'
+                              ? 'Loading local llama.cpp model…'
+                              : `Running · cycle ${session.status.cycle} · ${session.status.pendingMessages} queued`
+                          : session.status.phase === 'error'
+                            ? 'Simulation error'
+                            : session.status.recordedPlayback === 'completed'
+                              ? 'Recorded Run completed'
+                              : 'Stopped'}
                   </span>
                 </div>
                 {session.status.warning && (

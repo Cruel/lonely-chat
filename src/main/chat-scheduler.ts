@@ -39,6 +39,7 @@ export class ChatScheduler {
   private nextOrder = 0;
   private timer: unknown = null;
   private active = false;
+  private pausedAt: number | null = null;
 
   constructor(
     private readonly chat: ChatService,
@@ -59,6 +60,22 @@ export class ChatScheduler {
   start(): void {
     this.clear();
     this.active = true;
+    this.pausedAt = null;
+  }
+
+  pause(): void {
+    if (!this.active || this.pausedAt !== null) return;
+    this.pausedAt = this.clock.now();
+    if (this.timer !== null) this.clock.clearTimeout(this.timer);
+    this.timer = null;
+  }
+
+  resume(): void {
+    if (this.pausedAt === null) return;
+    const elapsed = Math.max(0, this.clock.now() - this.pausedAt);
+    this.pausedAt = null;
+    for (const pending of this.queue) pending.due += elapsed;
+    this.pump();
   }
 
   enqueue(batch: readonly ScheduledChat[], baseTime = this.clock.now(), attemptId?: string): void {
@@ -78,6 +95,7 @@ export class ChatScheduler {
 
   stop(): void {
     this.active = false;
+    this.pausedAt = null;
     this.clear();
   }
 
@@ -91,7 +109,7 @@ export class ChatScheduler {
   private pump(): void {
     if (this.timer !== null) this.clock.clearTimeout(this.timer);
     this.timer = null;
-    if (!this.active) return;
+    if (!this.active || this.pausedAt !== null) return;
     const now = this.clock.now();
     while (this.active && this.queue.length && this.queue[0].due <= now) {
       const next = this.queue.shift()!;

@@ -112,6 +112,9 @@ export interface DesktopInvocations {
   'session:snapshot': SessionSnapshot;
   'session:start': SessionSnapshot;
   'session:stop': SessionSnapshot;
+  'session:pause': SessionSnapshot;
+  'session:resume': SessionSnapshot;
+  'session:recorded:eof': SessionSnapshot;
   'session:retry': SessionSnapshot;
   'native:status': NativeServiceStatus;
   'preferences:get': SessionPreferences;
@@ -195,6 +198,9 @@ export interface DesktopArguments {
   'session:snapshot': [];
   'session:start': [manualContext: string, mode?: InferenceMode, options?: SimulationInputOptions];
   'session:stop': [];
+  'session:pause': [];
+  'session:resume': [];
+  'session:recorded:eof': [];
   'session:retry': [];
   'native:status': [];
   'preferences:get': [];
@@ -297,6 +303,9 @@ export interface DesktopAPI {
     options?: SimulationInputOptions,
   ): Promise<SessionSnapshot>;
   stopSession(): Promise<SessionSnapshot>;
+  pauseSession(): Promise<SessionSnapshot>;
+  resumeSession(): Promise<SessionSnapshot>;
+  finishRecordedSession(): Promise<SessionSnapshot>;
   onMediaStop(listener: () => void): () => void;
   retrySession(): Promise<SessionSnapshot>;
   getNativeStatus(): Promise<NativeServiceStatus>;

@@ -71,6 +71,19 @@ export class SessionController {
   private switchAbort: AbortController | null = null;
   private switchBusy = false;
   private switchSettled: Promise<void> = Promise.resolve();
+  private pausedAt: number | null = null;
+  /** Recorded observations use a virtual wall clock; the UI/diagnostics keep physical time. */
+  private pausedWallAt: number | null = null;
+  private pauseIntervals: Array<{ startMs: number; endMs: number }> = [];
+  private resumeWaiters: Array<() => void> = [];
+  private nextCycleAt: number | null = null;
+  private remainingCycleDelay: number | null = null;
+  private attemptInFlight = false;
+  private eofRequested = false;
+  private finalCycleStarted = false;
+  private transcriptRevision = 0;
+  private cycleTranscriptRevision = 0;
+  private processedTranscriptRevision = 0;
 
   constructor(
     chat: ChatService,
@@ -124,11 +137,11 @@ export class SessionController {
     }
     this.preferences = next;
     if (!runRetained) {
-      this.history.configure(this.preferences, this.clock.wallNow());
-      this.video.configure(this.preferences, this.clock.wallNow());
+      this.history.configure(this.preferences, this.observationNow());
+      this.video.configure(this.preferences, this.observationNow());
     }
     this.setState({
-      events: this.history.recentEvents(this.clock.wallNow()),
+      events: this.history.recentEvents(this.observationNow()),
       droppedObservations: this.history.droppedObservations,
     });
     return this.getPreferences();
@@ -142,7 +155,10 @@ export class SessionController {
   /** Trusted input seam for later capture/transcription workers; never callable via overlay IPC. */
   recordObservation(observation: CapturedObservation): void {
     this.requireActive();
-    this.history.recordObservation(observation, this.clock.wallNow());
+    this.history.recordObservation(
+      { ...observation, observedAt: this.observationTime(observation.observedAt) },
+      this.observationNow(),
+    );
     this.refreshDropped();
   }
 
@@ -152,12 +168,19 @@ export class SessionController {
   }
 
   recordVideoFrame(frame: VideoFrame): void {
-    this.video.push(frame, this.clock.wallNow());
+    this.video.push(
+      { ...frame, observedAt: this.observationTime(frame.observedAt) },
+      this.observationNow(),
+    );
   }
 
   recordTranscript(transcript: LabeledTranscript): void {
     if (!allowsRecordedSessionMedia(this.state)) this.requireActive();
-    this.history.recordTranscript(transcript, this.clock.wallNow());
+    this.history.recordTranscript(
+      { ...transcript, observedAt: this.observationTime(transcript.observedAt) },
+      this.observationNow(),
+    );
+    if (this.state.inputMode === 'recorded') this.transcriptRevision++;
     this.refreshDropped();
   }
 
@@ -228,6 +251,8 @@ export class SessionController {
       ...this.preferences,
       ...(preset ? { chatActivity: preset.chatActivity } : {}),
     };
+    this.pauseIntervals = [];
+    this.pausedWallAt = null;
     this.history.configure(this.runPreferences, this.clock.wallNow());
     this.video.configure(this.runPreferences, this.clock.wallNow());
     this.trace.closePresentation(this.runId);
@@ -238,9 +263,20 @@ export class SessionController {
     this.recordedChatPublication = options.inputMode === 'live' || options.publishToOverlay;
     this.smoothedMs = null;
     this.measuredResources = null;
+    this.pausedAt = null;
+    this.resumeWaiters = [];
+    this.nextCycleAt = null;
+    this.remainingCycleDelay = null;
+    this.attemptInFlight = false;
+    this.eofRequested = false;
+    this.finalCycleStarted = false;
+    this.transcriptRevision = 0;
+    this.cycleTranscriptRevision = 0;
+    this.processedTranscriptRevision = 0;
     this.scheduler.start();
     this.setState({
       phase: mode === 'native' ? 'starting' : 'running',
+      recordedPlayback: options.inputMode === 'recorded' ? 'playing' : null,
       mode,
       inputMode: options.inputMode,
       transcriptMode:
@@ -269,19 +305,159 @@ export class SessionController {
     });
     const epoch = this.epoch;
     if (this.runPreferences.baselineMs > 0) {
-      this.inferenceTimer = this.clock.setTimeout(() => {
-        this.inferenceTimer = null;
-        this.runCycle(epoch);
-      }, this.runPreferences.baselineMs);
+      this.scheduleCycle(epoch, this.runPreferences.baselineMs, () => this.runCycle(epoch));
     } else {
       this.runCycle(epoch);
     }
     return this.snapshot();
   }
 
+  /** Only recorded Runs can be paused; a native attempt may finish but cannot commit yet. */
+  pauseRecorded(): SessionSnapshot {
+    this.requireRecordedPlayback();
+    if (this.pausedAt !== null) return this.snapshot();
+    this.pausedAt = this.clock.now();
+    this.pausedWallAt = this.clock.wallNow();
+    if (this.inferenceTimer !== null) {
+      this.remainingCycleDelay = Math.max(0, (this.nextCycleAt ?? this.pausedAt) - this.pausedAt);
+      this.clock.clearTimeout(this.inferenceTimer);
+      this.inferenceTimer = null;
+      this.nextCycleAt = null;
+    }
+    this.scheduler.pause();
+    this.setState({ recordedPlayback: 'paused' });
+    return this.snapshot();
+  }
+
+  resumeRecorded(): SessionSnapshot {
+    this.requireRecordedPlayback();
+    if (this.pausedAt === null) return this.snapshot();
+    this.pausedAt = null;
+    this.closePausedInterval();
+    this.scheduler.resume();
+    this.setState({ recordedPlayback: this.eofRequested ? 'draining' : 'playing' });
+    const waiters = this.resumeWaiters.splice(0);
+    for (const resume of waiters) resume();
+    if (this.remainingCycleDelay !== null && (!this.eofRequested || this.retryWork)) {
+      const delay = this.remainingCycleDelay;
+      this.remainingCycleDelay = null;
+      const epoch = this.epoch;
+      // Only scheduled work is suspended; the in-flight attempt is never replayed.
+      this.scheduleCycle(epoch, delay, () => {
+        if (this.retryWork) {
+          const retry = this.retryWork;
+          this.retryWork = null;
+          retry();
+        } else this.runCycle(epoch);
+      });
+    }
+    this.advanceRecordedEof();
+    return this.snapshot();
+  }
+
+  /** Called after every enabled producer, including each Whisper queue, has reached EOF. */
+  finishRecorded(): SessionSnapshot {
+    this.requireRecordedPlayback();
+    if (this.eofRequested) return this.snapshot();
+    this.eofRequested = true;
+    if (!this.retryWork) {
+      if (this.inferenceTimer !== null) this.clock.clearTimeout(this.inferenceTimer);
+      this.inferenceTimer = null;
+      this.nextCycleAt = null;
+      this.remainingCycleDelay = null;
+    }
+    if (this.pausedAt === null) this.setState({ recordedPlayback: 'draining' });
+    this.advanceRecordedEof();
+    return this.snapshot();
+  }
+
+  private retryWork: (() => void) | null = null;
+
+  private requireRecordedPlayback(): void {
+    if (
+      this.state.inputMode !== 'recorded' ||
+      !(
+        ['starting', 'running', 'switching'].includes(this.state.phase) ||
+        (this.state.phase === 'error' && !isRecordedVideoFailure(this.state))
+      )
+    )
+      throw new Error('No active recorded simulation.');
+  }
+
+  private closePausedInterval(): void {
+    if (this.pausedWallAt === null) return;
+    this.pauseIntervals.push({
+      startMs: this.pausedWallAt,
+      endMs: Math.max(this.pausedWallAt, this.clock.wallNow()),
+    });
+    this.pausedWallAt = null;
+  }
+
+  /** Map physical capture and chat timestamps to the paused presentation timeline. */
+  private observationTime(physicalMs: number): number {
+    if (this.state.inputMode !== 'recorded' || this.state.phase === 'stopped') return physicalMs;
+    let pauseMs = 0;
+    for (const interval of this.pauseIntervals) {
+      pauseMs += Math.max(0, Math.min(physicalMs, interval.endMs) - interval.startMs);
+    }
+    if (this.pausedWallAt !== null) {
+      pauseMs += Math.max(0, Math.min(physicalMs, this.clock.wallNow()) - this.pausedWallAt);
+    }
+    return physicalMs - pauseMs;
+  }
+
+  private observationNow(): number {
+    return this.observationTime(this.clock.wallNow());
+  }
+
+  private waitUntilResumed(): Promise<void> {
+    if (this.pausedAt === null) return Promise.resolve();
+    return new Promise<void>((resolve) => this.resumeWaiters.push(resolve));
+  }
+
+  private scheduleCycle(epoch: number, delayMs: number, callback: () => void): void {
+    if (this.inferenceTimer !== null) this.clock.clearTimeout(this.inferenceTimer);
+    if (this.pausedAt !== null) {
+      this.remainingCycleDelay = delayMs;
+      return;
+    }
+    this.nextCycleAt = this.clock.now() + delayMs;
+    this.inferenceTimer = this.clock.setTimeout(() => {
+      this.inferenceTimer = null;
+      this.nextCycleAt = null;
+      if (this.active(epoch)) callback();
+    }, delayMs);
+  }
+
+  private advanceRecordedEof(): void {
+    if (!this.eofRequested || this.pausedAt !== null || this.attemptInFlight) return;
+    if (!this.active(this.epoch)) return;
+    if (
+      !this.finalCycleStarted &&
+      (this.transcriptRevision > this.processedTranscriptRevision || this.state.cycle === 0)
+    ) {
+      this.finalCycleStarted = true;
+      this.runCycle(this.epoch);
+      return;
+    }
+    if (this.scheduler.pendingCount !== 0) return;
+    this.trace.closePresentation(this.runId);
+    this.setState({ phase: 'stopped', recordedPlayback: 'completed', retryAttempt: 0 });
+    this.scheduler.stop();
+    this.shutdownPromise = this.stopProvider(this.activeInference);
+  }
+
   stop(): SessionSnapshot {
     if (this.state.phase === 'stopped') return this.snapshot();
     this.epoch++;
+    this.closePausedInterval();
+    this.pausedAt = null;
+    this.eofRequested = false;
+    this.attemptInFlight = false;
+    this.remainingCycleDelay = null;
+    this.nextCycleAt = null;
+    this.retryWork = null;
+    for (const resume of this.resumeWaiters.splice(0)) resume();
     this.trace.cancelPending(this.runId);
     this.trace.closePresentation(this.runId);
     this.switchAbort?.abort();
@@ -294,7 +470,13 @@ export class SessionController {
     this.inferenceTimer = null;
     this.scheduler.stop();
     this.context = '';
-    this.setState({ phase: 'stopped', error: null, warning: null, retryAttempt: 0 });
+    this.setState({
+      phase: 'stopped',
+      recordedPlayback: null,
+      error: null,
+      warning: null,
+      retryAttempt: 0,
+    });
     return this.snapshot();
   }
 
@@ -354,6 +536,8 @@ export class SessionController {
     this.trace.cancelPending(this.runId);
     this.abort?.abort();
     this.abort = null;
+    this.attemptInFlight = false;
+    this.retryWork = null;
     if (this.inferenceTimer !== null) this.clock.clearTimeout(this.inferenceTimer);
     this.inferenceTimer = null;
     const abort = new AbortController();
@@ -370,7 +554,8 @@ export class SessionController {
       if (abort.signal.aborted || epoch !== this.epoch) return this.snapshot();
       this.switchAbort = null;
       this.setState({ phase: 'running', modelId, error: null, warning: null });
-      this.runCycle(epoch);
+      if (this.pausedAt !== null) this.scheduleCycle(epoch, 0, () => this.runCycle(epoch));
+      else this.runCycle(epoch);
     } catch (error) {
       if (abort.signal.aborted || epoch !== this.epoch) return this.snapshot();
       this.shutdownPromise = this.stopProvider(this.nativeInference);
@@ -399,7 +584,15 @@ export class SessionController {
       warning: null,
       retryAttempt: 0,
     });
-    this.runCycle(epoch);
+    if (this.pausedAt !== null) {
+      this.attemptInFlight = true;
+      this.retryWork = () => this.runCycle(epoch);
+      this.scheduleCycle(epoch, 0, () => {
+        const retry = this.retryWork;
+        this.retryWork = null;
+        retry?.();
+      });
+    } else this.runCycle(epoch);
     return this.snapshot();
   }
 
@@ -427,13 +620,19 @@ export class SessionController {
 
   private runCycle(epoch: number): void {
     if (!this.active(epoch)) return;
+    if (this.pausedAt !== null) return;
     const cycle = this.state.cycle + 1;
-    const now = this.clock.wallNow();
+    this.cycleTranscriptRevision = this.transcriptRevision;
+    const now = this.observationNow();
     const chat = this.chat
       .snapshot()
       .messages.filter(
         (message) => Number(message.id.slice('chat-'.length)) > this.chatStartSequence,
-      );
+      )
+      .map((message) => ({
+        ...message,
+        presentedAt: this.observationTime(message.presentedAt),
+      }));
     const snapshot = this.history.snapshot(
       this.context,
       cycle,
@@ -487,10 +686,12 @@ export class SessionController {
     diagnosticToken: number | null,
   ): void {
     if (!this.active(epoch)) return;
+    this.attemptInFlight = true;
     const abort = new AbortController();
     this.abort = abort;
     const provider = this.activeInference;
     let inferenceStarted = this.clock.now();
+    let inferenceCompleted = inferenceStarted;
     const sessionSeed = this.state.sessionSeed!;
     const seed = deriveInferenceSeed(sessionSeed, 'cycle', input.cycle, attempt);
     let effectiveInput: CycleInput = { ...input, seed };
@@ -547,6 +748,7 @@ export class SessionController {
         }
         if (!this.active(epoch) || abort.signal.aborted) return undefined;
         await provider.prepare?.(abort.signal);
+        await this.waitUntilResumed();
         if (!this.active(epoch) || abort.signal.aborted) return undefined;
         if (this.state.phase === 'starting') this.setState({ phase: 'running' });
         inferenceStarted = this.clock.now();
@@ -559,6 +761,7 @@ export class SessionController {
         });
         this.trace.update(traceId, { stage: 'transport' });
         const output = await provider.generate(effectiveInput, abort.signal, observer);
+        inferenceCompleted = this.clock.now();
         rawOutput = output;
         // Third-party/fixture providers may not implement the optional trace observer.
         if (this.trace.get(traceId)?.stage === 'transport') observer('normalized', output);
@@ -566,7 +769,8 @@ export class SessionController {
         receivedOutput = true;
         return output;
       })
-      .then((raw) => {
+      .then(async (raw) => {
+        await this.waitUntilResumed();
         if (!this.active(epoch) || abort.signal.aborted) return;
         const { parsed: result, accepted } = validateSimulationCycle(
           effectiveInput,
@@ -577,7 +781,7 @@ export class SessionController {
         this.trace.update(traceId, { stage: 'accepted', accepted });
         const resolved = accepted.messages;
         // All validation precedes every state change, history acknowledgement and playback.
-        const duration = Math.max(0, this.clock.now() - inferenceStarted);
+        const duration = Math.max(0, inferenceCompleted - inferenceStarted);
         this.smoothedMs =
           this.smoothedMs === null
             ? duration
@@ -590,7 +794,8 @@ export class SessionController {
           this.state.mode === 'native' ? this.measuredResources : null,
         );
         this.history.acknowledge(input.boundary);
-        const events = this.history.commitEvents(result.events, this.clock.wallNow());
+        this.processedTranscriptRevision = this.cycleTranscriptRevision;
+        const events = this.history.commitEvents(result.events, this.observationNow());
         this.setState({
           events,
           retryAttempt: 0,
@@ -626,6 +831,7 @@ export class SessionController {
         });
         this.scheduler.enqueue(messages, this.clock.now(), traceId);
         this.abort = null;
+        this.attemptInFlight = false;
         if (this.state.mode === 'native' && provider.resourceMeasurements) {
           void provider
             .resourceMeasurements()
@@ -645,14 +851,14 @@ export class SessionController {
             : this.runPreferences.cycleIntervalMs) -
             (this.clock.now() - cycleStarted),
         );
-        this.inferenceTimer = this.clock.setTimeout(() => {
-          this.inferenceTimer = null;
-          this.runCycle(epoch);
-        }, delayMs);
+        if (this.eofRequested) this.advanceRecordedEof();
+        else this.scheduleCycle(epoch, delayMs, () => this.runCycle(epoch));
       })
-      .catch((error: unknown) => {
+      .catch(async (error: unknown) => {
+        await this.waitUntilResumed();
         if (!this.active(epoch) || abort.signal.aborted) return;
         this.abort = null;
+        this.attemptInFlight = false;
         const message = error instanceof Error ? error.message : 'Unknown inference error.';
         const errorStage = traceFailureStage(this.trace.get(traceId));
         this.trace.update(traceId, {
@@ -703,13 +909,14 @@ export class SessionController {
           retryAttempt: attempt,
           warning: `Inference attempt ${attempt} failed: ${message}. Retrying…`,
         });
-        this.inferenceTimer = this.clock.setTimeout(
-          () => {
-            this.inferenceTimer = null;
-            this.runAttempt(epoch, input, cycleStarted, attempt + 1, diagnosticToken);
-          },
-          RETRY_BASE_MS * 2 ** (attempt - 1),
-        );
+        const retry = () =>
+          this.runAttempt(epoch, input, cycleStarted, attempt + 1, diagnosticToken);
+        this.attemptInFlight = true; // Retry is accepted work, including during EOF draining.
+        this.retryWork = retry;
+        this.scheduleCycle(epoch, RETRY_BASE_MS * 2 ** (attempt - 1), () => {
+          this.retryWork = null;
+          retry();
+        });
       });
   }
 
@@ -735,6 +942,7 @@ export class SessionController {
   private updatePending(): void {
     const count = this.scheduler.pendingCount;
     if (this.state.pendingMessages !== count) this.setState({ pendingMessages: count });
+    if (count === 0) this.advanceRecordedEof();
   }
 
   private setState(patch: Partial<Omit<SessionSnapshot, 'revision'>>): void {

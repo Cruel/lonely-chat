@@ -442,6 +442,16 @@ function registerHandlers(): void {
       );
     },
     'session:stop': () => stopSession(),
+    'session:pause': () => {
+      const state = session.pauseRecorded();
+      audio.pauseRecorded();
+      return state;
+    },
+    'session:resume': () => {
+      audio.resumeRecorded();
+      return session.resumeRecorded();
+    },
+    'session:recorded:eof': () => session.finishRecorded(),
     'session:retry': () => {
       if (playground.busy || speechTest.busy)
         throw new Error('Stop Playground experiments before retrying Simulation.');
@@ -1109,6 +1119,9 @@ app.on('will-quit', () => {
   ipcMain.removeHandler('session:snapshot');
   ipcMain.removeHandler('session:start');
   ipcMain.removeHandler('session:stop');
+  ipcMain.removeHandler('session:pause');
+  ipcMain.removeHandler('session:resume');
+  ipcMain.removeHandler('session:recorded:eof');
   ipcMain.removeHandler('session:retry');
   ipcMain.removeHandler('native:status');
   ipcMain.removeHandler('preferences:get');

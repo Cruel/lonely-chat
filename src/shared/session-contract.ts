@@ -47,6 +47,8 @@ export interface SessionSnapshot {
   /** Stable machine-readable failure identity, independent of the displayed message. */
   readonly failureKind?: 'recorded-video' | 'inference' | null;
   readonly warning: string | null;
+  /** Recorded-media lifecycle; null for live sessions. */
+  readonly recordedPlayback?: 'playing' | 'paused' | 'draining' | 'completed' | null;
   readonly cycle: number;
   readonly retryAttempt: number;
   /** Base seed for this session (whether user-supplied or generated). */

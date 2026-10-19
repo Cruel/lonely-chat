@@ -24,6 +24,8 @@ export interface RecordedVideoHandle {
     segment?: RecordedSegment,
   ): Promise<void>;
   stop(): void;
+  pause(): void;
+  resume(): Promise<void>;
 }
 
 export const RecordedVideoInput = forwardRef<
@@ -32,8 +34,9 @@ export const RecordedVideoInput = forwardRef<
     running: boolean;
     onSelectionChange: (state: { hasFile: boolean; ready: boolean }) => void;
     onMediaChange?: (media: RecordedVideoMedia | null) => void;
+    onEnded?: () => void;
   }
->(function RecordedVideoInput({ running, onSelectionChange, onMediaChange }, ref) {
+>(function RecordedVideoInput({ running, onSelectionChange, onMediaChange, onEnded }, ref) {
   const video = useRef<HTMLVideoElement>(null);
   const selectedFile = useRef<File | null>(null);
   const [url, setUrl] = useState<string | null>(null);
@@ -44,9 +47,14 @@ export const RecordedVideoInput = forwardRef<
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
   const epoch = useRef(0);
   const inFlight = useRef(false);
+  const suspendedAt = useRef<number | null>(null);
+  const resumePlayback = useRef<((elapsed: number) => Promise<void>) | null>(null);
 
   const stop = () => {
     ++epoch.current;
+    suspendedAt.current = null;
+    resumePlayback.current = null;
+    if (video.current) video.current.onended = null;
     if (timer.current !== null) clearInterval(timer.current);
     timer.current = null;
     video.current?.pause();
@@ -56,6 +64,17 @@ export const RecordedVideoInput = forwardRef<
     ref,
     () => ({
       stop,
+      pause() {
+        if (suspendedAt.current !== null || !resumePlayback.current) return;
+        suspendedAt.current = performance.now();
+        video.current?.pause();
+      },
+      async resume() {
+        if (suspendedAt.current === null) return;
+        const elapsed = Math.max(0, performance.now() - suspendedAt.current);
+        suspendedAt.current = null;
+        await resumePlayback.current?.(elapsed);
+      },
       async begin(captureIntervalMs: number, origin, segment = { startMs: 0, endMs: null }) {
         if (!url) return;
         const element = video.current;
@@ -70,7 +89,7 @@ export const RecordedVideoInput = forwardRef<
         element.playbackRate = 1;
         element.muted = true; // Embedded audio must not leak into live monitoring or STT.
         const originObservationMs = origin?.observedAt ?? (await api.getVideoClock());
-        const originMonotonicMs = origin?.monotonicMs ?? performance.now();
+        let originMonotonicMs = origin?.monotonicMs ?? performance.now();
         if (generation !== epoch.current) return;
         const mediaElapsedMs = () => Math.max(0, performance.now() - originMonotonicMs);
         const expectedMediaMs = () => {
@@ -88,6 +107,12 @@ export const RecordedVideoInput = forwardRef<
         const canvas = document.createElement('canvas');
         const context = canvas.getContext('2d');
         if (!context) throw new Error('JPEG decoding/capture is unavailable.');
+        resumePlayback.current = async (elapsed) => {
+          originMonotonicMs += elapsed;
+          timeline.shiftObservationTime(elapsed);
+          if (generation !== epoch.current || element.ended) return;
+          await startRecordedMedia(element);
+        };
         let synchronizing = false;
         let stalledAt: number | null = null;
         const failPlayback = (reason: unknown) => {
@@ -99,13 +124,20 @@ export const RecordedVideoInput = forwardRef<
           void api.reportRecordedVideoError(message).catch(() => {});
         };
         const capture = () => {
-          if (generation !== epoch.current || inFlight.current || synchronizing || element.ended)
+          if (
+            generation !== epoch.current ||
+            suspendedAt.current !== null ||
+            inFlight.current ||
+            synchronizing ||
+            element.ended
+          )
             return;
           if (segment.endMs !== null && segment.startMs + mediaElapsedMs() >= segment.endMs) {
             if (timer.current !== null) clearInterval(timer.current);
             timer.current = null;
             element.pause();
             setStatus('End of selected video segment');
+            onEnded?.();
             return;
           }
           if (element.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || element.paused) {
@@ -163,6 +195,13 @@ export const RecordedVideoInput = forwardRef<
             element.pause();
             return;
           }
+          element.onended = () => {
+            if (generation !== epoch.current) return;
+            if (timer.current !== null) clearInterval(timer.current);
+            timer.current = null;
+            setStatus('End of video');
+            onEnded?.();
+          };
           setStatus('Playing at 1×');
           setError(null);
           capture();
@@ -177,7 +216,7 @@ export const RecordedVideoInput = forwardRef<
         }
       },
     }),
-    [ready, url],
+    [ready, url, onEnded],
   );
 
   useEffect(() => {

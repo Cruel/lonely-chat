@@ -57,6 +57,8 @@ export interface RecordedAudioHandle {
     segment?: RecordedSegment,
   ): Promise<void>;
   stop(): void;
+  pause(): void;
+  resume(): Promise<void>;
 }
 
 let nextTrack = 0;
@@ -71,9 +73,19 @@ export const RecordedAudioInput = forwardRef<
     onSelectionChange: (state: { ready: boolean; count: number }) => void;
     video?: RecordedVideoMedia | null;
     onSegmentChange?: (state: { segment: RecordedSegment; valid: boolean }) => void;
+    onTrackEnded?: (id: string) => void;
+    onFailure?: (message: string) => void;
   }
 >(function RecordedAudioInput(
-  { running, transcriptMode = 'transcribe', onSelectionChange, video, onSegmentChange },
+  {
+    running,
+    transcriptMode = 'transcribe',
+    onSelectionChange,
+    video,
+    onSegmentChange,
+    onTrackEnded,
+    onFailure,
+  },
   ref,
 ) {
   const [tracks, setTracks] = useState<RecordedAudioTrack[]>([]);
@@ -133,6 +145,7 @@ export const RecordedAudioInput = forwardRef<
   const runtimes = useRef(new Map<string, RecordedAudioRuntime>());
   const urls = useRef(new Set<string>());
   const generation = useRef(0);
+  const playbackControls = useRef<{ pause(): void; resume(): Promise<void> } | null>(null);
   const segmentRef = useRef(segment);
   segmentRef.current = segment;
 
@@ -146,6 +159,7 @@ export const RecordedAudioInput = forwardRef<
 
   const close = closeRecordedAudioRuntime;
   const stop = () => {
+    playbackControls.current = null;
     ++generation.current;
     for (const runtime of runtimes.current.values()) close(runtime);
     runtimes.current.clear();
@@ -194,6 +208,8 @@ export const RecordedAudioInput = forwardRef<
 
   useImperativeHandle(ref, () => ({
     stop,
+    pause: () => playbackControls.current?.pause(),
+    resume: async () => playbackControls.current?.resume(),
     verifyCache,
     async prepare() {
       stop();
@@ -318,6 +334,8 @@ export const RecordedAudioInput = forwardRef<
             status(track.id, `Audio error: ${errorText(error)}`);
             if (runtime) close(runtime);
             else void context?.close().catch(() => {});
+            if (currentGeneration === generation.current)
+              onFailure?.(`Recorded audio ${track.label}: ${errorText(error)}`);
             if (transcriptMode === 'cached') throw error;
           }
         }),
@@ -328,6 +346,32 @@ export const RecordedAudioInput = forwardRef<
       origin = {
         observedAt: origin.observedAt - segment.startMs,
         monotonicMs: origin.monotonicMs - segment.startMs,
+      };
+      let pausedAt: number | null = null;
+      const resumeTracks = new Map<string, () => Promise<void>>();
+      playbackControls.current = {
+        pause() {
+          if (pausedAt !== null) return;
+          pausedAt = performance.now();
+          for (const runtime of runtimes.current.values()) {
+            if (runtime.completed) continue;
+            runtime.active = false;
+            if (runtime.timeout !== null) clearTimeout(runtime.timeout);
+            runtime.timeout = null;
+            if (runtime.endTimer !== null) clearTimeout(runtime.endTimer);
+            runtime.endTimer = null;
+            runtime.node.port.postMessage('hold');
+            runtime.audio.pause();
+          }
+        },
+        async resume() {
+          if (pausedAt === null) return;
+          const elapsed = Math.max(0, performance.now() - pausedAt);
+          origin.monotonicMs += elapsed;
+          origin.observedAt += elapsed;
+          pausedAt = null;
+          await Promise.all([...resumeTracks.values()].map((resume) => resume()));
+        },
       };
       const api = window.lonelyChat;
       if (!api) return;
@@ -341,6 +385,7 @@ export const RecordedAudioInput = forwardRef<
           const failed = (error: unknown) => {
             if (!current()) return;
             status(track.id, 'Audio error: ' + errorText(error));
+            onFailure?.(`Recorded audio ${track.label}: ${errorText(error)}`);
             close(runtime);
             runtimes.current.delete(track.id);
           };
@@ -349,7 +394,14 @@ export const RecordedAudioInput = forwardRef<
             runtime.stallTimer = null;
           };
           const pauseForBuffering = () => {
-            if (!current() || !runtime.started || runtime.recovering || runtime.stalled) return;
+            if (
+              !current() ||
+              pausedAt !== null ||
+              !runtime.started ||
+              runtime.recovering ||
+              runtime.stalled
+            )
+              return;
             // HTMLMediaElement fires pause immediately before ended. Chromium
             // may not set ended until after pause, so also check media position.
             // Preserve partial PCM for EOF, but fail if the expected end never arrives.
@@ -422,18 +474,19 @@ export const RecordedAudioInput = forwardRef<
             if (!current()) return;
             await api.finishRecordedAudio(runtime.captureId);
             status(track.id, 'End of audio');
+            onTrackEnded?.(track.id);
           };
-          if (segment.endMs !== null) {
-            const remainingMs = Math.max(
-              0,
-              segment.endMs - (performance.now() - origin.monotonicMs),
+          const scheduleEnd = () => {
+            if (segment.endMs === null || runtime.completed || pausedAt !== null) return;
+            if (runtime.endTimer !== null) clearTimeout(runtime.endTimer);
+            runtime.endTimer = setTimeout(
+              () => void finish().catch(failed),
+              Math.max(0, segment.endMs - (performance.now() - origin.monotonicMs)),
             );
-            runtime.endTimer = setTimeout(() => {
-              void finish().catch(failed);
-            }, remainingMs);
-          }
+          };
+          scheduleEnd();
           const synchronize = async (first: boolean) => {
-            if (!current() || runtime.completed || runtime.recovering) return;
+            if (!current() || pausedAt !== null || runtime.completed || runtime.recovering) return;
             runtime.recovering = true;
             runtime.active = false;
             try {
@@ -464,10 +517,7 @@ export const RecordedAudioInput = forwardRef<
               );
               if (!current()) return;
               if (mediaMs === null) {
-                await api.finishRecordedAudio(runtime.captureId);
-                status(track.id, 'End of audio');
-                runtime.started = false;
-                clearStall();
+                await finish();
                 return;
               }
               let anchoredMs = mediaMs;
@@ -501,12 +551,19 @@ export const RecordedAudioInput = forwardRef<
               runtime.started = true;
               runtime.stalled = false;
               clearStall();
+              if (pausedAt !== null) return;
               runtime.node.port.postMessage('start');
               runtime.active = true;
               status(track.id, 'Playing at 1× (synchronized)');
               if (runtime.driftTimer === null) {
                 runtime.driftTimer = setInterval(() => {
-                  if (!current() || !runtime.started || runtime.recovering || !runtime.active)
+                  if (
+                    !current() ||
+                    pausedAt !== null ||
+                    !runtime.started ||
+                    runtime.recovering ||
+                    !runtime.active
+                  )
                     return;
                   if (runtime.audio.ended) return;
                   if (
@@ -549,7 +606,7 @@ export const RecordedAudioInput = forwardRef<
               }
               return;
             }
-            if (!runtime.active || runtime.cached) return;
+            if (!runtime.active || runtime.cached || pausedAt !== null) return;
             if (
               runtime.audio.paused ||
               runtime.audio.seeking ||
@@ -575,15 +632,14 @@ export const RecordedAudioInput = forwardRef<
             else clearStall();
           };
           const playAtPosition = async () => {
-            if (!current() || runtime.completed) return;
+            if (!current() || runtime.completed || pausedAt !== null) return;
             const position = recordedAudioPosition(
               track.offsetMs,
               performance.now() - origin.monotonicMs,
               track.durationMs!,
             );
             if (!position) {
-              await api.finishRecordedAudio(runtime.captureId);
-              status(track.id, 'End of audio (offset beyond file)');
+              await finish();
               return;
             }
             if (position.delayMs > 0) {
@@ -600,9 +656,9 @@ export const RecordedAudioInput = forwardRef<
               origin.monotonicMs,
             );
             await resumeRecordedContext(runtime.context);
-            if (!current()) return;
+            if (!current() || pausedAt !== null) return;
             await startRecordedMedia(runtime.audio);
-            if (!current() || runtime.completed) {
+            if (!current() || runtime.completed || pausedAt !== null) {
               runtime.audio.pause();
               return;
             }
@@ -610,6 +666,19 @@ export const RecordedAudioInput = forwardRef<
             // arm Whisper. Other tracks are free to start meanwhile.
             await synchronize(true);
           };
+          resumeTracks.set(track.id, async () => {
+            if (!current() || runtime.completed) return;
+            scheduleEnd();
+            if (!runtime.started) return playAtPosition();
+            await startRecordedMedia(runtime.audio);
+            if (!current() || pausedAt !== null) {
+              runtime.audio.pause();
+              return;
+            }
+            runtime.node.port.postMessage('continue');
+            runtime.active = true;
+            status(track.id, 'Playing at 1× (synchronized)');
+          });
           try {
             await playAtPosition();
           } catch (error) {

@@ -24,6 +24,16 @@ describe('real-time recorded producer through the production session', () => {
     expect(timeline.sample(0.2, 1800)).toBeNull();
   });
 
+  it('shifts observation time by paused wall time without advancing media PTS', () => {
+    const timeline = new RecordedVideoTimeline(20000, 1000, 100);
+    expect(timeline.sample(0, 1000)).toEqual({ observedAt: 20000, mediaTimeMs: 0 });
+    expect(timeline.sample(0.1, 1100)).toEqual({ observedAt: 20100, mediaTimeMs: 100 });
+    timeline.shiftObservationTime(30000);
+    expect(timeline.sample(0.2, 31100)).toEqual({ observedAt: 50200, mediaTimeMs: 200 });
+    expect(timeline.sample(0.2, 31200)).toBeNull();
+    expect(timeline.sample(0.3, 31200)).toEqual({ observedAt: 50300, mediaTimeMs: 300 });
+  });
+
   it('keeps sampling at 1× while native inference is blocked and uses ordinary boundaries, events, chat and retries', async () => {
     const clock = new FakeClock();
     const chat = new ChatService();

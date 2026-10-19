@@ -493,3 +493,66 @@ it('stops posting PCM during buffering and reanchors after playback recovery', a
   );
   page.ref.current!.stop();
 });
+
+it('pauses decoded PCM without discarding a partial worklet buffer and resumes at the same media position', async () => {
+  const page = setup();
+  await selectFiles(page, 1);
+  const begin = page.ref.current!.begin({ observedAt: 100000, monotonicMs: 0 });
+  await waitFor(() => expect(instances[0].play).toHaveBeenCalledOnce());
+  instances[0].startPlayback();
+  await begin;
+  const armedAt = page.arm.mock.calls[0][1];
+  instances[0].currentTime = 1.1;
+  page.ref.current!.pause();
+  expect(ports[0].postMessage).toHaveBeenCalledWith('hold');
+  expect(instances[0].paused).toBe(true);
+  expect(ports[0].postMessage).not.toHaveBeenCalledWith('pause');
+  ports[0].onmessage?.({ data: new Float32Array(4096) } as MessageEvent);
+  expect(page.pcm).not.toHaveBeenCalled();
+  clock += 30000;
+  const resume = page.ref.current!.resume();
+  await waitFor(() => expect(instances[0].play).toHaveBeenCalledTimes(2));
+  instances[0].startPlayback();
+  await resume;
+  expect(page.resync).not.toHaveBeenCalled();
+  expect(ports[0].postMessage).toHaveBeenCalledWith('continue');
+  ports[0].onmessage?.({ data: new Float32Array(4096) } as MessageEvent);
+  await waitFor(() => expect(page.pcm).toHaveBeenCalledOnce());
+  expect(page.arm.mock.calls[0][1]).toBe(armedAt);
+  expect(screen.getByLabelText('Start (ms)')).toHaveProperty('disabled', true);
+  expect(screen.getByLabelText('End (ms, blank = automatic)')).toHaveProperty('disabled', true);
+  page.ref.current!.stop();
+});
+
+it('reports each track EOF only after its independent Whisper finish, without ending other tracks', async () => {
+  const page = setup();
+  await selectFiles(page, 2);
+  const ended = vi.fn();
+  page.rerender(
+    <RecordedAudioInput
+      ref={page.ref}
+      running
+      onSelectionChange={page.selection}
+      onTrackEnded={ended}
+    />,
+  );
+  const begin = page.ref.current!.begin({ observedAt: 100000, monotonicMs: 0 });
+  await waitFor(() =>
+    expect(instances.every((audio) => audio.play.mock.calls.length === 1)).toBe(true),
+  );
+  instances[0].startPlayback();
+  instances[1].startPlayback();
+  await begin;
+  instances[0].onended?.(new Event('ended'));
+  await waitFor(() => expect(ports[0].postMessage).toHaveBeenCalledWith('flush'));
+  expect(ended).not.toHaveBeenCalled();
+  ports[0].onmessage?.({ data: { type: 'flushed' } } as MessageEvent);
+  await waitFor(() => expect(ended).toHaveBeenCalledTimes(1));
+  expect(instances[1].paused).toBe(false);
+  instances[1].onended?.(new Event('ended'));
+  ports[1].onmessage?.({ data: { type: 'flushed' } } as MessageEvent);
+  await waitFor(() => expect(ended).toHaveBeenCalledTimes(2));
+  expect(new Set(ended.mock.calls.map(([id]) => id)).size).toBe(2);
+  expect(page.finish).toHaveBeenCalledTimes(2);
+  page.ref.current!.stop();
+});
