@@ -44,6 +44,8 @@ const SAFE_CONTEXT_KEYS = new Set([
   'worker',
   'cycle',
   'attempt',
+  'runId',
+  'attemptId',
   'modelRole',
   'sourceKind',
   'operation',

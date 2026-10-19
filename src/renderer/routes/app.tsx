@@ -112,7 +112,14 @@ export function DesktopPage() {
   const session = useSession();
   const audience = useAudience();
   const [section, setSection] = useState<DesktopSection>('simulation');
-  const [logFocus, setLogFocus] = useState<{ source: string; nonce: number } | null>(null);
+  const [logFocus, setLogFocus] = useState<{
+    source?: string;
+    attemptId?: string;
+    nonce: number;
+  } | null>(null);
+  const [inspectorFocus, setInspectorFocus] = useState<{ attemptId: string; nonce: number } | null>(
+    null,
+  );
   const unreadErrors = useUnreadLogErrors(section === 'logs');
   const selectSection = (next: DesktopSection) => {
     if (next === 'logs') setLogFocus(null);
@@ -120,6 +127,14 @@ export function DesktopPage() {
   };
   const openLogs = (source: string) => {
     setLogFocus({ source, nonce: Date.now() });
+    setSection('logs');
+  };
+  const openAttempt = (attemptId: string) => {
+    setInspectorFocus({ attemptId, nonce: Date.now() });
+    setSection('inspector');
+  };
+  const openAttemptLogs = (attemptId: string) => {
+    setLogFocus({ attemptId, nonce: Date.now() });
     setSection('logs');
   };
   const [playgroundTab, setPlaygroundTab] = useState<'freeform' | 'simulation' | 'speech'>(
@@ -987,14 +1002,14 @@ export function DesktopPage() {
                 title="Run Inspector"
                 description="Inspect each production Simulation inference attempt, including retries, raw model responses and scheduled chat."
               />
-              <InferenceRunInspector />
+              <InferenceRunInspector focus={inspectorFocus} onViewLogs={openAttemptLogs} />
             </section>
           )}
 
           {section === 'logs' && (
             <section aria-label="Logs">
               <SectionHeading title="Logs" description="Runtime status and diagnostics." />
-              <OperationalLogs focus={logFocus} />
+              <OperationalLogs focus={logFocus} onOpenAttempt={openAttempt} />
               <DiagnosticCaptureControls />
               <Panel>
                 <h3 className="font-medium">Session diagnostics</h3>

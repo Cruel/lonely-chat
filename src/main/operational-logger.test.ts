@@ -57,6 +57,28 @@ describe('operational logger', () => {
     await logger.close();
   });
 
+  it('persists safe attempt correlation without writing rejected model content', async () => {
+    const { root, logger } = await setup();
+    const secret = 'FRAME_OR_TRANSCRIPT_CONTENT_5467';
+    logger.error('session', 'Inference attempt failed', new Error(secret), {
+      runId: 2,
+      cycle: 3,
+      attempt: 2,
+      attemptId: 'attempt-16',
+      transcript: secret,
+    });
+    await logger.open();
+    await logger.flush();
+    const entry = logger.snapshot().entries[0];
+    expect(entry.context).toEqual({ runId: 2, cycle: 3, attempt: 2, attemptId: 'attempt-16' });
+    expect(JSON.stringify(entry)).not.toContain(secret);
+    const dir = path.join(root, 'operational-logs');
+    for (const file of (await readdir(dir)).filter((name) => name.endsWith('.jsonl'))) {
+      expect(await readFile(path.join(dir, file), 'utf8')).not.toContain(secret);
+    }
+    await logger.close();
+  });
+
   it('sanitizes IPC operation failures even when errors echo private renderer content', async () => {
     const { root, logger } = await setup();
     const secret = 'PRIVATE_PROMPT_124523';

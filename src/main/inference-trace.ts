@@ -1,3 +1,4 @@
+import { matchesTraceFilter, traceFacets, validateTraceFilter } from './trace-evidence';
 import type {
   TraceAttempt,
   TraceList,
@@ -84,25 +85,61 @@ export class InferenceTrace {
 
   list(): TraceList {
     return {
-      attempts: this.attempts.map(
-        ({
-          input: _input,
-          settings: _settings,
-          promptPreset: _preset,
-          adaptation: _adaptation,
-          request: _request,
-          rawResponse: _raw,
-          normalized: _normalized,
-          parsed: _parsed,
-          accepted: _accepted,
-          scheduled: _scheduled,
-          transportError: _transport,
-          ...summary
-        }) => ({ ...summary }) satisfies TraceSummary,
-      ),
+      attempts: this.attempts.map((item): TraceSummary => ({
+        id: item.id,
+        runId: item.runId,
+        cycle: item.cycle,
+        attempt: item.attempt,
+        seed: item.seed,
+        rosterSeed: item.rosterSeed,
+        mode: item.mode,
+        modelId: item.modelId,
+        startedAt: item.startedAt,
+        durationMs: item.durationMs,
+        stage: item.stage,
+        errorStage: item.errorStage,
+        error: item.error,
+        usage: item.usage,
+        ...traceFacets(item),
+      })),
       dropped: this.dropped,
       bytes: this.bytes(),
     };
+  }
+
+  search(filter: unknown): string[] {
+    const valid = validateTraceFilter(filter);
+    return this.attempts.filter((item) => matchesTraceFilter(item, valid)).map((item) => item.id);
+  }
+
+  /** Correlate a presentation to the exact attempt that queued it. */
+  present(
+    id: string,
+    message: { id: string; author: string; text: string; presentedAt: number },
+    scheduledIndex: number,
+  ): void {
+    const attempt = this.attempts.find((item) => item.id === id);
+    if (!attempt || attempt.presentationClosed || attempt.stage !== 'scheduled') return;
+    if (
+      !Number.isInteger(scheduledIndex) ||
+      scheduledIndex < 0 ||
+      attempt.presented?.some((entry) => entry.scheduledIndex === scheduledIndex)
+    )
+      return;
+    attempt.presented = [...(attempt.presented ?? []), { ...message, scheduledIndex }];
+    this.prune();
+    this.notify();
+  }
+
+  closePresentation(runId: number): void {
+    let changed = false;
+    for (const item of this.attempts) {
+      if (item.runId === runId && item.stage === 'scheduled' && !item.presentationClosed) {
+        item.presentationClosed = true;
+        changed = true;
+      }
+    }
+    if (changed) this.notify();
   }
 
   get(id: string): TraceAttempt | null {
@@ -126,6 +163,8 @@ export class InferenceTrace {
       | 'accepted'
       | 'scheduled'
       | 'transportError'
+      | 'presented'
+      | 'presentationClosed'
     >,
   ): string {
     const id = `attempt-${++this.serial}`;
@@ -148,6 +187,8 @@ export class InferenceTrace {
       accepted: null,
       scheduled: null,
       transportError: null,
+      presented: [],
+      presentationClosed: false,
     });
     this.prune();
     this.notify();

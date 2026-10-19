@@ -2,70 +2,139 @@ import { useEffect, useMemo, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { JsonInspector } from './json-inspector';
-import type { TraceAttempt, TraceList } from '../../shared/inference-trace-contract';
+import { attemptTimeline } from '../run-timeline';
+import type { TraceAttempt, TraceFilter, TraceList } from '../../shared/inference-trace-contract';
 
 const EMPTY: TraceList = { attempts: [], dropped: 0, bytes: 0 };
-
+const DEFAULT_FILTER: TraceFilter = {
+  text: '',
+  failuresOnly: false,
+  source: '',
+  chatter: '',
+  eventKind: '',
+};
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+function options(list: TraceList, key: 'sources' | 'chatters' | 'eventKinds'): string[] {
+  return [...new Set(list.attempts.flatMap((item) => item[key] ?? []))].sort();
+}
 function frameList(input: unknown, request: unknown) {
-  if (!input || typeof input !== 'object' || !('frames' in input)) return [];
-  const frames = input.frames;
+  const frames = record(input)?.frames;
   if (!Array.isArray(frames)) return [];
-  const messages =
-    request && typeof request === 'object' && 'messages' in request ? request.messages : null;
+  const messages = record(request)?.messages;
   const second = Array.isArray(messages) ? messages[1] : null;
-  const parts = second && typeof second === 'object' && 'content' in second ? second.content : null;
+  const parts = record(second)?.content;
   const imageUrls = Array.isArray(parts)
     ? parts.flatMap((part) => {
-        const url =
-          part &&
-          typeof part === 'object' &&
-          part.type === 'image_url' &&
-          part.image_url &&
-          typeof part.image_url === 'object'
-            ? part.image_url.url
-            : null;
+        const value = record(part);
+        const url = value?.type === 'image_url' ? record(value.image_url)?.url : null;
         return typeof url === 'string' ? [url] : [];
       })
     : [];
-  return frames.flatMap((frame, index) => {
-    if (
-      !frame ||
-      typeof frame !== 'object' ||
-      typeof frame.sourceId !== 'string' ||
-      typeof frame.observedAt !== 'number'
-    )
+  return frames.flatMap((candidate, index) => {
+    const frame = record(candidate);
+    if (!frame || typeof frame.sourceId !== 'string' || typeof frame.observedAt !== 'number')
       return [];
-    const dataUrl = typeof frame.dataUrl === 'string' ? frame.dataUrl : imageUrls[index];
-    if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/jpeg;base64,')) return [];
+    // A positional request fallback is safe only when the submitted image count exactly
+    // matches selected frame count. Otherwise a different upload could be mislabeled.
+    const fallback = imageUrls.length === frames.length ? imageUrls[index] : null;
+    const dataUrl = typeof frame.dataUrl === 'string' ? frame.dataUrl : fallback;
     return [
       {
         sourceId: frame.sourceId,
         observedAt: frame.observedAt,
-        mediaTimeMs: typeof frame.mediaTimeMs === 'number' ? frame.mediaTimeMs : undefined,
-        dataUrl,
+        mediaTimeMs: typeof frame.mediaTimeMs === 'number' ? frame.mediaTimeMs : null,
+        dataUrl:
+          typeof dataUrl === 'string' && /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(dataUrl)
+            ? dataUrl
+            : null,
       },
     ];
   });
 }
+function evidenceWithoutImages(input: unknown): unknown {
+  const data = record(input);
+  if (!data) return input;
+  return {
+    ...data,
+    frames: Array.isArray(data.frames)
+      ? data.frames.map((candidate) => {
+          const frame = record(candidate);
+          if (!frame) return candidate;
+          const { dataUrl, ...metadata } = frame;
+          return {
+            ...metadata,
+            ...(typeof dataUrl === 'string'
+              ? { imageBytes: Math.round(dataUrl.length * 0.75) }
+              : {}),
+          };
+        })
+      : data.frames,
+  };
+}
+function clockTime(timestamp: number | null): string {
+  return timestamp === null ? 'Unknown time' : new Date(timestamp).toISOString();
+}
+function FilterSelect({
+  title,
+  value,
+  values,
+  change,
+}: {
+  title: string;
+  value: string;
+  values: readonly string[];
+  change(value: string): void;
+}) {
+  return (
+    <label className="flex items-center gap-2 text-xs text-zinc-300">
+      {title}
+      <select
+        aria-label={title}
+        className="h-8 max-w-44 rounded-md border border-border bg-background px-2"
+        value={value}
+        onChange={(event) => change(event.target.value)}
+      >
+        <option value="">All</option>
+        {values.map((item) => (
+          <option key={item} value={item}>
+            {item}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
 
-/** Fetches sensitive content only when the private desktop inspector is mounted and an entry is selected. */
-export function InferenceRunInspector() {
+/** Main process holds sensitive evidence; metadata and matching IDs drive navigation. */
+export function InferenceRunInspector({
+  focus,
+  onViewLogs,
+}: {
+  focus?: { attemptId: string; nonce: number } | null;
+  onViewLogs?: (attemptId: string) => void;
+}) {
   const [listing, setListing] = useState<TraceList>(EMPTY);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(focus?.attemptId ?? null);
   const [detail, setDetail] = useState<TraceAttempt | null>(null);
-  const [revision, setRevision] = useState(0);
-  const [filter, setFilter] = useState('');
-  const [failuresOnly, setFailuresOnly] = useState(false);
+  const [filter, setFilter] = useState<TraceFilter>(DEFAULT_FILTER);
+  const [matches, setMatches] = useState<readonly string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (focus?.attemptId) setSelected(focus.attemptId);
+  }, [focus]);
+
+  useEffect(() => {
     let live = true;
-    const unsubscribe = window.lonelyChat?.onInferenceTraces((value) => {
-      if (!live) return;
-      setListing(value);
-      setRevision((v) => v + 1);
+    const api = window.lonelyChat;
+    const unsubscribe = api?.onInferenceTraces((value) => {
+      if (live) setListing(value);
     });
-    void window.lonelyChat
+    void api
       ?.listInferenceTraces()
       .then((value) => {
         if (live) setListing(value);
@@ -81,11 +150,32 @@ export function InferenceRunInspector() {
 
   useEffect(() => {
     let live = true;
+    const api = window.lonelyChat;
+    if (!api?.searchInferenceTraces) {
+      setMatches(null);
+      return;
+    }
+    void api
+      .searchInferenceTraces(filter)
+      .then((ids) => {
+        if (live) setMatches(ids);
+      })
+      .catch((reason: unknown) => {
+        if (live) setError(String(reason));
+      });
+    return () => {
+      live = false;
+    };
+  }, [filter, listing]);
+
+  useEffect(() => {
+    let live = true;
+    const api = window.lonelyChat;
     if (!selected || !listing.attempts.some((item) => item.id === selected)) {
       setDetail(null);
       return;
     }
-    void window.lonelyChat
+    void api
       ?.getInferenceTrace(selected)
       .then((value) => {
         if (live) setDetail(value);
@@ -96,60 +186,44 @@ export function InferenceRunInspector() {
     return () => {
       live = false;
     };
-  }, [selected, revision, listing.attempts]);
+  }, [selected, listing]);
 
   const rows = useMemo(
     () =>
-      listing.attempts
-        .filter((item) => {
-          if (failuresOnly && item.stage !== 'failed') return false;
-          const query = filter.toLowerCase().trim();
-          return (
-            !query ||
-            [
+      listing.attempts.filter((item) => {
+        if (filter.failuresOnly && item.stage !== 'failed') return false;
+        if (filter.source && !item.sources?.includes(filter.source)) return false;
+        if (filter.chatter && !item.chatters?.includes(filter.chatter)) return false;
+        if (filter.eventKind && !item.eventKinds?.includes(filter.eventKind)) return false;
+        if (matches && !matches.includes(item.id)) return false;
+        if (!matches && filter.text) {
+          const query = filter.text.trim().toLowerCase();
+          if (
+            ![
               item.id,
               item.modelId,
               item.error,
-              item.errorStage,
               String(item.seed),
               String(item.cycle),
               String(item.attempt),
             ].some((value) => value?.toLowerCase().includes(query))
-          );
-        })
-        .slice()
-        .reverse(),
-    [listing, filter, failuresOnly],
+          )
+            return false;
+        }
+        return true;
+      }),
+    [listing, filter, matches],
   );
-  const frames = detail ? frameList(detail.input, detail.request) : [];
-  const input =
-    detail?.input && typeof detail.input === 'object' && !Array.isArray(detail.input)
-      ? (detail.input as Record<string, unknown>)
-      : null;
-  const inputWithoutImages = input
-    ? {
-        ...input,
-        frames: Array.isArray(input.frames)
-          ? input.frames.map((frame: unknown) => {
-              if (!frame || typeof frame !== 'object' || Array.isArray(frame)) return frame;
-              const { dataUrl, ...metadata } = frame as Record<string, unknown>;
-              return {
-                ...metadata,
-                ...(typeof dataUrl === 'string'
-                  ? { imageBytes: Math.round(dataUrl.length * 0.75) }
-                  : {}),
-              };
-            })
-          : input.frames,
-      }
-    : detail?.input;
+  const current = detail?.id === selected ? detail : null;
+  const frames = current ? frameList(current.input, current.request) : [];
+  const timeline = current ? attemptTimeline(current) : [];
 
   return (
     <div className="space-y-4">
       <p className="text-xs text-zinc-400">
         Recent attempts are captured in bounded volatile memory, including sensitive prompts, images
-        and transcripts. Nothing here is recorded to disk or published to the overlay. Oversized
-        fields are explicitly omitted when they exceed the memory budget.
+        and transcripts. Evidence is desktop-only: it is neither persisted by this inspector nor
+        published to the overlay. Oversized fields may be omitted.
       </p>
       {error && (
         <p role="alert" className="text-sm text-rose-300">
@@ -164,20 +238,42 @@ export function InferenceRunInspector() {
         <label className="flex items-center gap-2">
           <input
             type="checkbox"
-            checked={failuresOnly}
-            onChange={(event) => setFailuresOnly(event.target.checked)}
+            checked={filter.failuresOnly}
+            onChange={(event) =>
+              setFilter((old) => ({ ...old, failuresOnly: event.target.checked }))
+            }
           />
           Failures only
         </label>
         <Input
-          className="max-w-56"
+          className="max-w-60"
           aria-label="Search inference attempts"
-          placeholder="Find cycle, seed, error…"
-          value={filter}
-          onChange={(event) => setFilter(event.target.value)}
+          placeholder="Search transcript, event, chat…"
+          value={filter.text}
+          onChange={(event) =>
+            setFilter((old) => ({ ...old, text: event.target.value.slice(0, 200) }))
+          }
+        />
+        <FilterSelect
+          title="Speaker or source"
+          value={filter.source}
+          values={options(listing, 'sources')}
+          change={(source) => setFilter((old) => ({ ...old, source }))}
+        />
+        <FilterSelect
+          title="Chatter"
+          value={filter.chatter}
+          values={options(listing, 'chatters')}
+          change={(chatter) => setFilter((old) => ({ ...old, chatter }))}
+        />
+        <FilterSelect
+          title="Event type"
+          value={filter.eventKind}
+          values={options(listing, 'eventKinds')}
+          change={(eventKind) => setFilter((old) => ({ ...old, eventKind }))}
         />
       </div>
-      <div className="grid min-h-64 gap-4 lg:grid-cols-[minmax(220px,0.32fr)_minmax(0,1fr)]">
+      <div className="grid min-h-64 gap-4 lg:grid-cols-[minmax(240px,0.34fr)_minmax(0,1fr)]">
         <div
           className="max-h-[76vh] space-y-1 overflow-auto rounded-lg border border-border p-2"
           aria-label="Inference attempts"
@@ -202,6 +298,12 @@ export function InferenceRunInspector() {
                 <span className="block font-medium">
                   Run {item.runId} · cycle {item.cycle} · attempt {item.attempt}
                 </span>
+                <span className="block text-zinc-400">
+                  {clockTime(item.startedAt)} ·{' '}
+                  {item.boundary
+                    ? `observations ${item.boundary.fromMs}–${item.boundary.throughMs} ms`
+                    : 'boundary unavailable'}
+                </span>
                 <span className={item.stage === 'failed' ? 'text-rose-300' : 'text-zinc-400'}>
                   {item.stage}
                   {item.errorStage ? ` (${item.errorStage})` : ''} · seed {item.seed}
@@ -214,44 +316,102 @@ export function InferenceRunInspector() {
           ))}
         </div>
         <div className="min-w-0 space-y-4">
-          {!detail && (
+          {!current && (
             <div className="rounded-lg border border-border p-5 text-sm text-zinc-400">
-              Select an attempt to inspect its frozen inputs and execution stages.
+              {selected && !listing.attempts.some((item) => item.id === selected)
+                ? 'This attempt is no longer in the bounded trace.'
+                : 'Select an attempt to inspect its frozen inputs and execution stages.'}
             </div>
           )}
-          {detail && (
+          {current && (
             <>
               <div className="rounded-lg border border-border p-4 text-sm">
                 <h3 className="font-medium">
-                  Run {detail.runId} · cycle {detail.cycle} · attempt {detail.attempt}
+                  Run {current.runId} · cycle {current.cycle} · attempt {current.attempt}
                 </h3>
                 <p className="mt-2 text-xs text-zinc-400">
-                  {new Date(detail.startedAt).toLocaleString()} · {detail.mode} · model{' '}
-                  {detail.modelId ?? 'fixture'} · seed {detail.seed} · roster seed{' '}
-                  {detail.rosterSeed} ·
-                  {detail.durationMs === null
-                    ? ' in progress'
-                    : ` ${Math.round(detail.durationMs)} ms`}
+                  {clockTime(current.startedAt)} · {current.mode} · model{' '}
+                  {current.modelId ?? 'fixture'} · seed {current.seed} · roster seed{' '}
+                  {current.rosterSeed} ·{' '}
+                  {current.durationMs === null
+                    ? 'in progress'
+                    : `${Math.round(current.durationMs)} ms`}
                 </p>
                 <p className="mt-2">
-                  Stage: <strong>{detail.stage}</strong>
-                  {detail.errorStage ? ` · Failed at ${detail.errorStage}` : ''}
+                  Stage: <strong>{current.stage}</strong>
+                  {current.errorStage ? ` · Failed at ${current.errorStage}` : ''}
                 </p>
-                {detail.error && (
+                {current.error && (
                   <p role="alert" className="mt-2 break-words text-rose-300">
-                    {detail.error}
+                    {current.error}
                   </p>
                 )}
-                {detail.usage && (
+                {current.usage && (
                   <p className="mt-2 text-xs text-zinc-400">
-                    Tokens: prompt {detail.usage.promptTokens ?? '—'}, completion{' '}
-                    {detail.usage.completionTokens ?? '—'}, total {detail.usage.totalTokens ?? '—'}
+                    Tokens: prompt {current.usage.promptTokens ?? '—'}, completion{' '}
+                    {current.usage.completionTokens ?? '—'}, total{' '}
+                    {current.usage.totalTokens ?? '—'}
                   </p>
+                )}
+                {onViewLogs && (
+                  <Button
+                    size="sm"
+                    variant="link"
+                    className="mt-2"
+                    onClick={() => onViewLogs(current.id)}
+                  >
+                    Find related errors in Logs
+                  </Button>
                 )}
               </div>
+              <section
+                className="rounded-lg border border-border p-3"
+                aria-label="Observation and presentation timeline"
+              >
+                <h4 className="mb-2 text-sm font-medium">Observation → inference → presentation</h4>
+                <p className="mb-3 text-xs text-zinc-400">
+                  Source timestamps, accepted output and actual publication share a chronological
+                  axis. A pending message has not been displayed; its time is only a planned
+                  deadline.
+                </p>
+                {timeline.length === 0 && (
+                  <p className="text-xs text-zinc-400">
+                    Timeline evidence unavailable for this attempt.
+                  </p>
+                )}
+                <ol className="max-h-[32rem] space-y-1 overflow-y-auto">
+                  {timeline.map((item) => (
+                    <li
+                      key={item.key}
+                      className="grid gap-1 border-l-2 border-zinc-600 py-2 pl-3 text-xs sm:grid-cols-[minmax(175px,0.3fr)_minmax(0,1fr)]"
+                    >
+                      <time
+                        className="font-mono text-zinc-400"
+                        title={item.timestamp === null ? '' : String(item.timestamp)}
+                      >
+                        {clockTime(item.timestamp)}
+                      </time>
+                      <div className="min-w-0">
+                        <p
+                          className={
+                            item.state === 'pending'
+                              ? 'text-amber-200'
+                              : item.state === 'not-shown'
+                                ? 'text-zinc-500'
+                                : 'text-zinc-200'
+                          }
+                        >
+                          {item.title}
+                        </p>
+                        <p className="break-words text-zinc-400">{item.description}</p>
+                      </div>
+                    </li>
+                  ))}
+                </ol>
+              </section>
               <JsonInspector
                 title="Observation boundary and selected input IDs / records"
-                value={inputWithoutImages}
+                value={evidenceWithoutImages(current.input)}
               />
               {frames.length > 0 && (
                 <section
@@ -264,16 +424,20 @@ export function InferenceRunInspector() {
                   <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
                     {frames.map((frame, index) => (
                       <div key={index} className="min-w-0 text-xs text-zinc-400">
-                        <img
-                          src={frame.dataUrl}
-                          alt={`Selected frame ${index + 1}`}
-                          className="w-full rounded object-contain"
-                        />
+                        {frame.dataUrl ? (
+                          <img
+                            src={frame.dataUrl}
+                            alt={`Selected frame ${index + 1}`}
+                            className="w-full rounded object-contain"
+                          />
+                        ) : (
+                          <p className="rounded border border-border p-3">
+                            Preview unavailable (image omitted)
+                          </p>
+                        )}
                         <p className="mt-1 break-all">
                           {frame.sourceId} · {frame.observedAt} ms
-                          {frame.mediaTimeMs === undefined
-                            ? ''
-                            : ` · media ${frame.mediaTimeMs} ms`}
+                          {frame.mediaTimeMs === null ? '' : ` · media ${frame.mediaTimeMs} ms`}
                         </p>
                       </div>
                     ))}
@@ -283,39 +447,40 @@ export function InferenceRunInspector() {
               <JsonInspector
                 title="Frozen run settings and prompt revision"
                 value={{
-                  settings: detail.settings,
-                  preset: detail.promptPreset,
-                  adaptation: detail.adaptation,
+                  settings: current.settings,
+                  preset: current.promptPreset,
+                  adaptation: current.adaptation,
                 }}
               />
               <JsonInspector
                 title={
-                  detail.mode === 'native'
+                  current.mode === 'native'
                     ? 'Exact submitted native request'
                     : 'Native request (not applicable to fixture)'
                 }
-                value={detail.request}
+                value={current.request}
               />
               <JsonInspector
                 title="Raw native transport response / fixture result"
-                value={detail.rawResponse}
+                value={current.rawResponse}
               />
-              {detail.transportError !== null && (
+              {current.transportError !== null && (
                 <JsonInspector
                   title="Private transport failure details"
-                  value={detail.transportError}
+                  value={current.transportError}
                 />
               )}
               <JsonInspector
                 title="Normalized output (before validation)"
-                value={detail.normalized}
+                value={current.normalized}
               />
-              <JsonInspector title="Parsed events and messages" value={detail.parsed} />
+              <JsonInspector title="Parsed events and messages" value={current.parsed} />
               <JsonInspector
                 title="Validated events and roster-resolved chat"
-                value={detail.accepted}
+                value={current.accepted}
               />
-              <JsonInspector title="Final scheduled chat batch" value={detail.scheduled} />
+              <JsonInspector title="Final scheduled chat batch" value={current.scheduled} />
+              <JsonInspector title="Actual published chat" value={current.presented ?? []} />
             </>
           )}
         </div>

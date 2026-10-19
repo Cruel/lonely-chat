@@ -201,6 +201,125 @@ describe('private production inference tracing', () => {
     }
   });
 
+  it('attributes displayed chat to its producing attempt and leaves stopped messages unshown', async () => {
+    const clock = new FakeClock();
+    const chat = new ChatService();
+    const trace = new InferenceTrace();
+    const session = new SessionController(
+      chat,
+      undefined,
+      clock,
+      {
+        cycleIntervalMs: 5000,
+        baselineMs: 0,
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      trace,
+    );
+    session.start('stream', 'fake', null, { inputMode: 'recorded', publishToOverlay: false });
+    await flush();
+    const id = trace.list().attempts[0].id;
+    const initial = trace.get(id)!;
+    expect(initial.stage).toBe('scheduled');
+    const batch = (initial.scheduled as { messages: Array<{ offsetMs: number }> }).messages;
+    expect(batch.length).toBeGreaterThan(1);
+    expect(initial.presented?.map((item) => item.scheduledIndex)).toEqual([0]);
+    expect(chat.publicSnapshot().messages).toHaveLength(0);
+    clock.advance(900);
+    expect(trace.get(id)?.presented?.map((item) => item.scheduledIndex)).toEqual([0, 1]);
+    session.stop();
+    const finished = trace.get(id)!;
+    expect(finished.presentationClosed).toBe(true);
+    clock.advance(10_000);
+    expect(trace.get(id)?.presented).toHaveLength(2);
+    expect((finished.scheduled as { messages: unknown[] }).messages).toHaveLength(batch.length);
+  });
+
+  it('filters source, chatter, event type and evidence text in main without exposing payloads in summaries', () => {
+    const trace = new InferenceTrace();
+    const first = trace.begin({
+      runId: 4,
+      cycle: 1,
+      attempt: 1,
+      seed: 3,
+      rosterSeed: 2,
+      mode: 'native',
+      modelId: 'local',
+      startedAt: 1700000000000,
+      input: {
+        boundary: { fromMs: 100, throughMs: 200 },
+        recentTranscripts: [
+          { source: 'Discord', sourceId: 'audio-1', text: 'secret wizard phrase' },
+        ],
+        frames: [
+          { sourceId: 'camera', observedAt: 175, dataUrl: 'data:image/jpeg;base64,/9j/2Q==' },
+        ],
+        recentEvents: [{ kind: 'context', summary: 'old event' }],
+      },
+      settings: {},
+      promptPreset: null,
+      adaptation: {},
+    });
+    trace.update(first, { stage: 'failed', error: 'validation failed' });
+    const second = trace.begin({
+      runId: 4,
+      cycle: 1,
+      attempt: 2,
+      seed: 4,
+      rosterSeed: 2,
+      mode: 'native',
+      modelId: 'local',
+      startedAt: 1700000000500,
+      input: { recentTranscripts: [{ source: 'Mic', text: 'another word' }] },
+      settings: {},
+      promptPreset: null,
+      adaptation: {},
+    });
+    trace.update(second, {
+      stage: 'scheduled',
+      scheduled: {
+        messages: [{ author: 'pixelpilot', text: 'nice dodge', offsetMs: 100 }],
+        events: [{ kind: 'reaction', summary: 'dodge', observedAt: 200 }],
+      },
+    });
+    const summary = JSON.stringify(trace.list());
+    expect(summary).not.toContain('secret wizard phrase');
+    expect(summary).not.toContain('data:image');
+    expect(summary).not.toContain('nice dodge');
+    expect(trace.list().attempts[0]).toMatchObject({
+      boundary: { fromMs: 100, throughMs: 200 },
+      sources: ['Discord', 'audio-1', 'camera'],
+    });
+    const filter = (patch: Partial<import('../shared/inference-trace-contract').TraceFilter>) =>
+      trace.search({
+        text: '',
+        failuresOnly: false,
+        source: '',
+        chatter: '',
+        eventKind: '',
+        ...patch,
+      });
+    expect(filter({ text: 'secret wizard phrase' })).toEqual([first]);
+    expect(filter({ source: 'Discord' })).toEqual([first]);
+    expect(filter({ source: 'Mic', chatter: 'pixelpilot', eventKind: 'reaction' })).toEqual([
+      second,
+    ]);
+    expect(filter({ failuresOnly: true })).toEqual([first]);
+    expect(filter({ text: 'data:image' })).toEqual([]);
+    expect(() =>
+      trace.search({
+        text: 'a'.repeat(201),
+        failuresOnly: false,
+        source: '',
+        chatter: '',
+        eventKind: '',
+      }),
+    ).toThrow();
+  });
+
   it('bounds volatile entries and bytes, copies caller data, and cancels only unfinished attempts', () => {
     const trace = new InferenceTrace(1400, 2, 240);
     const mutable = { value: 'first' };

@@ -93,6 +93,7 @@ const api: DesktopAPI = {
   },
   listInferenceTraces: () => invoke('trace:list'),
   getInferenceTrace: (id) => invoke('trace:get', id),
+  searchInferenceTraces: (filter) => invoke('trace:search', filter),
   onInferenceTraces: (listener) => {
     const receive = (
       _event: Electron.IpcRendererEvent,

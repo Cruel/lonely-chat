@@ -59,6 +59,34 @@ it('shows persisted one-line events, subscribes to live logs, expands errors and
   await waitFor(() => expect(configure).toHaveBeenCalledWith({ ageDays: 7, maxMiB: 5 }));
 });
 
+it('filters correlated attempt errors and navigates directly to the Run Inspector', async () => {
+  const related: LogEntry = {
+    id: 'related',
+    timestamp: '2026-10-18T00:00:01Z',
+    level: 'error',
+    source: 'session',
+    text: 'Inference attempt failed',
+    context: { attemptId: 'attempt-3', cycle: 2, attempt: 1, runId: 4 },
+  };
+  const open = vi.fn();
+  window.lonelyChat = {
+    onOperationalLog: () => () => {},
+    getOperationalLogs: async () => ({
+      entries: [{ ...related, id: 'unrelated', context: { attemptId: 'attempt-9' } }, related],
+      retention: { ageDays: 14, maxMiB: 5 },
+    }),
+  } as unknown as DesktopAPI;
+  render(<OperationalLogs focus={{ attemptId: 'attempt-3', nonce: 1 }} onOpenAttempt={open} />);
+  expect((await screen.findAllByText('Inference attempt failed')).length).toBe(2);
+  expect(screen.getByLabelText('Event history').querySelectorAll('li')).toHaveLength(1);
+  const row = screen.getAllByText('Inference attempt failed')[0];
+  fireEvent.click(row);
+  fireEvent.click(screen.getByRole('button', { name: 'Inspect attempt-3 in Run Inspector' }));
+  expect(open).toHaveBeenCalledWith('attempt-3');
+  fireEvent.click(screen.getByRole('button', { name: 'Show all logs' }));
+  expect(screen.getByLabelText('Event history').querySelectorAll('li')).toHaveLength(2);
+});
+
 it('filters by source, stops auto-follow without stopping live updates, copies and exports main-owned IDs', async () => {
   const copy = vi.fn(async (_text: string) => {});
   Object.defineProperty(navigator, 'clipboard', { value: { writeText: copy }, configurable: true });

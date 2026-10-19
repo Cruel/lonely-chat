@@ -22,7 +22,17 @@ const BORDER: Record<LogLevel, string> = {
   error: 'border-rose-500',
 };
 
-function Entry({ entry }: { entry: LogEntry }) {
+function Entry({
+  entry,
+  onOpenAttempt,
+}: {
+  entry: LogEntry;
+  onOpenAttempt?: (id: string) => void;
+}) {
+  const attemptId =
+    typeof entry.context?.attemptId === 'string' && /^attempt-\d+$/.test(entry.context.attemptId)
+      ? entry.context.attemptId
+      : null;
   return (
     <li className={`min-w-0 border-l-[3px] bg-[#15151c] ${BORDER[entry.level]}`}>
       <details className="group">
@@ -56,6 +66,11 @@ function Entry({ entry }: { entry: LogEntry }) {
               )}
             </>
           )}
+          {attemptId && onOpenAttempt && (
+            <Button size="sm" variant="link" onClick={() => onOpenAttempt(attemptId)}>
+              Inspect {attemptId} in Run Inspector
+            </Button>
+          )}
           {entry.context && (
             <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words text-zinc-400">
               {JSON.stringify(entry.context, null, 2)}
@@ -81,12 +96,19 @@ function searchText(entry: LogEntry): string {
 }
 
 /** Dense persisted, desktop-only operational viewer. Filtering never deletes stored entries. */
-export function OperationalLogs({ focus }: { focus?: { source: string; nonce: number } | null }) {
+export function OperationalLogs({
+  focus,
+  onOpenAttempt,
+}: {
+  focus?: { source?: string; attemptId?: string; nonce: number } | null;
+  onOpenAttempt?: (id: string) => void;
+}) {
   const [entries, setEntries] = useState<LogEntry[]>([]);
   const [retention, setRetention] = useState<LogRetention>(DEFAULT_LOG_RETENTION);
   const [draft, setDraft] = useState<LogRetention>(DEFAULT_LOG_RETENTION);
   const [severity, setSeverity] = useState<LogLevel | 'all'>('all');
   const [source, setSource] = useState('all');
+  const [attemptFilter, setAttemptFilter] = useState<string | null>(focus?.attemptId ?? null);
   const [search, setSearch] = useState('');
   const [following, setFollowing] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -96,6 +118,7 @@ export function OperationalLogs({ focus }: { focus?: { source: string; nonce: nu
 
   useEffect(() => {
     setSource(focus?.source ?? 'all');
+    setAttemptFilter(focus?.attemptId ?? null);
   }, [focus]);
 
   useEffect(() => {
@@ -141,9 +164,10 @@ export function OperationalLogs({ focus }: { focus?: { source: string; nonce: nu
         (entry) =>
           (severity === 'all' || entry.level === severity) &&
           (source === 'all' || entry.source === source) &&
+          (!attemptFilter || entry.context?.attemptId === attemptFilter) &&
           (!search || searchText(entry).includes(search.toLowerCase())),
       ),
-    [entries, severity, source, search],
+    [entries, severity, source, search, attemptFilter],
   );
 
   useEffect(() => {
@@ -203,6 +227,14 @@ export function OperationalLogs({ focus }: { focus?: { source: string; nonce: nu
           Automatically saved locally · No media or prompts
         </span>
       </div>
+      {attemptFilter && (
+        <div className="mb-3 flex items-center gap-3 text-xs">
+          <span>Showing correlated errors for {attemptFilter}</span>
+          <Button size="sm" variant="link" onClick={() => setAttemptFilter(null)}>
+            Show all logs
+          </Button>
+        </div>
+      )}
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <label htmlFor="log-search" className="sr-only">
           Search logs
@@ -299,7 +331,7 @@ export function OperationalLogs({ focus }: { focus?: { source: string; nonce: nu
         className="max-h-96 space-y-px overflow-y-auto rounded-md border border-border"
       >
         {filtered.map((entry) => (
-          <Entry key={entry.id} entry={entry} />
+          <Entry key={entry.id} entry={entry} onOpenAttempt={onOpenAttempt} />
         ))}
         {filtered.length === 0 && (
           <li className="p-3 text-sm text-zinc-400">No matching application events.</li>

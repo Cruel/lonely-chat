@@ -32,6 +32,11 @@ export interface TraceSummary {
   readonly errorStage: TraceStage | null;
   readonly error: string | null;
   readonly usage: TraceUsage | null;
+  /** Bounded, content-free facets; full evidence remains behind trace:get. */
+  readonly sources?: readonly string[];
+  readonly chatters?: readonly string[];
+  readonly eventKinds?: readonly string[];
+  readonly boundary?: { readonly fromMs: number; readonly throughMs: number } | null;
 }
 
 /** Content-bearing data must never be sent to the public overlay or operational logger. */
@@ -47,6 +52,24 @@ export interface TraceAttempt extends TraceSummary {
   readonly accepted: unknown | null;
   readonly scheduled: unknown | null;
   readonly transportError: unknown | null;
+  /** Exact chat publications from this attempt, not inferred from scheduled offsets. */
+  readonly presented?: readonly {
+    readonly id: string;
+    readonly author: string;
+    readonly text: string;
+    readonly presentedAt: number;
+    readonly scheduledIndex: number;
+  }[];
+  /** True once unsent scheduled messages can no longer be published. */
+  readonly presentationClosed?: boolean;
+}
+
+export interface TraceFilter {
+  readonly text: string;
+  readonly failuresOnly: boolean;
+  readonly source: string;
+  readonly chatter: string;
+  readonly eventKind: string;
 }
 
 export interface TraceList {

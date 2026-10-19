@@ -97,6 +97,7 @@ export class SessionController {
       clock,
       () => this.updatePending(),
       () => this.recordedChatPublication,
+      (attemptId, message, index) => this.trace.present(attemptId, message, index),
     );
   }
 
@@ -229,6 +230,7 @@ export class SessionController {
     };
     this.history.configure(this.runPreferences, this.clock.wallNow());
     this.video.configure(this.runPreferences, this.clock.wallNow());
+    this.trace.closePresentation(this.runId);
     this.epoch++;
     this.runId++;
     this.history.reset(this.clock.wallNow());
@@ -281,6 +283,7 @@ export class SessionController {
     if (this.state.phase === 'stopped') return this.snapshot();
     this.epoch++;
     this.trace.cancelPending(this.runId);
+    this.trace.closePresentation(this.runId);
     this.switchAbort?.abort();
     this.switchAbort = null;
     this.abort?.abort();
@@ -610,17 +613,18 @@ export class SessionController {
                 offsetMs: Math.min(item.offsetMs, windowMs),
               }))
             : resolved;
-        this.scheduler.enqueue(messages, this.clock.now());
+        const enqueuedAt = this.clock.wallNow();
         this.trace.update(traceId, {
           stage: 'scheduled',
           scheduled: {
             events: result.events,
             messages,
             windowMs,
-            enqueuedAt: this.clock.wallNow(),
+            enqueuedAt,
           },
           durationMs: Math.max(0, this.clock.now() - traceStarted),
         });
+        this.scheduler.enqueue(messages, this.clock.now(), traceId);
         this.abort = null;
         if (this.state.mode === 'native' && provider.resourceMeasurements) {
           void provider
@@ -668,6 +672,8 @@ export class SessionController {
           cycle: input.cycle,
           attempt,
           seed,
+          runId: this.runId,
+          attemptId: traceId,
         });
         this.diagnostics?.record(
           effectiveInput,

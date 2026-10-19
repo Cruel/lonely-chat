@@ -353,6 +353,8 @@ function registerHandlers(): void {
       return windowStatus();
     },
     'trace:list': () => session.trace.list(),
+    'trace:search': (filter: import('../shared/inference-trace-contract').TraceFilter) =>
+      session.trace.search(filter),
     'trace:get': (id: string) => {
       if (typeof id !== 'string' || !/^attempt-\d{1,12}$/.test(id))
         throw new Error('Invalid inference attempt ID.');
@@ -1056,6 +1058,7 @@ app.on('will-quit', () => {
   ipcMain.removeHandler('window:set-close-to-tray');
   ipcMain.removeHandler('trace:list');
   ipcMain.removeHandler('trace:get');
+  ipcMain.removeHandler('trace:search');
   ipcMain.removeHandler('session:snapshot');
   ipcMain.removeHandler('session:start');
   ipcMain.removeHandler('session:stop');

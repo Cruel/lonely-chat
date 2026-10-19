@@ -40,7 +40,7 @@ import type {
 } from './audio-contract';
 import type { DiagnosticStatus, PrivateWorkerLine } from './diagnostic-contract';
 import type { LogEntry, LogRetention, LogSnapshot } from './log-contract';
-import type { TraceAttempt, TraceList } from './inference-trace-contract';
+import type { TraceAttempt, TraceFilter, TraceList } from './inference-trace-contract';
 import type { RendererFailure } from './renderer-log-contract';
 import type {
   FreeformRequest,
@@ -96,6 +96,7 @@ export interface DesktopInvocations {
   'window:set-close-to-tray': WindowStatus;
   'trace:list': TraceList;
   'trace:get': TraceAttempt | null;
+  'trace:search': readonly string[];
   'session:snapshot': SessionSnapshot;
   'session:start': SessionSnapshot;
   'session:stop': SessionSnapshot;
@@ -172,6 +173,7 @@ export interface DesktopArguments {
   'window:set-close-to-tray': [enabled: boolean];
   'trace:list': [];
   'trace:get': [id: string];
+  'trace:search': [filter: TraceFilter];
   'session:snapshot': [];
   'session:start': [manualContext: string, mode?: InferenceMode, options?: SimulationInputOptions];
   'session:stop': [];
@@ -261,6 +263,7 @@ export interface DesktopAPI {
   setCloseToTray(enabled: boolean): Promise<WindowStatus>;
   listInferenceTraces(): Promise<TraceList>;
   getInferenceTrace(id: string): Promise<TraceAttempt | null>;
+  searchInferenceTraces?(filter: TraceFilter): Promise<readonly string[]>;
   onInferenceTraces(listener: (snapshot: TraceList) => void): () => void;
   getSessionSnapshot(): Promise<SessionSnapshot>;
   onSessionChange(listener: (status: SessionSnapshot) => void): () => void;

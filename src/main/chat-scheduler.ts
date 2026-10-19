@@ -29,6 +29,8 @@ interface PendingMessage {
   due: number;
   order: number;
   message: Omit<ChatMessage, 'id' | 'presentedAt'>;
+  attemptId?: string;
+  scheduledIndex?: number;
 }
 
 /** One authoritative deadline queue across all overlapping inference batches. */
@@ -43,6 +45,11 @@ export class ChatScheduler {
     private readonly clock: TimerClock = systemClock,
     private readonly onChange: () => void = () => {},
     private readonly shouldPublishExternally: () => boolean = () => true,
+    private readonly onPresented: (
+      attemptId: string,
+      message: ChatMessage,
+      index: number,
+    ) => void = () => {},
   ) {}
 
   get pendingCount(): number {
@@ -54,13 +61,15 @@ export class ChatScheduler {
     this.active = true;
   }
 
-  enqueue(batch: readonly ScheduledChat[], baseTime = this.clock.now()): void {
+  enqueue(batch: readonly ScheduledChat[], baseTime = this.clock.now(), attemptId?: string): void {
     if (!this.active) return;
-    for (const message of batch) {
+    for (const [scheduledIndex, message] of batch.entries()) {
       this.queue.push({
         due: baseTime + message.offsetMs,
         order: this.nextOrder++,
         message: { author: message.author, text: message.text, color: message.color },
+        attemptId,
+        scheduledIndex,
       });
     }
     this.queue.sort((a, b) => a.due - b.due || a.order - b.order);
@@ -86,7 +95,13 @@ export class ChatScheduler {
     const now = this.clock.now();
     while (this.active && this.queue.length && this.queue[0].due <= now) {
       const next = this.queue.shift()!;
-      this.chat.publish(next.message, this.clock.wallNow(), this.shouldPublishExternally());
+      const published = this.chat.publish(
+        next.message,
+        this.clock.wallNow(),
+        this.shouldPublishExternally(),
+      );
+      if (next.attemptId && next.scheduledIndex !== undefined)
+        this.onPresented(next.attemptId, published, next.scheduledIndex);
     }
     this.onChange();
     if (this.queue.length) {
