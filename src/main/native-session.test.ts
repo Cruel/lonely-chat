@@ -118,6 +118,9 @@ describe('native session integration', () => {
     session.start('secret manual prompt', 'native');
     await flushMicrotasks();
     expect(session.snapshot().warning).toContain('HTTP 422');
+    const attempt = session.trace.list().attempts[0];
+    expect(session.trace.get(attempt.id)?.rawResponse).toEqual({ error: secret });
+    expect(session.trace.get(attempt.id)?.transportError).toMatchObject({ httpStatus: 422 });
     expect(JSON.parse(diagnostics.export()).samples[0].result).toEqual({
       error: expect.stringContaining('HTTP 422'),
       privateProviderResponse: { httpStatus: 422, responseBody: { error: secret } },

@@ -131,6 +131,75 @@ it('keeps monitoring muted unless explicitly enabled; solo suppresses other moni
   expect(pause).toHaveBeenCalled();
 });
 
+it('forces exact audio seeks smaller than drift tolerance', () => {
+  vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
+  render(
+    <RecordedMediaPreview
+      video={{ url: 'blob:short', name: 'short.mp4', durationMs: 1000 }}
+      tracks={[
+        {
+          id: 'voice',
+          url: 'blob:voice',
+          label: 'Voice',
+          enabled: true,
+          offsetMs: 0,
+          durationMs: 5000,
+          embeddedTrackIndex: null,
+        },
+      ]}
+      segment={{ startMs: 0, endMs: 5000 }}
+      durationMs={5000}
+      onClose={vi.fn()}
+    />,
+  );
+  const video = screen.getByLabelText('Preview video') as HTMLVideoElement;
+  const audio = screen.getByLabelText('Preview audio: Voice') as HTMLAudioElement;
+  fireEvent.change(screen.getByLabelText('Seek (ms)'), { target: { value: '100' } });
+  expect(video.currentTime).toBeCloseTo(0.1);
+  expect(audio.currentTime).toBeCloseTo(0.1);
+  fireEvent.change(screen.getByLabelText('Seek (ms)'), { target: { value: '175' } });
+  expect(audio.currentTime).toBeCloseTo(0.175);
+});
+
+it('plays audio beyond video EOF without restarting the expired video or reversing the timeline', async () => {
+  const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(async function (
+    this: HTMLMediaElement,
+  ) {
+    if (this.tagName === 'VIDEO' && this.currentTime >= 1) this.currentTime = 0;
+  });
+  vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
+  render(
+    <RecordedMediaPreview
+      video={{ url: 'blob:short', name: 'short.mp4', durationMs: 1000 }}
+      tracks={[
+        {
+          id: 'voice',
+          url: 'blob:voice',
+          label: 'Voice',
+          enabled: true,
+          offsetMs: 0,
+          durationMs: 5000,
+          embeddedTrackIndex: null,
+        },
+      ]}
+      segment={{ startMs: 0, endMs: 5000 }}
+      durationMs={5000}
+      onClose={vi.fn()}
+    />,
+  );
+  const video = screen.getByLabelText('Preview video') as HTMLVideoElement;
+  const audio = screen.getByLabelText('Preview audio: Voice') as HTMLAudioElement;
+  fireEvent.change(screen.getByLabelText('Seek (ms)'), { target: { value: '3000' } });
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Play preview' })));
+  expect(play.mock.instances).not.toContain(video);
+  expect(play.mock.instances).toContain(audio);
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 125));
+  });
+  expect(audio.currentTime).toBeGreaterThanOrEqual(3);
+  expect(screen.getByRole('status').textContent).toMatch(/^3\./);
+});
+
 it('pauses independent decoders on close and never touches recorded session APIs', async () => {
   const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(async function (
     this: HTMLMediaElement,

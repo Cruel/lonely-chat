@@ -65,10 +65,10 @@ export function useSession() {
         latest.current = next;
         setStatus(next);
       }
-      return true;
+      return next;
     } catch (error) {
       setActionError(error instanceof Error ? error.message : 'Unable to update session.');
-      return false;
+      return null;
     } finally {
       setBusy(false);
     }

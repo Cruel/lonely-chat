@@ -115,16 +115,14 @@ export class SessionController {
 
   setPreferences(value: unknown): SessionPreferences {
     const next = validatePreferences(value);
-    if (
-      next.audienceCount !== this.preferences.audienceCount &&
-      (this.state.phase === 'starting' ||
-        this.state.phase === 'running' ||
-        this.state.phase === 'switching')
-    ) {
+    const runRetained =
+      ['starting', 'running', 'switching'].includes(this.state.phase) ||
+      (this.state.phase === 'error' && !isRecordedVideoFailure(this.state));
+    if (next.audienceCount !== this.preferences.audienceCount && runRetained) {
       throw new Error('Stop the simulation before resizing the audience.');
     }
     this.preferences = next;
-    if (!['starting', 'running', 'switching'].includes(this.state.phase)) {
+    if (!runRetained) {
       this.history.configure(this.preferences, this.clock.wallNow());
       this.video.configure(this.preferences, this.clock.wallNow());
     }
@@ -258,6 +256,7 @@ export class SessionController {
       latestInferenceMs: null,
       smoothedInferenceMs: null,
       playbackWindowMs: this.runPreferences.cycleIntervalMs,
+      effectiveVideoCaptureIntervalMs: this.runPreferences.videoCaptureIntervalMs,
       droppedObservations: 0,
       estimatedNextInferenceMs: null,
       adaptiveFrameLimit: null,
@@ -658,7 +657,11 @@ export class SessionController {
           error: message,
           durationMs: Math.max(0, this.clock.now() - traceStarted),
           ...(error instanceof PrivateInferenceError
-            ? { transportError: error.diagnosticDetails }
+            ? {
+                transportError: error.diagnosticDetails,
+                rawResponse:
+                  (error.diagnosticDetails as { responseBody?: unknown })?.responseBody ?? null,
+              }
             : {}),
         });
         this.reportError?.('session', 'Inference attempt failed', error, {

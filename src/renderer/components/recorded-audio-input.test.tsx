@@ -1,12 +1,16 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { createRef, useState } from 'react';
 import userEvent from '@testing-library/user-event';
 import type { DesktopAPI } from '../../shared/chat-contract';
 import { RecordedVideoInput, type RecordedVideoMedia } from './recorded-video-input';
 import type { RecordedAudioHandle } from './recorded-audio-input';
 import { RecordedAudioInput } from './recorded-audio-input';
+
+vi.mock('../media-fingerprint', () => ({
+  mediaFingerprint: vi.fn(async () => 'a'.repeat(64)),
+}));
 
 const create = vi.fn((file: File | Blob) => {
   if (file instanceof File) return `blob:${file.name}`;
@@ -25,6 +29,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   create.mockClear();
   revoke.mockClear();
+  vi.unstubAllGlobals();
   delete window.lonelyChat;
 });
 
@@ -210,6 +215,54 @@ it('validates the preview segment against the longest enabled source and closes 
   expect(screen.getByLabelText('Preview audio: mic')).toBeTruthy();
   page.rerender(<RecordedAudioInput ref={ref} running={true} {...props} />);
   expect(screen.queryByLabelText('Recorded media preview')).toBeNull();
+});
+
+it('rechecks cached transcript readiness whenever the selected speech model changes', async () => {
+  Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: create });
+  Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revoke });
+  vi.stubGlobal(
+    'AudioContext',
+    class {
+      sampleRate = 48000;
+      async close() {}
+    },
+  );
+  let modelChanged: (() => void) | undefined;
+  let available = true;
+  const check = vi.fn(async () => ({
+    available,
+    reason: available ? 'ready' : 'stale',
+    count: available ? 1 : 0,
+  }));
+  window.lonelyChat = {
+    checkRecordedAudioCache: check,
+    onModelsChange: (listener: () => void) => {
+      modelChanged = listener;
+      return () => {
+        modelChanged = undefined;
+      };
+    },
+  } as unknown as DesktopAPI;
+  const selection = vi.fn();
+  render(
+    <RecordedAudioInput running={false} transcriptMode="cached" onSelectionChange={selection} />,
+  );
+  fireEvent.change(screen.getByLabelText('Add audio files'), {
+    target: { files: [new File(['audio'], 'voice.wav', { type: 'audio/wav' })] },
+  });
+  const audio = document.querySelector('audio')!;
+  Object.defineProperty(audio, 'duration', { configurable: true, value: 4 });
+  fireEvent.loadedMetadata(audio);
+  await waitFor(() => expect(selection).toHaveBeenLastCalledWith({ ready: true, count: 1 }));
+  expect(check).toHaveBeenCalledTimes(1);
+  available = false;
+  act(() => modelChanged?.());
+  await waitFor(() => expect(selection).toHaveBeenLastCalledWith({ ready: false, count: 1 }));
+  expect(screen.getByText(/Saved transcripts for voice are stale/)).toBeTruthy();
+  available = true;
+  act(() => modelChanged?.());
+  await waitFor(() => expect(selection).toHaveBeenLastCalledWith({ ready: true, count: 1 }));
+  expect(check).toHaveBeenCalledTimes(3);
 });
 
 it('blocks undecodable enabled files but does not block other enabled files when disabled', async () => {

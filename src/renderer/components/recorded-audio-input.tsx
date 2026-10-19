@@ -30,11 +30,9 @@ import {
   type RecordedSegment,
 } from '../recorded-preview-timeline';
 import { RecordedMediaPreview } from './recorded-media-preview';
-import { mediaFingerprint } from '../media-fingerprint';
-import type {
-  RecordedTranscriptMode,
-  TranscriptCacheQuery,
-} from '../../shared/recorded-transcript-cache';
+import { recordedCacheQuery, verifyRecordedCaches } from '../recorded-transcript-cache-client';
+import { closeRecordedAudioRuntime, type RecordedAudioRuntime } from '../recorded-audio-runtime';
+import type { RecordedTranscriptMode } from '../../shared/recorded-transcript-cache';
 
 interface RecordedAudioTrack {
   kind: 'file' | 'video';
@@ -49,30 +47,6 @@ interface RecordedAudioTrack {
   offsetMs: number;
   durationMs: number | null;
   error: string | null;
-}
-
-interface AudioRuntime {
-  captureId: string;
-  audio: HTMLAudioElement;
-  context: AudioContext;
-  source: MediaElementAudioSourceNode;
-  node: AudioWorkletNode;
-  sink: GainNode;
-  timeout: ReturnType<typeof setTimeout> | null;
-  stallTimer: ReturnType<typeof setTimeout> | null;
-  endTimer: ReturnType<typeof setTimeout> | null;
-  completed: boolean;
-  driftTimer: ReturnType<typeof setInterval> | null;
-  active: boolean;
-  started: boolean;
-  recovering: boolean;
-  stalled: boolean;
-  queue: Promise<void>;
-  flushResolver: (() => void) | null;
-  pauseResolver: (() => void) | null;
-  pauseToken: number;
-  generation: number;
-  cached: boolean;
 }
 
 export interface RecordedAudioHandle {
@@ -135,6 +109,13 @@ export const RecordedAudioInput = forwardRef<
     ready: false,
     text: 'Checking saved transcripts…',
   });
+  const [speechModelRevision, setSpeechModelRevision] = useState(0);
+  useEffect(() => {
+    if (transcriptMode !== 'cached') return;
+    return window.lonelyChat?.onModelsChange(() =>
+      setSpeechModelRevision((revision) => revision + 1),
+    );
+  }, [transcriptMode]);
   const tracksRef = useRef(tracks);
   tracksRef.current = activeTracks;
   useEffect(() => {
@@ -149,7 +130,7 @@ export const RecordedAudioInput = forwardRef<
   useEffect(() => {
     onSegmentChange?.({ segment, valid: segmentValid });
   }, [segment, segmentValid, onSegmentChange]);
-  const runtimes = useRef(new Map<string, AudioRuntime>());
+  const runtimes = useRef(new Map<string, RecordedAudioRuntime>());
   const urls = useRef(new Set<string>());
   const generation = useRef(0);
   const segmentRef = useRef(segment);
@@ -163,85 +144,28 @@ export const RecordedAudioInput = forwardRef<
   const status = (id: string, phase: string) =>
     setPhases((previous) => ({ ...previous, [id]: phase }));
 
-  const close = (runtime: AudioRuntime) => {
-    runtime.active = false;
-    runtime.started = false;
-    if (runtime.timeout !== null) clearTimeout(runtime.timeout);
-    if (runtime.stallTimer !== null) clearTimeout(runtime.stallTimer);
-    if (runtime.endTimer !== null) clearTimeout(runtime.endTimer);
-    if (runtime.driftTimer !== null) clearInterval(runtime.driftTimer);
-    runtime.node.port.postMessage('pause');
-    runtime.audio.pause();
-    runtime.flushResolver?.();
-    runtime.flushResolver = null;
-    runtime.pauseResolver?.();
-    runtime.pauseResolver = null;
-    runtime.audio.onended = null;
-    runtime.audio.onerror = null;
-    runtime.audio.onwaiting = null;
-    runtime.audio.onstalled = null;
-    runtime.audio.onplaying = null;
-    runtime.audio.onpause = null;
-    runtime.node.port.close();
-    runtime.node.disconnect();
-    runtime.source.disconnect();
-    runtime.sink.disconnect();
-    void runtime.context.close().catch(() => {});
-    void window.lonelyChat?.stopAudio(runtime.captureId).catch(() => {});
-  };
+  const close = closeRecordedAudioRuntime;
   const stop = () => {
     ++generation.current;
     for (const runtime of runtimes.current.values()) close(runtime);
     runtimes.current.clear();
   };
 
-  const makeCacheQuery = async (
-    track: RecordedAudioTrack,
-    sampleRate: number,
-  ): Promise<TranscriptCacheQuery> => {
-    const duration = recordedPreviewDuration(video?.durationMs ?? null, tracksRef.current);
-    const range = resolveRecordedSegment(segmentRef.current, duration);
-    if (!range) throw new Error('Select a valid recorded segment before using transcript caching.');
-    if (!track.file) throw new Error('Recorded media file is unavailable for caching.');
-    return {
-      fingerprint: await mediaFingerprint(track.file),
-      sampleRate,
-      offsetMs: track.offsetMs,
-      startMs: range.startMs,
-      endMs: range.endMs,
-      embeddedTrackIndex: track.kind === 'video' ? track.embeddedTrackIndex : null,
-    };
-  };
+  const cacheDuration = () => recordedPreviewDuration(video?.durationMs ?? null, tracksRef.current);
+  const makeCacheQuery = (track: RecordedAudioTrack, sampleRate: number) =>
+    recordedCacheQuery(track, sampleRate, segmentRef.current, cacheDuration());
 
   const verifyCache = async (): Promise<void> => {
     if (transcriptMode === 'transcribe') return;
-    const selected = tracksRef.current.filter(
-      (track) => track.enabled && track.durationMs !== null,
-    );
-    if (transcriptMode === 'cached' && !selected.length)
-      throw new Error('Add an audio source before selecting cached transcript playback.');
-    if (!selected.length) return;
     const api = window.lonelyChat;
     if (!api) throw new Error('Desktop transcript cache integration is unavailable.');
-    const context = new AudioContext();
-    const sampleRate = context.sampleRate;
-    await context.close();
-    for (const track of selected) {
-      const query = await makeCacheQuery(track, sampleRate);
-      if (transcriptMode !== 'cached') continue;
-      const result = await api.checkRecordedAudioCache(query);
-      if (!result.available) {
-        const reason =
-          result.reason === 'stale'
-            ? 'stale (source offset, segment, speech model or processing settings changed)'
-            : result.reason === 'invalid'
-              ? 'invalid or damaged'
-              : 'unavailable';
-        throw new Error(
-          `Saved transcripts for ${track.label} are ${reason}. Run real Whisper with “Transcribe and save” first.`,
-        );
-      }
-    }
+    await verifyRecordedCaches(
+      transcriptMode,
+      tracksRef.current,
+      segmentRef.current,
+      cacheDuration(),
+      (query) => api.checkRecordedAudioCache(query),
+    );
   };
 
   useEffect(() => {
@@ -266,7 +190,7 @@ export const RecordedAudioInput = forwardRef<
     return () => {
       canceled = true;
     };
-  }, [transcriptMode, activeTracks, segment, video?.durationMs]);
+  }, [transcriptMode, activeTracks, segment, video?.durationMs, speechModelRevision]);
 
   useImperativeHandle(ref, () => ({
     stop,
@@ -282,7 +206,7 @@ export const RecordedAudioInput = forwardRef<
       // Per-source startup errors are isolated; other files and video still play.
       await Promise.all(
         selected.map(async (track) => {
-          let runtime: AudioRuntime | null = null;
+          let runtime: RecordedAudioRuntime | null = null;
           let context: AudioContext | null = null;
           try {
             context = new AudioContext();

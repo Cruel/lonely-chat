@@ -289,7 +289,7 @@ async function findLoopbackPort(): Promise<number> {
   }
 }
 
-async function readBounded(response: Response): Promise<unknown> {
+async function readBoundedText(response: Response): Promise<string> {
   if (!response.body) throw new Error('llama.cpp returned an empty response.');
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -306,8 +306,13 @@ async function readBounded(response: Response): Promise<unknown> {
     await reader.cancel().catch(() => {});
     reader.releaseLock();
   }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+async function readBounded(response: Response): Promise<unknown> {
+  const raw = await readBoundedText(response);
   try {
-    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    return JSON.parse(raw);
   } catch {
     throw new Error('llama.cpp returned malformed HTTP JSON.');
   }
@@ -818,7 +823,18 @@ export class NativeInference implements InferenceProvider {
           signal: AbortSignal.any([signal, this.lifecycle.signal, AbortSignal.timeout(timeoutMs)]),
         },
       );
-      const body = await readBounded(response);
+      // Keep transport bytes before JSON parsing: error pages and truncated JSON are
+      // still evidence for the private Run Inspector, never for operational logs.
+      const rawBody = await readBoundedText(response);
+      let body: unknown;
+      try {
+        body = JSON.parse(rawBody);
+      } catch {
+        throw new PrivateInferenceError('llama.cpp returned malformed HTTP JSON.', {
+          httpStatus: response.status,
+          responseBody: rawBody,
+        });
+      }
       if (!response.ok) {
         throw new PrivateInferenceError(
           `llama.cpp inference failed (HTTP ${response.status}). Enable private diagnostics to inspect the response.`,

@@ -70,6 +70,8 @@ export interface SessionSnapshot {
   readonly latestInferenceMs: number | null;
   readonly smoothedInferenceMs: number | null;
   readonly playbackWindowMs: number;
+  /** Capture cadence frozen for this Run, including recoverable errors. */
+  readonly effectiveVideoCaptureIntervalMs?: number;
   readonly droppedObservations: number;
   readonly estimatedNextInferenceMs?: number | null;
   readonly adaptiveFrameLimit?: number | null;

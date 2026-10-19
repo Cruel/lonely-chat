@@ -46,6 +46,7 @@ import {
 import { ModelDiscovery } from './model-discovery';
 import { ModelInstallManager } from './model-install-manager';
 import { NativeInference } from './native-inference';
+import { nativeWorkerSettings } from './native-worker-settings';
 import {
   bundledAcceleratedLlamaServer,
   bundledLlamaServer,
@@ -413,7 +414,11 @@ function registerHandlers(): void {
     ) => {
       const next = validatePreferences(preferences);
       if (next.audienceCount !== session.getPreferences().audienceCount) {
-        if (['starting', 'running', 'switching'].includes(session.snapshot().phase)) {
+        if (
+          ['starting', 'running', 'switching'].includes(session.snapshot().phase) ||
+          (session.snapshot().phase === 'error' &&
+            session.snapshot().failureKind !== 'recorded-video')
+        ) {
           throw new Error('Stop the simulation before resizing the audience.');
         }
         if (rosterRegenerating) throw new Error('Roster regeneration is in progress.');
@@ -766,6 +771,7 @@ async function boot(): Promise<void> {
   });
   const buildNative = (
     resolveModel: () => Promise<{ modelPath: string; projectorPath: string | null }>,
+    settings: () => import('../shared/session-contract').SessionPreferences,
   ) =>
     new NativeInference({
       executable: bundledLlamaServer(app.getAppPath(), app.isPackaged, process.resourcesPath),
@@ -784,14 +790,17 @@ async function boot(): Promise<void> {
         ),
       },
       resolveModel,
-      reasoningEnabled: () => session.getRunPreferences().reasoningEnabled,
-      inferenceTimeoutMs: () => session.getRunPreferences().inferenceTimeoutMs,
-      resourcePreferences: () => session.getRunPreferences(),
+      reasoningEnabled: () => settings().reasoningEnabled,
+      inferenceTimeoutMs: () => settings().inferenceTimeoutMs,
+      resourcePreferences: settings,
       log: logger,
       privateWorkerLine: (worker, stream, line) =>
         diagnostics.recordWorkerLine(worker, stream, line),
     });
-  nativeInference = buildNative(() => installs.activeVisionFiles());
+  nativeInference = buildNative(
+    () => installs.activeVisionFiles(),
+    nativeWorkerSettings(session, 'simulation'),
+  );
   playground = new PlaygroundService(
     () =>
       !quitting &&
@@ -801,8 +810,10 @@ async function boot(): Promise<void> {
       !session.switchingModel &&
       ['stopped', 'error'].includes(session.snapshot().phase) &&
       installs.snapshot().progress.phase === 'idle',
-    (id, needsVision) =>
-      buildNative(async () => {
+    (id, needsVision) => {
+      // Playground workers own a fresh immutable snapshot, never the previous Run's settings.
+      const playgroundSettings = nativeWorkerSettings(session, 'playground');
+      return buildNative(async () => {
         const files = await installs.visionFiles(id);
         if (needsVision && !files.projectorPath)
           throw new Error(
@@ -812,7 +823,8 @@ async function boot(): Promise<void> {
           modelPath: files.modelPath,
           projectorPath: needsVision ? files.projectorPath : null,
         };
-      }),
+      }, playgroundSettings);
+    },
     () => session.awaitShutdown(),
     () => session.getPreferences(),
   );

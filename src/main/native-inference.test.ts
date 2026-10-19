@@ -198,6 +198,52 @@ describe('native llama.cpp adapter', () => {
     ).toThrow(/outside the configured roster/);
   });
 
+  it('captures plaintext HTTP errors and invalid JSON with private transport status', async () => {
+    const bodies = [
+      new Response('private gateway error', { status: 503 }),
+      new Response('{"choices":[', { status: 200 }),
+    ];
+    const provider = new NativeInference({
+      executable: process.execPath,
+      resolveModel: async () => ({ modelPath: '/managed/other.gguf', projectorPath: null }),
+      launch: (_binary, args, options) =>
+        spawn(
+          process.execPath,
+          [
+            '--input-type=module',
+            '-e',
+            childScript,
+            args[args.indexOf('--port') + 1],
+            args[args.indexOf('--api-key') + 1],
+          ],
+          options,
+        ),
+      fetcher: async (url, options) =>
+        String(url).endsWith('/v1/chat/completions') ? bodies.shift()! : fetch(url, options),
+    });
+    providers.push(provider);
+    const input = { context: 'recorded test', cycle: 1 };
+    const request = nativeChatRequest(input);
+    const errors: PrivateInferenceError[] = [];
+    for (const _case of [0, 1]) {
+      const error = await provider
+        .completeSimulationRequest(input, request, new AbortController().signal)
+        .catch((reason: unknown) => reason);
+      expect(error).toBeInstanceOf(PrivateInferenceError);
+      errors.push(error as PrivateInferenceError);
+    }
+    expect(errors[0].diagnosticDetails).toEqual({
+      httpStatus: 503,
+      responseBody: 'private gateway error',
+    });
+    expect(errors[1].diagnosticDetails).toEqual({
+      httpStatus: 200,
+      responseBody: '{"choices":[',
+    });
+    expect(errors[1].message).toContain('malformed HTTP JSON');
+    expect(errors[0].message).not.toContain('private gateway error');
+  });
+
   it('runs genuine freeform chat completions with seed, sampling and usage via authenticated native HTTP', async () => {
     const provider = new NativeInference({
       executable: process.execPath,

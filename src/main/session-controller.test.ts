@@ -40,6 +40,46 @@ describe('session lifecycle with deterministic clock', () => {
     expect(session.getRunPreferences().cycleIntervalMs).toBe(5000);
     session.stop();
   });
+  it('preserves recorded history and capture cadence while inference is retriable', async () => {
+    const clock = new FakeClock();
+    const counts: number[] = [];
+    const native: InferenceProvider = {
+      generate: async (input) => {
+        counts.push(input.recentTranscripts?.length ?? 0);
+        if (counts.length <= 3) throw new Error('Retryable inference error');
+        return { messages: [] };
+      },
+    };
+    const session = new SessionController(new ChatService(), undefined, clock, undefined, native);
+    session.start('context', 'native', 'model', { inputMode: 'recorded', publishToOverlay: false });
+    for (let i = 0; i < 12; i++)
+      session.recordTranscript({
+        sourceId: 'mic',
+        source: 'Mic',
+        text: `word-${i}`,
+        observedAt: clock.wallNow(),
+      });
+    await flush();
+    clock.advance(500);
+    await flush();
+    clock.advance(1000);
+    await flush();
+    expect(session.snapshot().phase).toBe('error');
+    session.setPreferences({
+      ...session.getPreferences(),
+      historyMaxCount: 10,
+      videoCaptureIntervalMs: 1000,
+    });
+    expect(session.getRunPreferences().historyMaxCount).toBe(32);
+    expect(session.snapshot().effectiveVideoCaptureIntervalMs).toBe(500);
+    expect(() => session.setPreferences({ ...session.getPreferences(), audienceCount: 5 })).toThrow(
+      /Stop the simulation/,
+    );
+    session.retry();
+    await flush();
+    expect(counts[3]).toBe(12);
+    session.stop();
+  });
   it('classifies fatal recorded decoder failures independently of user-facing text', async () => {
     const session = new SessionController(new ChatService());
     session.start('recording', 'fake', null, { inputMode: 'recorded', publishToOverlay: false });

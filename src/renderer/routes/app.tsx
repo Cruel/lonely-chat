@@ -288,7 +288,7 @@ export function DesktopPage() {
         recordedAudio.current?.begin(origin, recordedSegmentState.segment),
         recordedSelection.hasFile
           ? recordedPlayer.current?.begin(
-              session.preferences.videoCaptureIntervalMs,
+              started.effectiveVideoCaptureIntervalMs ?? session.preferences.videoCaptureIntervalMs,
               origin,
               recordedSegmentState.segment,
             )
@@ -966,7 +966,12 @@ export function DesktopPage() {
                 <Panel>
                   <VideoInput
                     visible={section === 'inputs'}
-                    captureIntervalMs={session.preferences.videoCaptureIntervalMs}
+                    captureIntervalMs={
+                      mediaActive
+                        ? (session.status.effectiveVideoCaptureIntervalMs ??
+                          session.preferences.videoCaptureIntervalMs)
+                        : session.preferences.videoCaptureIntervalMs
+                    }
                   />
                 </Panel>
                 <Panel>

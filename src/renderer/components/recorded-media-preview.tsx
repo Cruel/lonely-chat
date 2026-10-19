@@ -79,7 +79,7 @@ export function RecordedMediaPreview({
   }, []);
 
   const synchronize = useCallback(
-    (ms: number, play: boolean) => {
+    (ms: number, play: boolean, exact = false) => {
       for (const track of active) {
         const audio = audioRefs.current.get(track.id);
         if (!audio) continue;
@@ -90,7 +90,7 @@ export function RecordedMediaPreview({
         }
         try {
           selectEmbeddedAudioTrack(audio, track.embeddedTrackIndex);
-          if (Math.abs(audio.currentTime * 1000 - mediaMs) > ERROR_TOLERANCE_MS)
+          if (exact || Math.abs(audio.currentTime * 1000 - mediaMs) > ERROR_TOLERANCE_MS)
             audio.currentTime = mediaMs / 1000;
           const settings = monitor[track.id] ?? defaultMonitor();
           const gain = previewMonitorGain(
@@ -124,8 +124,12 @@ export function RecordedMediaPreview({
     setPositionMs(clamped);
     clock.current = { positionMs: clamped, startedMs: performance.now() };
     const element = videoRef.current;
-    if (element) element.currentTime = clamped / 1000;
-    synchronize(clamped, playingRef.current);
+    if (element) {
+      const videoEndMs = video?.durationMs ?? Infinity;
+      if (clamped >= videoEndMs) element.pause();
+      element.currentTime = Math.min(clamped, videoEndMs) / 1000;
+    }
+    synchronize(clamped, playingRef.current, true);
     if (clamped >= endMs) pause();
   };
 
@@ -140,7 +144,8 @@ export function RecordedMediaPreview({
     try {
       // Begin all elements from the same user gesture (before awaiting the video).
       synchronize(from, true);
-      if (videoRef.current) await videoRef.current.play();
+      // An expired video must stay paused while longer audio continues playing.
+      if (videoRef.current && from < (video?.durationMs ?? Infinity)) await videoRef.current.play();
     } catch (reason) {
       pause();
       setError(reason instanceof Error ? reason.message : 'Unable to play recorded preview.');
@@ -156,7 +161,10 @@ export function RecordedMediaPreview({
       const element = videoRef.current;
       const wallPosition = clock.current.positionMs + performance.now() - clock.current.startedMs;
       const mediaPosition =
-        element && !element.ended && element.currentTime * 1000 < (video?.durationMs ?? Infinity)
+        element &&
+        wallPosition < (video?.durationMs ?? Infinity) &&
+        !element.ended &&
+        element.currentTime * 1000 < (video?.durationMs ?? Infinity)
           ? element.currentTime * 1000
           : wallPosition;
       const nextMs = Math.min(endMs, Math.max(segment.startMs, mediaPosition));
@@ -170,6 +178,11 @@ export function RecordedMediaPreview({
     }, 80);
     return () => clearInterval(timer);
   }, [playing, video, endMs, segment.startMs, synchronize, pause]);
+
+  useEffect(() => {
+    // Source offsets and enabled tracks are explicit timeline edits, not playback drift.
+    synchronize(positionRef.current, playingRef.current, true);
+  }, [active, synchronize]);
 
   useEffect(() => {
     // Always destroy preview decoders on close, independent of inference services.
