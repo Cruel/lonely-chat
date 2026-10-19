@@ -56,6 +56,29 @@ function record(value: unknown): Record<string, unknown> {
     throw new Error('Invalid portable archive structure.');
   return value as Record<string, unknown>;
 }
+/** Linear-time alphabet/padding validation; a repeated-group regex can overflow on video-sized base64. */
+function canonicalBase64(value: string, bytes: number): boolean {
+  if (value.length !== Math.ceil(bytes / 3) * 4) return false;
+  const pad = bytes % 3 === 0 ? 0 : 3 - (bytes % 3);
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (i >= value.length - pad) {
+      if (code !== 61) return false;
+    } else if (
+      !(
+        (code >= 65 && code <= 90) ||
+        (code >= 97 && code <= 122) ||
+        (code >= 48 && code <= 57) ||
+        code === 43 ||
+        code === 47
+      )
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function checkName(name: string): void {
   if (
     !NAME.test(name) ||
@@ -102,8 +125,7 @@ export function openArchive(
       (entry.size as number) < 0 ||
       (entry.size as number) > MAX_ENTRY_BYTES ||
       typeof entry.data !== 'string' ||
-      entry.data.length > Math.ceil((entry.size as number) / 3) * 4 + 4 ||
-      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(entry.data)
+      !canonicalBase64(entry.data, entry.size as number)
     )
       throw new Error('Invalid portable archive payload.');
     total += entry.size as number;

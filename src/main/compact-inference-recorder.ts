@@ -4,6 +4,7 @@ import type { InferenceTrace } from './inference-trace';
 import path from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { nativeChatRequest, inferenceSchema, INFERENCE_SCHEMA } from './native-inference';
+import { inspectJpeg } from './jpeg-inspection';
 import type { InferenceInput } from './fake-inference';
 import type { TraceAttempt } from '../shared/inference-trace-contract';
 import type {
@@ -1046,6 +1047,9 @@ export class CompactInferenceRecorder {
               const bytes = files.get(frameName);
               if (!bytes || bytes.length > 2 * 1024 * 1024 || sha(bytes) + '.jpg' !== filename)
                 throw new Error('Missing or corrupt selected JPEG.');
+              const dimensions = inspectJpeg(bytes);
+              if (dimensions.width !== item.data.width || dimensions.height !== item.data.height)
+                throw new Error('Imported JPEG encoded dimensions do not match frame metadata.');
               consumed.add(frameName);
               frames.set(filename, bytes);
             }

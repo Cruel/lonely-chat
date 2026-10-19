@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { app, type BrowserWindow } from 'electron';
+import { app, dialog, type BrowserWindow } from 'electron';
 import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -10,11 +10,9 @@ import type { CompactInferenceRecorder } from './compact-inference-recorder';
 import type { SavedInferenceCases } from './saved-inference-cases';
 import type { RecordedScenarioStore } from './recorded-scenarios';
 import type { OperationalLogger } from './operational-logger';
-import { nativeChatRequest } from './native-inference';
 import { AUDIENCE, type InferenceInput } from './fake-inference';
 import { DEFAULT_PREFERENCES } from '../shared/session-contract';
-import { importScenario, packageScenario, portableRun, restoreRun } from './portable-scenarios';
-import { makeArchive, openArchive } from './portable-archive';
+import { openArchive } from './portable-archive';
 
 interface Services {
   chat: ChatService;
@@ -85,9 +83,41 @@ async function publicSnapshot(url: string): Promise<unknown> {
   }
 }
 
+/** Only the certification process overrides dialogs. The production IPC handler still
+ * chooses the archive format, performs validation, and reads/writes the actual path.
+ */
+async function withArchiveDialog<T>(
+  method: 'save' | 'open',
+  expectedTitle: string,
+  selectedPath: string,
+  action: () => Promise<T>,
+): Promise<T> {
+  const oldSave = dialog.showSaveDialog;
+  const oldOpen = dialog.showOpenDialog;
+  if (method === 'save') {
+    dialog.showSaveDialog = (async (...args: unknown[]) => {
+      const options = args.at(-1) as { title: string };
+      assert.equal(options.title, expectedTitle);
+      return { canceled: false, filePath: selectedPath };
+    }) as typeof dialog.showSaveDialog;
+  } else {
+    dialog.showOpenDialog = (async (...args: unknown[]) => {
+      const options = args.at(-1) as { title: string };
+      assert.equal(options.title, expectedTitle);
+      return { canceled: false, filePaths: [selectedPath] };
+    }) as typeof dialog.showOpenDialog;
+  }
+  try {
+    return await action();
+  } finally {
+    dialog.showSaveDialog = oldSave;
+    dialog.showOpenDialog = oldOpen;
+  }
+}
+
 async function certify(window: BrowserWindow, s: Services): Promise<void> {
   if (!app.isPackaged)
-    throw new Error('End-to-end package certification must run an installed application.');
+    throw new Error('End-to-end package certification must run a packaged application.');
   const fixtureRoot = process.env.LONELY_CHAT_CERT_MEDIA_DIR;
   if (!fixtureRoot || !path.isAbsolute(fixtureRoot))
     throw new Error('Missing isolated package-certification media directory.');
@@ -209,10 +239,26 @@ async function certify(window: BrowserWindow, s: Services): Promise<void> {
   };
   await api(`window.lonelyChat.setPreferences(${JSON.stringify(config.settingsSnapshot)})`);
   const scenario = await s.scenarios.save('Packaged fixture Scenario', config);
-  const metadataArchive = await packageScenario(scenario, false);
+  const metaFile = path.join(fixtureRoot, 'metadata.lcscenario');
+  const mediaFile = path.join(fixtureRoot, 'with-media.lcscenario');
+  const scenarioExportTitle =
+    'Export private Scenario (prompts, settings and optional original media)';
+  assert.equal(
+    await withArchiveDialog('save', scenarioExportTitle, metaFile, () =>
+      api(`window.lonelyChat.exportRecordedScenario(${JSON.stringify(scenario.id)}, false)`),
+    ),
+    true,
+  );
+  const metadataArchive = await readFile(metaFile, 'utf8');
   assert.equal(openArchive(metadataArchive, 'scenario').files.size, 0);
   assert.ok(!metadataArchive.includes(fixtureRoot), 'Scenario export leaked source directory');
-  const withMedia = await packageScenario(scenario, true);
+  assert.equal(
+    await withArchiveDialog('save', scenarioExportTitle, mediaFile, () =>
+      api(`window.lonelyChat.exportRecordedScenario(${JSON.stringify(scenario.id)}, true)`),
+    ),
+    true,
+  );
+  const withMedia = await readFile(mediaFile, 'utf8');
   assert.equal(openArchive(withMedia, 'scenario').files.size, 3);
 
   // Drive React and production file authorization/decoders, not a directly constructed
@@ -373,57 +419,42 @@ async function certify(window: BrowserWindow, s: Services): Promise<void> {
   assert.ok(reconstructed, 'Run reconstruction lost selected images');
   assert.equal(reconstructed.provenance, 'current-builder-reconstruction');
   await s.compact.configure(false);
-  const runEvidence = await s.compact.exportRunEvidence(run.sessionRunId, run.recordingIds);
-  const portableRunArchive = makeArchive(
-    'run',
-    {
-      run: portableRun(run),
-      recordings: runEvidence.recordings,
-    },
-    runEvidence.files,
+  const runFile = path.join(fixtureRoot, 'exported.lcrun');
+  assert.equal(
+    await withArchiveDialog(
+      'save',
+      'Export private Run (prompts, transcripts, JPEGs, retries, responses)',
+      runFile,
+      () => api(`window.lonelyChat.exportRecordedRun(${JSON.stringify(run.id)})`),
+    ),
+    true,
   );
-  const loaded = openArchive(portableRunArchive, 'run');
-  const data = loaded.metadata as { run: unknown; recordings: unknown };
-  const restored = await restoreRun(data.run, app.getPath('userData'));
-  const newRecordingIds = await s.compact.importRunEvidence(
-    run.sessionRunId,
-    data.recordings,
-    loaded.files,
+  assert.ok(openArchive(await readFile(runFile, 'utf8'), 'run').files.size > 0);
+  const importedRun = await withArchiveDialog(
+    'open',
+    'Import private recorded Run (never publishes to overlay)',
+    runFile,
+    () =>
+      api<import('../shared/recorded-scenario-contract').RecordedRun>(
+        'window.lonelyChat.importRecordedRun()',
+      ),
   );
-  const importedRun = await s.scenarios.importRun({
-    ...restored.run,
-    recordingIds: newRecordingIds,
-  });
   assert.notEqual(importedRun.id, run.id);
   assert.equal(importedRun.effective.publishToOverlay, false);
-
-  const sourceTrace = attempts
-    .map((item) => s.session.trace.get(item.id))
-    .find((item) => (item?.input as InferenceInput | null)?.frames?.length);
-  assert.ok(sourceTrace, 'No frame-backed trace to freeze as an Exact case');
-  const input = sourceTrace.input as InferenceInput;
-  const exactRequest = nativeChatRequest({ ...input, seed: sourceTrace.seed });
-  const saved = await s.cases.save({
-    ...sourceTrace,
-    input: { ...input, seed: sourceTrace.seed },
-    mode: 'native',
-    modelId: 'cert-worker',
-    request: exactRequest,
-    stage: 'scheduled',
-  });
-  const exportedCase = await s.cases.exportPortable(saved.id);
-  const importedCase = await s.cases.importPortable(exportedCase);
-  assert.notEqual(importedCase.id, saved.id);
-  const caseData = await api<{ frames: { dataUrl: string }[] }>(
-    `window.lonelyChat.getSavedCase(${JSON.stringify(importedCase.id)})`,
-  );
-  assert.ok(caseData.frames[0].dataUrl.startsWith('data:image/jpeg;base64,'));
-  const scenarioImported = await importScenario(
-    metadataArchive,
-    s.scenarios,
-    app.getPath('userData'),
+  const scenarioImported = await withArchiveDialog(
+    'open',
+    'Import portable Scenario (review and relink media before Start)',
+    metaFile,
+    () => api<{ missing: string[] }>('window.lonelyChat.importRecordedScenario()'),
   );
   assert.equal(scenarioImported.missing.length, 3, 'Metadata-only Scenario must require relinking');
+  const mediaImported = await withArchiveDialog(
+    'open',
+    'Import portable Scenario (review and relink media before Start)',
+    mediaFile,
+    () => api<{ missing: string[] }>('window.lonelyChat.importRecordedScenario()'),
+  );
+  assert.deepEqual(mediaImported.missing, [], 'Media-inclusive Scenario must import through IPC');
   console.info(
     'PASS: Chromium WebM frames, independent WAV/PCM tracks, source-labeled speech, Events, desktop-only Chat',
   );
@@ -431,32 +462,80 @@ async function certify(window: BrowserWindow, s: Services): Promise<void> {
     'PASS: Run Inspector inputs, Compact recording and case/Run/Scenario archive round trips',
   );
 
-  // Verify a separate Exact recording with the actual native request and outcome.
-  await s.compact.configure(true, 'exact');
-  const attemptId = s.session.trace.begin({
-    runId: run.sessionRunId + 50000,
-    cycle: 1,
-    attempt: 1,
-    seed: sourceTrace.seed,
-    rosterSeed: sourceTrace.rosterSeed,
-    mode: 'native',
-    modelId: 'cert-worker',
-    startedAt: Date.now(),
-    input: { ...input, seed: sourceTrace.seed },
-    settings: {},
-    promptPreset: null,
-    adaptation: {},
+  // Exact coverage must execute SessionController -> native provider -> trace -> recorder,
+  // not manually invent request/response updates.
+  const selectedFrame = attempts
+    .map((item) => s.session.trace.get(item.id))
+    .flatMap((item) => (item?.input as InferenceInput | null)?.frames ?? [])[0];
+  assert.ok(selectedFrame, 'Missing decoded JPEG fixture for Exact production inference');
+  s.session.selectVideoSource('cert-exact:video');
+  await api(
+    `window.lonelyChat.setPreferences(${JSON.stringify({
+      ...config.settingsSnapshot,
+      baselineMs: 400,
+    })})`,
+  );
+  const exactStatus = await api<{ recordingId: string }>(
+    'window.lonelyChat.configureCompactRecording(true, "exact")',
+  );
+  const exactRun = await api<{ runId: number }>(
+    `window.lonelyChat.startSession("CERT_EXACT_NATIVE", "native", ${JSON.stringify({
+      inputMode: 'live',
+      publishToOverlay: true,
+      seed: 23,
+    })})`,
+  );
+  await api(
+    `window.lonelyChat.submitVideoFrame(${JSON.stringify({
+      ...selectedFrame,
+      sourceId: 'cert-exact:video',
+      observedAt: Date.now(),
+    })})`,
+  );
+  const nativeAttempt = await until('real native SessionController Exact attempt', async () => {
+    const attempt = s.session.trace
+      .list()
+      .attempts.find((item) => item.runId === exactRun.runId && item.mode === 'native');
+    if (attempt?.stage === 'failed')
+      throw new Error('Native cycle failed: ' + JSON.stringify(s.session.trace.get(attempt.id)));
+    return attempt?.stage === 'scheduled' ? attempt : null;
   });
-  s.session.trace.update(attemptId, { stage: 'transport', request: exactRequest });
-  s.session.trace.update(attemptId, {
-    stage: 'scheduled',
-    rawResponse: 'certified Exact response',
-  });
+  const nativeTrace = s.session.trace.get(nativeAttempt.id)!;
+  assert.ok(nativeTrace.request, 'Real provider did not emit transport request');
+  assert.ok(nativeTrace.rawResponse, 'Real provider did not emit model response');
+  const saved = await api<{ id: string }>(
+    `window.lonelyChat.saveInferenceCase(${JSON.stringify(nativeAttempt.id)})`,
+  );
+  const caseFile = path.join(fixtureRoot, 'exported-case.json');
+  assert.equal(
+    await withArchiveDialog(
+      'save',
+      'Export exact inference case (includes private prompts and images)',
+      caseFile,
+      () => api(`window.lonelyChat.exportSavedCase(${JSON.stringify(saved.id)})`),
+    ),
+    true,
+  );
+  const importedCase = await withArchiveDialog(
+    'open',
+    'Import exact inference case',
+    caseFile,
+    () => api<{ id: string }>('window.lonelyChat.importSavedCase()'),
+  );
+  assert.notEqual(importedCase.id, saved.id);
+  const caseData = await api<{ frames: { dataUrl: string }[] }>(
+    `window.lonelyChat.getSavedCase(${JSON.stringify(importedCase.id)})`,
+  );
+  assert.ok(caseData.frames[0]?.dataUrl.startsWith('data:image/jpeg;base64,'));
+  await api('window.lonelyChat.stopSession()');
   await s.compact.flush();
-  const exactRecording = s.compact.status().recordingId!;
-  const restoredExact = await s.compact.restoreExactAttempt(attemptId, exactRecording);
-  assert.equal(restoredExact.rawResponse, 'certified Exact response');
-  await s.compact.configure(false);
+  const restoredExact = await s.compact.restoreExactAttempt(
+    nativeAttempt.id,
+    exactStatus.recordingId,
+  );
+  assert.deepEqual(restoredExact.request, nativeTrace.request);
+  assert.deepEqual(restoredExact.rawResponse, nativeTrace.rawResponse);
+  await api('window.lonelyChat.configureCompactRecording(false, "exact")');
   console.info(
     'PASS: Exact mode immutable request/output recovery, worker failure logging, public overlay privacy',
   );

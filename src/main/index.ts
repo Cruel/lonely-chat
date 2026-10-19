@@ -24,6 +24,7 @@ import { installElectronSmoke } from './electron-smoke';
 import { installPackagedE2E } from './packaged-e2e';
 import {
   certificationPlaygroundProvider,
+  certificationSessionInferenceProvider,
   CertificationSpeechWorker,
 } from './certification-workers';
 import { observationNow } from '../shared/observation-clock';
@@ -670,7 +671,12 @@ function registerHandlers(): void {
             )
         : undefined;
       if (presetId && !preset) throw new Error('Selected prompt preset was not found.');
-      const activeModel = mode === 'native' ? installs.snapshot().active['vision-language'] : null;
+      const activeModel =
+        mode === 'native'
+          ? packageE2E
+            ? 'cert-worker'
+            : installs.snapshot().active['vision-language']
+          : null;
       if (
         recordedConfig?.settingsPolicy === 'saved' &&
         mode === 'native' &&
@@ -1262,7 +1268,7 @@ async function boot(): Promise<void> {
     undefined,
     undefined,
     preferences,
-    nativeInference,
+    packageE2E ? certificationSessionInferenceProvider() : nativeInference,
     audience,
     diagnostics,
     reportError,

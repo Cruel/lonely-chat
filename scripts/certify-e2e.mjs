@@ -6,9 +6,8 @@ import path from 'node:path';
 import { unpackedPackage } from './package-layout.mjs';
 import { createCertificationMedia } from './certification-media.mjs';
 
-/** Run only against electron-builder --dir output, with an isolated userData and a
- * no-download synthetic fixture. The actual packaged preload, renderer and native
- * workers are exercised by their own smoke tests in certify-package.mjs.
+/** Certify an isolated packaged executable. An optional executable path selects the
+ * actual distributed AppImage or a binary installed/copied from NSIS/DMG instead of --dir.
  */
 const target = process.platform + '-' + process.arch;
 const root = await mkdtemp(path.join(tmpdir(), 'lonely-e2e-'));
@@ -24,12 +23,14 @@ const report = {
   workerMode: 'small deterministic CPU fixtures',
   modelDownloadsRequired: false,
   hardware: process.platform + '-' + process.arch,
+  source: process.argv[2] ? 'distributed-artifact' : 'unpacked',
   details: [],
 };
 try {
   await mkdir(profile, { recursive: true });
   await createCertificationMedia(media);
-  const { executable } = unpackedPackage();
+  const { executable: unpacked } = unpackedPackage();
+  const executable = process.argv[2] ? path.resolve(process.argv[2]) : unpacked;
   const listener = createServer();
   await new Promise((resolve, reject) =>
     listener.once('error', reject).listen(0, '127.0.0.1', resolve),
@@ -45,6 +46,9 @@ try {
       cwd: root,
       env: {
         ...process.env,
+        ...(process.platform === 'linux' && executable.endsWith('.AppImage')
+          ? { APPIMAGE_EXTRACT_AND_RUN: '1' }
+          : {}),
         LONELY_CHAT_CERTIFY_E2E: '1',
         LONELY_CHAT_CERT_PROFILE: profile,
         LONELY_CHAT_CERT_MEDIA_DIR: media,
@@ -88,7 +92,10 @@ try {
   report.details = [...unsupportedHardware, ...statuses, String(error).slice(0, 3000)];
   throw error;
 } finally {
-  const destination = path.join(path.resolve('out'), 'certification-' + target + '.json');
+  const destination = path.join(
+    path.resolve('out'),
+    'certification-' + (process.argv[2] ? 'distributed-' : '') + target + '.json',
+  );
   await mkdir(path.dirname(destination), { recursive: true });
   await writeFile(destination, JSON.stringify(report, null, 2) + '\n');
   // All traces, recordings, paths and locally generated media are private and temporary.

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, expect, it } from 'vitest';
@@ -14,6 +15,9 @@ import { archiveHash, makeArchive, openArchive } from './portable-archive';
 import { importScenario, packageScenario, portableRun, restoreRun } from './portable-scenarios';
 import { RecordedScenarioStore, verifyRecordedSources } from './recorded-scenarios';
 
+const fixtureJpeg = readFileSync(
+  new URL('../../tests/fixtures/playground-red.jpg', import.meta.url),
+);
 const roots: string[] = [];
 async function temp(): Promise<string> {
   const root = await mkdtemp(path.join(os.tmpdir(), 'lonely-portable-'));
@@ -111,6 +115,15 @@ it('bundles original media only when explicitly requested; rejects unsafe paths 
   ).rejects.toThrow(/Unsupported/);
 });
 
+it('round-trips multi-megabyte media entries without regex stack overflow', () => {
+  const content = Buffer.alloc(4 * 1024 * 1024, 0xab);
+  const archive = makeArchive('scenario', { version: 1 }, new Map([['media/clip.webm', content]]));
+  expect(openArchive(archive, 'scenario').files.get('media/clip.webm')).toEqual(content);
+  const altered = JSON.parse(archive);
+  altered.entries[0].data = '*' + altered.entries[0].data.slice(1);
+  expect(() => openArchive(JSON.stringify(altered), 'scenario')).toThrow(/payload/);
+}, 15000);
+
 function addAttempt(trace: InferenceTrace, runId: number, cycle: number): string {
   const input = {
     context: 'sensitive context',
@@ -119,10 +132,10 @@ function addAttempt(trace: InferenceTrace, runId: number, cycle: number): string
     frames: [
       {
         sourceId: 'video',
-        width: 1,
-        height: 1,
+        width: 4,
+        height: 4,
         observedAt: 1000,
-        dataUrl: 'data:image/jpeg;base64,/9j/2Q==',
+        dataUrl: 'data:image/jpeg;base64,' + fixtureJpeg.toString('base64'),
       },
     ],
     observations: [],
@@ -290,6 +303,49 @@ it('round-trips a Run with exact requests, shared JPEGs and replies without leak
   await expect(imported.importRunEvidence(3, changedIndex, modified)).rejects.toThrow(
     /frame metadata|dimensions/,
   );
+  const framePath = [...unpacked.files.keys()].find((name) => name.endsWith('.jpg'))!;
+  const tamperFrame = async (bytes: Buffer, width = 4, height = 4) => {
+    const modifiedFiles = new Map(unpacked.files);
+    modifiedFiles.delete(framePath);
+    const replacedName = framePath.replace(/[^/]+$/, archiveHash(bytes) + '.jpg');
+    modifiedFiles.set(replacedName, bytes);
+    const rewritten = structuredClone(meta.recordings) as typeof meta.recordings;
+    for (const part of rewritten as (typeof evidencePart)[]) {
+      for (const row of part.index) {
+        const chunkPath = part.folder + '/chunks/' + row.chunk;
+        const chunkRows = gunzipSync(modifiedFiles.get(chunkPath)!)
+          .toString('utf8')
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line));
+        let changed = false;
+        for (const chunkRow of chunkRows) {
+          if (chunkRow.type === 'evidence' && chunkRow.kind === 'frame') {
+            chunkRow.data.jpeg = path.basename(replacedName);
+            chunkRow.data.width = width;
+            chunkRow.data.height = height;
+            changed = true;
+          }
+        }
+        if (changed) {
+          const changedChunk = gzipSync(
+            chunkRows.map((item) => JSON.stringify(item) + '\n').join(''),
+          );
+          modifiedFiles.set(chunkPath, changedChunk);
+          row.sha256 = archiveHash(changedChunk);
+        }
+      }
+    }
+    return imported.importRunEvidence(3, rewritten, modifiedFiles);
+  };
+  await expect(tamperFrame(Buffer.from('not a JPEG'))).rejects.toThrow(/JPEG/);
+  await expect(tamperFrame(fixtureJpeg, 1, 1)).rejects.toThrow(/dimensions/);
+  // A valid compressed JPEG claiming an unsafe decoded width must not be accepted.
+  const bogus = Buffer.from(fixtureJpeg);
+  const sof = bogus.findIndex((value, index) => value === 0xff && bogus[index + 1] === 0xc0);
+  expect(sof).toBeGreaterThan(0);
+  bogus.writeUInt16BE(1000, sof + 7);
+  await expect(tamperFrame(bogus)).rejects.toThrow(/dimensions/);
   const extra = new Map(unpacked.files);
   extra.set('other/stray', Buffer.from('bad'));
   await expect(imported.importRunEvidence(3, meta.recordings, extra)).rejects.toThrow(
