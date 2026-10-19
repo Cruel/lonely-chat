@@ -48,6 +48,7 @@ import { SimulationPlayground } from '@/components/simulation-playground';
 import { SpeechPlayground } from '@/components/speech-playground';
 import { AudioInput } from '@/components/audio-input';
 import type { AudioStatus } from '../../shared/audio-contract';
+import type { RecordedTranscriptMode } from '../../shared/recorded-transcript-cache';
 import type { NativeServiceStatus } from '../../shared/native-service-contract';
 import type { PromptPreset } from '../../shared/prompt-preset-contract';
 import { DEFAULT_OVERLAY_PORT, type OverlayStatus } from '../../shared/overlay-contract';
@@ -140,6 +141,7 @@ export function DesktopPage() {
   const [inferenceMode, setInferenceMode] = useState<InferenceMode>('fake');
   const [inputMode, setInputMode] = useState<'live' | 'recorded'>('live');
   const [publishRecorded, setPublishRecorded] = useState(false);
+  const [transcriptMode, setTranscriptMode] = useState<RecordedTranscriptMode>('transcribe');
   const [recordedSelection, setRecordedSelection] = useState({ hasFile: false, ready: true });
   const [recordedVideoMedia, setRecordedVideoMedia] = useState<RecordedVideoMedia | null>(null);
   const [mediaError, setMediaError] = useState<string | null>(null);
@@ -251,11 +253,21 @@ export function DesktopPage() {
   const startSimulation = async () => {
     const generation = ++mediaStartGeneration.current;
     setMediaError(null);
+    if (inputMode === 'recorded' && transcriptMode !== 'transcribe') {
+      try {
+        await recordedAudio.current?.verifyCache();
+      } catch (error) {
+        setMediaError(error instanceof Error ? error.message : String(error));
+        return;
+      }
+      if (generation !== mediaStartGeneration.current) return;
+    }
     const started = await session.start(manualContext, inferenceMode, {
       inputMode,
       publishToOverlay: inputMode === 'live' || publishRecorded,
       hasVideoFile: inputMode === 'recorded' && recordedSelection.hasFile,
       hasAudioFiles: inputMode === 'recorded' && recordedAudioSelection.count > 0,
+      ...(inputMode === 'recorded' ? { transcriptMode } : {}),
       ...(configuredSeed === undefined ? {} : { seed: configuredSeed }),
       ...(selectedPresetId ? { presetId: selectedPresetId } : {}),
       ...(selectedPresetId && selectedPresetRevision
@@ -565,8 +577,49 @@ export function DesktopPage() {
                       onSelectionChange={updateRecordedSelection}
                       onMediaChange={updateRecordedVideoMedia}
                     />
+                    <div className="mt-4">
+                      <Label htmlFor="recorded-transcript-mode">Recorded speech processing</Label>
+                      <Select
+                        items={[
+                          {
+                            value: 'transcribe',
+                            label: 'Real Whisper (default; no transcript cache)',
+                          },
+                          { value: 'save', label: 'Real Whisper + save transcripts for reuse' },
+                          { value: 'cached', label: 'Use saved transcripts (skip Whisper)' },
+                        ]}
+                        value={transcriptMode}
+                        disabled={running}
+                        onValueChange={(value) => {
+                          if (value === 'transcribe' || value === 'save' || value === 'cached')
+                            setTranscriptMode(value);
+                        }}
+                      >
+                        <SelectTrigger id="recorded-transcript-mode" className="mt-2 max-w-lg">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="transcribe">
+                            Real Whisper (default; no transcript cache)
+                          </SelectItem>
+                          <SelectItem value="save">
+                            Real Whisper + save transcripts for reuse
+                          </SelectItem>
+                          <SelectItem value="cached">
+                            Use saved transcripts (skip Whisper)
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <p className="mt-2 text-xs text-zinc-500">
+                        Saving is optional and persists only transcript text/timing on this device;
+                        no raw audio is archived. Cached runs reuse prior labeled speech with
+                        original observation and availability timing, but do not test Whisper or
+                        segmentation behavior.
+                      </p>
+                    </div>
                     <RecordedAudioInput
                       ref={recordedAudio}
+                      transcriptMode={transcriptMode}
                       running={mediaActive}
                       onSelectionChange={updateRecordedAudioSelection}
                       onSegmentChange={updateRecordedSegment}

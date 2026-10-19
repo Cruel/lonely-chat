@@ -167,6 +167,11 @@ const modelsAPI = {
   startAudio: async () => ({ revision: 1, sources: [], transcripts: [] }),
   stopAudio: async () => ({ revision: 2, sources: [], transcripts: [] }),
   submitAudioSegment: async () => {},
+  checkRecordedAudioCache: async () => ({
+    available: false,
+    reason: 'unavailable' as const,
+    count: 0,
+  }),
   startRecordedAudio: async () => ({ revision: 0, sources: [], transcripts: [] }),
   armRecordedAudio: async () => {},
   resyncRecordedAudio: async () => {},

@@ -12,6 +12,7 @@ const VIDEO_CATCHUP_DRIFT_MS = 450;
 
 export interface RecordedVideoMedia {
   url: string;
+  file?: File;
   name: string;
   durationMs?: number | null;
 }
@@ -34,6 +35,7 @@ export const RecordedVideoInput = forwardRef<
   }
 >(function RecordedVideoInput({ running, onSelectionChange, onMediaChange }, ref) {
   const video = useRef<HTMLVideoElement>(null);
+  const selectedFile = useRef<File | null>(null);
   const [url, setUrl] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
@@ -201,6 +203,7 @@ export const RecordedVideoInput = forwardRef<
 
   const selectFile = (file: File | undefined) => {
     stop();
+    selectedFile.current = file ?? null;
     setReady(false);
     setError(null);
     if (!file) {
@@ -212,7 +215,7 @@ export const RecordedVideoInput = forwardRef<
       return;
     }
     const nextUrl = URL.createObjectURL(file);
-    onMediaChange?.({ url: nextUrl, name: file.name });
+    onMediaChange?.({ url: nextUrl, name: file.name, file });
     setFileName(file.name);
     setUrl(nextUrl);
     setStatus('Checking Chromium video decoder…');
@@ -261,12 +264,14 @@ export const RecordedVideoInput = forwardRef<
           onCanPlay={() => {
             if (video.current?.videoWidth && video.current.videoHeight) {
               const seconds = video.current.duration;
-              onMediaChange?.({
-                url,
-                name: fileName ?? 'Video',
-                durationMs:
-                  Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1000) : null,
-              });
+              if (selectedFile.current)
+                onMediaChange?.({
+                  url,
+                  file: selectedFile.current,
+                  name: fileName ?? 'Video',
+                  durationMs:
+                    Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1000) : null,
+                });
               setReady(true);
               setError(null);
               if (!running) setStatus('Ready');

@@ -172,6 +172,7 @@ const api: DesktopAPI = {
   retryAudio: (id) => invoke('audio:retry', id),
   stopAudio: (captureId) => invoke('audio:stop', captureId),
   submitAudioSegment: (segment, captureId) => invoke('audio:segment', segment, captureId),
+  checkRecordedAudioCache: (query) => invoke('audio:cache:check', query),
   startRecordedAudio: (source) => invoke('audio:recorded:start', source),
   armRecordedAudio: (captureId, originMs, mediaStartMs) =>
     invoke('audio:recorded:arm', captureId, originMs, mediaStartMs),

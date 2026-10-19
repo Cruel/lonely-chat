@@ -1,11 +1,13 @@
 export type SessionPhase = 'stopped' | 'starting' | 'running' | 'switching' | 'error';
 export type InferenceMode = 'fake' | 'native';
+import type { RecordedTranscriptMode } from './recorded-transcript-cache';
 export interface SimulationInputOptions {
   readonly inputMode: 'live' | 'recorded';
   /** Recorded chat stays in desktop preview unless explicitly published. */
   readonly publishToOverlay: boolean;
   readonly hasVideoFile?: boolean;
   readonly hasAudioFiles?: boolean;
+  readonly transcriptMode?: RecordedTranscriptMode;
   /** Optional user-selected seed; otherwise generate a new effective seed at Start. */
   readonly seed?: number;
   /** Revision resolved atomically by main at Start; never follow subsequent edits. */
@@ -61,6 +63,7 @@ export interface SessionSnapshot {
   readonly pendingMessages: number;
   readonly mode: InferenceMode;
   readonly inputMode?: 'live' | 'recorded';
+  readonly transcriptMode?: RecordedTranscriptMode;
   /** Selected VLM installation ID, or null for fixtures/unconfigured models. */
   readonly modelId?: string | null;
   readonly events: readonly InferredEvent[];

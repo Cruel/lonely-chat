@@ -198,6 +198,9 @@ export class SessionController {
       typeof options.publishToOverlay !== 'boolean' ||
       (options.hasVideoFile !== undefined && typeof options.hasVideoFile !== 'boolean') ||
       (options.hasAudioFiles !== undefined && typeof options.hasAudioFiles !== 'boolean') ||
+      (options.transcriptMode !== undefined &&
+        (!['transcribe', 'save', 'cached'].includes(options.transcriptMode) ||
+          options.inputMode !== 'recorded')) ||
       (options.seed !== undefined && !validInferenceSeed(options.seed)) ||
       (options.presetId !== undefined &&
         (typeof options.presetId !== 'string' || options.presetId.length > 100)) ||
@@ -240,6 +243,8 @@ export class SessionController {
       phase: mode === 'native' ? 'starting' : 'running',
       mode,
       inputMode: options.inputMode,
+      transcriptMode:
+        options.inputMode === 'recorded' ? (options.transcriptMode ?? 'transcribe') : 'transcribe',
       modelId: mode === 'native' ? modelId : null,
       events: [],
       cycle: 0,

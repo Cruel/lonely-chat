@@ -10,6 +10,9 @@ import type { NativeSpeech } from './native-speech';
 import type { OperationalErrorSink } from './operational-logger';
 import { systemClock, type TimerClock } from './chat-scheduler';
 import { MonoResampler, SpeechSegmenter } from './audio-segmentation';
+import type { TranscriptCacheQuery } from '../shared/recorded-transcript-cache';
+import { validateTranscriptCacheQuery } from '../shared/recorded-transcript-cache';
+import type { RecordedTranscriptCache, CachedTranscript } from './recorded-transcript-cache';
 
 const MAX_SEGMENTS = 10;
 const PCM_LIMIT = 16000 * 30;
@@ -33,6 +36,14 @@ interface Source {
     seekMs: number;
     originMs: number | null;
     finished: boolean;
+    cacheMode: 'transcribe' | 'save' | 'cached';
+    cacheQuery: TranscriptCacheQuery | null;
+    cacheModel: string | null;
+    cacheInvalid: boolean;
+    receivedPcm: boolean;
+    captured: CachedTranscript[];
+    pending: Set<Promise<void>>;
+    playbackTimers: Set<unknown>;
   } | null;
 }
 
@@ -49,6 +60,8 @@ export class AudioService {
     private readonly now = systemClock.wallNow,
     private readonly clock: Pick<TimerClock, 'setTimeout' | 'clearTimeout'> = systemClock,
     private readonly reportError?: OperationalErrorSink,
+    private readonly transcriptCache?: RecordedTranscriptCache,
+    private readonly speechModelId?: () => string | null,
   ) {}
 
   snapshot(): AudioStatus {
@@ -69,6 +82,7 @@ export class AudioService {
     sourceId: unknown,
     label: unknown,
     captureId: unknown,
+    launch = true,
   ): Promise<AudioStatus> {
     const inputId = validateAudioId(id);
     if (
@@ -113,7 +127,8 @@ export class AudioService {
     source.recorded = null;
     source.restartCount = 0;
     this.patch(source, { label: safeLabel, phase: 'starting', error: null, pendingSegments: 0 });
-    await this.launchWorker(source);
+    if (launch) await this.launchWorker(source);
+    else this.patch(source, { phase: 'ready', error: null });
     return this.snapshot();
   }
 
@@ -133,7 +148,28 @@ export class AudioService {
       value.seekMs + value.offsetMs < 0
     )
       throw new Error('Invalid recorded audio rate or timeline alignment.');
-    const result = await this.start(id, `recorded:${id}`, value.label, value.captureId);
+    const cacheMode = value.cache?.mode ?? 'transcribe';
+    if (!['transcribe', 'save', 'cached'].includes(cacheMode))
+      throw new Error('Invalid recorded transcript mode.');
+    const cacheQuery = value.cache ? validateTranscriptCacheQuery(value.cache) : null;
+    if (
+      cacheQuery &&
+      (cacheQuery.sampleRate !== value.sampleRate ||
+        cacheQuery.offsetMs !== value.offsetMs ||
+        value.seekMs < Math.max(0, cacheQuery.startMs - value.offsetMs))
+    )
+      throw new Error('Recorded transcript descriptor does not match the audio source.');
+    const cacheModel = cacheQuery ? this.speechModelId?.() : null;
+    if (cacheQuery && (!cacheModel || !this.transcriptCache))
+      throw new Error('Activate a speech model to use saved transcripts.');
+    if (cacheMode === 'cached') this.transcriptCache!.read(cacheQuery!, cacheModel!);
+    const result = await this.start(
+      id,
+      `recorded:${id}`,
+      value.label,
+      value.captureId,
+      cacheMode !== 'cached',
+    );
     const source = this.findCapture(value.captureId);
     if (source && source.status.phase === 'ready') {
       source.recorded = {
@@ -144,6 +180,14 @@ export class AudioService {
         seekMs: value.seekMs,
         originMs: null,
         finished: false,
+        cacheMode,
+        cacheQuery,
+        cacheModel: cacheModel ?? null,
+        cacheInvalid: false,
+        receivedPcm: false,
+        captured: [],
+        pending: new Set(),
+        playbackTimers: new Set(),
       };
     }
     return result;
@@ -164,6 +208,25 @@ export class AudioService {
       throw new Error('Recorded audio source is not ready for synchronization.');
     source.recorded.originMs = originMs;
     source.recorded.seekMs = mediaStartMs;
+    if (source.recorded.cacheMode === 'cached') {
+      const track = source.recorded;
+      const epoch = source.epoch;
+      const entries = this.transcriptCache!.read(track.cacheQuery!, track.cacheModel!);
+      for (const entry of entries) {
+        const delay = Math.max(0, originMs + entry.availableMs - this.now());
+        const timer = this.clock.setTimeout(() => {
+          track.playbackTimers.delete(timer);
+          if (source.epoch !== epoch || source.recorded !== track) return;
+          this.emitTranscript(source, {
+            sourceId: source.status.id,
+            source: source.status.label,
+            text: entry.text,
+            observedAt: originMs + entry.observedMs,
+          });
+        }, delay);
+        track.playbackTimers.add(timer);
+      }
+    }
   }
 
   /** Discontinuity barrier after a seek/stall: finish any prior partial speech,
@@ -186,6 +249,8 @@ export class AudioService {
       mediaStartMs + track.offsetMs < 0
     )
       throw new Error('Recorded audio cannot resynchronize at this position.');
+    if (track.cacheMode === 'cached') return; // Cached transcript clocks continue across renderer buffering.
+    if (track.receivedPcm) track.cacheInvalid = true;
     const partial = track.segmenter.flushDetailed();
     if (partial && partial.samples.length >= 1600) {
       this.submit(
@@ -212,6 +277,7 @@ export class AudioService {
       track.finished
     )
       throw new Error('Recorded audio source is not active.');
+    if (track.cacheMode === 'cached') throw new Error('Cached playback does not accept raw audio.');
     if (
       !(samples instanceof Float32Array) ||
       samples.length === 0 ||
@@ -219,6 +285,7 @@ export class AudioService {
       !samples.every((sample) => Number.isFinite(sample) && Math.abs(sample) <= 1.01)
     )
       throw new Error('Invalid recorded PCM chunk.');
+    track.receivedPcm = true;
     for (const slice of track.segmenter.pushDetailed(track.resampler.push(samples))) {
       this.submit(
         {
@@ -230,11 +297,12 @@ export class AudioService {
     }
   }
 
-  finishRecorded(captureId: string): void {
+  async finishRecorded(captureId: string): Promise<void> {
     const source = this.findCapture(validateAudioId(captureId));
     const track = source?.recorded;
     if (!source || !track || track.originMs === null || track.finished) return;
     track.finished = true;
+    if (track.cacheMode === 'cached') return;
     const slice = track.segmenter.flushDetailed();
     if (slice && source.status.phase === 'ready')
       this.submit(
@@ -244,6 +312,21 @@ export class AudioService {
         },
         captureId,
       );
+    await Promise.all(track.pending);
+    if (
+      track.cacheMode === 'save' &&
+      !track.cacheInvalid &&
+      source.recorded === track &&
+      source.status.phase === 'ready' &&
+      source.captureId === captureId
+    ) {
+      try {
+        await this.transcriptCache!.save(track.cacheQuery!, track.cacheModel!, track.captured);
+      } catch (error) {
+        this.reportError?.('whisper', 'Unable to persist saved transcripts', error);
+        throw error;
+      }
+    }
   }
 
   /** Reconnect a failed worker without changing its capture identity or input label. */
@@ -262,6 +345,9 @@ export class AudioService {
     const active = [...this.sources.values()].filter(
       (source) => source.captureId !== null && source.status.phase !== 'disconnected',
     );
+    for (const source of active) {
+      if (source.recorded?.cacheMode === 'save') source.recorded.cacheInvalid = true;
+    }
     const exits = active.map((source) => {
       this.retireWorker(source);
       this.patch(source, { phase: 'starting', error: null });
@@ -309,7 +395,10 @@ export class AudioService {
       !value.samples.every((sample) => Number.isFinite(sample) && Math.abs(sample) <= 1.01)
     )
       throw new Error('Invalid microphone PCM segment.');
-    if (source.status.pendingSegments >= 2) return;
+    if (source.status.pendingSegments >= 2) {
+      if (source.recorded?.cacheMode === 'save') source.recorded.cacheInvalid = true;
+      return;
+    }
     const epoch = source.epoch;
     const label = source.status.label;
     if (
@@ -322,7 +411,8 @@ export class AudioService {
     const observedAt = Math.max(value.observedAt ?? this.now(), source.lastObservedAt + 1);
     source.lastObservedAt = observedAt;
     this.patch(source, { pendingSegments: source.status.pendingSegments + 1 });
-    void source.worker
+    const track = source.recorded;
+    const pending = source.worker
       .transcribe(value.samples)
       .then(
         (text) => {
@@ -333,25 +423,38 @@ export class AudioService {
             text: text.trim().slice(0, 2000),
             observedAt,
           };
-          this.transcripts = [...this.transcripts, entry]
-            .sort((left, right) => left.observedAt - right.observedAt)
-            .slice(-MAX_SEGMENTS);
-          this.notify();
-          try {
-            this.onTranscript(entry);
-          } catch (error) {
-            this.reportError?.('whisper', 'Unable to attach speech transcript', error);
+          if (track?.cacheMode === 'save' && track.originMs !== null) {
+            const observedMs = entry.observedAt - track.originMs;
+            const availableMs = Math.max(observedMs, this.now() - track.originMs);
+            track.captured.push({ text: entry.text, observedMs, availableMs });
           }
+          this.emitTranscript(source, entry);
         },
         (error: unknown) => {
           if (epoch !== source.epoch) return;
+          if (track?.cacheMode === 'save') track.cacheInvalid = true;
           this.workerFailed(source, epoch, error);
         },
       )
       .finally(() => {
+        track?.pending.delete(pending);
         if (epoch !== source.epoch) return;
         this.patch(source, { pendingSegments: Math.max(0, source.status.pendingSegments - 1) });
       });
+    track?.pending.add(pending);
+  }
+
+  private emitTranscript(source: Source, entry: LabeledTranscript): void {
+    this.transcripts = [...this.transcripts, entry]
+      .sort((left, right) => left.observedAt - right.observedAt)
+      .slice(-MAX_SEGMENTS);
+    this.notify();
+    try {
+      this.onTranscript(entry);
+    } catch (error) {
+      if (source.recorded?.cacheMode === 'save') source.recorded.cacheInvalid = true;
+      this.reportError?.('whisper', 'Unable to attach speech transcript', error);
+    }
   }
 
   disconnected(captureId: string): AudioStatus {
@@ -434,6 +537,7 @@ export class AudioService {
 
   private workerFailed(source: Source, epoch: number, error: unknown): void {
     if (source.epoch !== epoch) return;
+    if (source.recorded?.cacheMode === 'save') source.recorded.cacheInvalid = true;
     const reason = error instanceof Error ? error.message : String(error);
     this.retireWorker(source);
     if (!source.captureId) return;
@@ -480,6 +584,10 @@ export class AudioService {
   }
 
   private release(source: Source): void {
+    if (source.recorded) {
+      for (const timer of source.recorded.playbackTimers) this.clock.clearTimeout(timer);
+      source.recorded.playbackTimers.clear();
+    }
     this.retireWorker(source);
     source.captureId = null;
     source.recorded = null;

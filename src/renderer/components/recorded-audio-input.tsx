@@ -30,9 +30,15 @@ import {
   type RecordedSegment,
 } from '../recorded-preview-timeline';
 import { RecordedMediaPreview } from './recorded-media-preview';
+import { mediaFingerprint } from '../media-fingerprint';
+import type {
+  RecordedTranscriptMode,
+  TranscriptCacheQuery,
+} from '../../shared/recorded-transcript-cache';
 
 interface RecordedAudioTrack {
   kind: 'file' | 'video';
+  file: File | null;
   embeddedTrackIndex: number | null;
   embeddedTracks: EmbeddedTrackChoice[] | null;
   id: string;
@@ -66,9 +72,11 @@ interface AudioRuntime {
   pauseResolver: (() => void) | null;
   pauseToken: number;
   generation: number;
+  cached: boolean;
 }
 
 export interface RecordedAudioHandle {
+  verifyCache(): Promise<void>;
   prepare(): Promise<void>;
   begin(
     origin: { observedAt: number; monotonicMs: number },
@@ -85,11 +93,15 @@ export const RecordedAudioInput = forwardRef<
   RecordedAudioHandle,
   {
     running: boolean;
+    transcriptMode?: RecordedTranscriptMode;
     onSelectionChange: (state: { ready: boolean; count: number }) => void;
     video?: RecordedVideoMedia | null;
     onSegmentChange?: (state: { segment: RecordedSegment; valid: boolean }) => void;
   }
->(function RecordedAudioInput({ running, onSelectionChange, video, onSegmentChange }, ref) {
+>(function RecordedAudioInput(
+  { running, transcriptMode = 'transcribe', onSelectionChange, video, onSegmentChange },
+  ref,
+) {
   const [tracks, setTracks] = useState<RecordedAudioTrack[]>([]);
   const [addType, setAddType] = useState<'file' | 'video'>('file');
   const [segment, setSegment] = useState<RecordedSegment>({ startMs: 0, endMs: null });
@@ -119,6 +131,10 @@ export const RecordedAudioInput = forwardRef<
       ? segment.startMs === 0 && segment.endMs === null
       : resolveRecordedSegment(segment, previewDurationMs) !== null;
   const [phases, setPhases] = useState<Record<string, string>>({});
+  const [cacheState, setCacheState] = useState<{ ready: boolean; text: string }>({
+    ready: false,
+    text: 'Checking saved transcripts…',
+  });
   const tracksRef = useRef(tracks);
   tracksRef.current = activeTracks;
   useEffect(() => {
@@ -179,8 +195,82 @@ export const RecordedAudioInput = forwardRef<
     runtimes.current.clear();
   };
 
+  const makeCacheQuery = async (
+    track: RecordedAudioTrack,
+    sampleRate: number,
+  ): Promise<TranscriptCacheQuery> => {
+    const duration = recordedPreviewDuration(video?.durationMs ?? null, tracksRef.current);
+    const range = resolveRecordedSegment(segmentRef.current, duration);
+    if (!range) throw new Error('Select a valid recorded segment before using transcript caching.');
+    if (!track.file) throw new Error('Recorded media file is unavailable for caching.');
+    return {
+      fingerprint: await mediaFingerprint(track.file),
+      sampleRate,
+      offsetMs: track.offsetMs,
+      startMs: range.startMs,
+      endMs: range.endMs,
+      embeddedTrackIndex: track.kind === 'video' ? track.embeddedTrackIndex : null,
+    };
+  };
+
+  const verifyCache = async (): Promise<void> => {
+    if (transcriptMode === 'transcribe') return;
+    const selected = tracksRef.current.filter(
+      (track) => track.enabled && track.durationMs !== null,
+    );
+    if (transcriptMode === 'cached' && !selected.length)
+      throw new Error('Add an audio source before selecting cached transcript playback.');
+    if (!selected.length) return;
+    const api = window.lonelyChat;
+    if (!api) throw new Error('Desktop transcript cache integration is unavailable.');
+    const context = new AudioContext();
+    const sampleRate = context.sampleRate;
+    await context.close();
+    for (const track of selected) {
+      const query = await makeCacheQuery(track, sampleRate);
+      if (transcriptMode !== 'cached') continue;
+      const result = await api.checkRecordedAudioCache(query);
+      if (!result.available) {
+        const reason =
+          result.reason === 'stale'
+            ? 'stale (source offset, segment, speech model or processing settings changed)'
+            : result.reason === 'invalid'
+              ? 'invalid or damaged'
+              : 'unavailable';
+        throw new Error(
+          `Saved transcripts for ${track.label} are ${reason}. Run real Whisper with “Transcribe and save” first.`,
+        );
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (transcriptMode === 'transcribe') return;
+    let canceled = false;
+    setCacheState({ ready: false, text: 'Checking media fingerprint and transcript cache…' });
+    void verifyCache().then(
+      () => {
+        if (!canceled)
+          setCacheState({
+            ready: true,
+            text:
+              transcriptMode === 'cached'
+                ? 'Cached transcripts available for all selected tracks'
+                : 'Ready to transcribe and save text-only caches',
+          });
+      },
+      (error: unknown) => {
+        if (!canceled) setCacheState({ ready: false, text: errorText(error) });
+      },
+    );
+    return () => {
+      canceled = true;
+    };
+  }, [transcriptMode, activeTracks, segment, video?.durationMs]);
+
   useImperativeHandle(ref, () => ({
     stop,
+    verifyCache,
     async prepare() {
       stop();
       const currentGeneration = generation.current;
@@ -272,9 +362,18 @@ export const RecordedAudioInput = forwardRef<
               pauseResolver: null,
               pauseToken: 0,
               generation: currentGeneration,
+              cached: transcriptMode === 'cached',
             };
             const current = runtime;
+            const cache =
+              transcriptMode === 'transcribe'
+                ? undefined
+                : {
+                    ...(await makeCacheQuery(track, context.sampleRate)),
+                    mode: transcriptMode,
+                  };
             const answer = await api.startRecordedAudio({
+              ...(cache ? { cache } : {}),
               id: track.id,
               label: track.label,
               captureId,
@@ -295,6 +394,7 @@ export const RecordedAudioInput = forwardRef<
             status(track.id, `Audio error: ${errorText(error)}`);
             if (runtime) close(runtime);
             else void context?.close().catch(() => {});
+            if (transcriptMode === 'cached') throw error;
           }
         }),
       );
@@ -381,7 +481,7 @@ export const RecordedAudioInput = forwardRef<
                 event: MessageEvent<Float32Array | { type: string }>,
               ) => {
                 if (event.data instanceof Float32Array) {
-                  if (event.data.length > 0) {
+                  if (!runtime.cached && event.data.length > 0) {
                     runtime.queue = runtime.queue.then(() =>
                       api.submitRecordedAudioPcm(event.data as Float32Array, runtime.captureId),
                     );
@@ -525,7 +625,7 @@ export const RecordedAudioInput = forwardRef<
               }
               return;
             }
-            if (!runtime.active) return;
+            if (!runtime.active || runtime.cached) return;
             if (
               runtime.audio.paused ||
               runtime.audio.seeking ||
@@ -600,6 +700,7 @@ export const RecordedAudioInput = forwardRef<
     onSelectionChange({
       ready:
         segmentValid &&
+        (transcriptMode === 'transcribe' || cacheState.ready) &&
         activeTracks.every(
           (track) =>
             !track.enabled ||
@@ -607,7 +708,7 @@ export const RecordedAudioInput = forwardRef<
         ),
       count: activeTracks.filter((track) => track.enabled).length,
     });
-  }, [activeTracks, onSelectionChange, segmentValid]);
+  }, [activeTracks, onSelectionChange, segmentValid, transcriptMode, cacheState.ready]);
 
   useEffect(() => {
     if (!running) stop();
@@ -630,6 +731,7 @@ export const RecordedAudioInput = forwardRef<
       const id = `recorded-audio-${++nextTrack}`;
       return {
         kind: 'file' as const,
+        file,
         embeddedTrackIndex: null,
         embeddedTracks: null,
         id,
@@ -651,6 +753,7 @@ export const RecordedAudioInput = forwardRef<
       ...previous,
       {
         kind: 'video',
+        file: video.file ?? null,
         embeddedTrackIndex: null,
         embeddedTracks: null,
         id: `recorded-audio-${++nextTrack}`,
@@ -674,6 +777,14 @@ export const RecordedAudioInput = forwardRef<
         worker. Audio is not monitored. Positive offsets delay a track; negative offsets skip its
         beginning.
       </p>
+      {transcriptMode !== 'transcribe' && (
+        <p
+          role="status"
+          className={`mt-2 text-xs ${cacheState.ready ? 'text-zinc-400' : 'text-amber-300'}`}
+        >
+          {cacheState.text}
+        </p>
+      )}
       <Label htmlFor="recorded-audio-type" className="mt-4 text-sm text-zinc-200">
         Audio source type
       </Label>

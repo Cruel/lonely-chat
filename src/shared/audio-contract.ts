@@ -1,4 +1,5 @@
 import type { LabeledTranscript } from './session-contract';
+import type { TranscriptCacheSelection } from './recorded-transcript-cache';
 
 export type AudioPhase = 'off' | 'starting' | 'ready' | 'disconnected' | 'error';
 
@@ -40,6 +41,8 @@ export interface RecordedAudioStart {
   readonly seekMs: number;
   /** Track starts at this signed offset from the media timeline's zero. */
   readonly offsetMs: number;
+  /** Explicitly save successful STT, or replay a validated prior cache. Omitted = real STT, no persistence. */
+  readonly cache?: TranscriptCacheSelection;
 }
 
 export function validateAudioLabel(value: unknown): string {

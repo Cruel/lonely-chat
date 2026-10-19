@@ -52,6 +52,10 @@ import type {
 import type { PromptPreset } from './prompt-preset-contract';
 import type { SimulationExperimentValues } from './playground-contract';
 import type { SpeechTestStart, SpeechTestSnapshot } from './speech-playground-contract';
+import type {
+  TranscriptCacheAvailability,
+  TranscriptCacheQuery,
+} from './recorded-transcript-cache';
 import type { OverlayStatus } from './overlay-contract';
 import type { ModelDiscoveryResult, ModelRole } from './model-contract';
 import type { ModelInstallRequest, ModelManagerSnapshot } from './model-install-contract';
@@ -124,6 +128,7 @@ export interface DesktopInvocations {
   'audio:remove': AudioStatus;
   'audio:stop': AudioStatus;
   'audio:segment': void;
+  'audio:cache:check': TranscriptCacheAvailability;
   'audio:recorded:start': AudioStatus;
   'audio:recorded:arm': void;
   'audio:recorded:resync': void;
@@ -199,6 +204,7 @@ export interface DesktopArguments {
   'audio:remove': [id: string];
   'audio:stop': [captureId: string];
   'audio:segment': [segment: AudioSegment, captureId: string];
+  'audio:cache:check': [query: TranscriptCacheQuery];
   'audio:recorded:start': [source: RecordedAudioStart];
   'audio:recorded:arm': [captureId: string, originMs: number, mediaStartMs: number];
   'audio:recorded:resync': [captureId: string, originMs: number, mediaStartMs: number];
@@ -299,6 +305,7 @@ export interface DesktopAPI {
   retryAudio(id: string): Promise<AudioStatus>;
   stopAudio(captureId: string): Promise<AudioStatus>;
   submitAudioSegment(segment: AudioSegment, captureId: string): Promise<void>;
+  checkRecordedAudioCache(query: TranscriptCacheQuery): Promise<TranscriptCacheAvailability>;
   startRecordedAudio(source: RecordedAudioStart): Promise<AudioStatus>;
   armRecordedAudio(captureId: string, originMs: number, mediaStartMs: number): Promise<void>;
   resyncRecordedAudio(captureId: string, originMs: number, mediaStartMs: number): Promise<void>;

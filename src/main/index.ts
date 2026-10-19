@@ -53,6 +53,8 @@ import {
 } from './native-runtime-path';
 import { NativeSpeech } from './native-speech';
 import { AudioService } from './audio-service';
+import { RecordedTranscriptCache } from './recorded-transcript-cache';
+import { validateTranscriptCacheQuery } from '../shared/recorded-transcript-cache';
 import { AudioConfigStore } from './audio-config-store';
 import type { ChatEvent, DesktopInvocations, DesktopArguments } from '../shared/chat-contract';
 
@@ -119,6 +121,7 @@ const floating = new FloatingChatWindowController(
 const preferenceStore = new PreferencesStore(app.getPath('userData'));
 const promptPresets = new PromptPresetStore(app.getPath('userData'));
 const audioConfig = new AudioConfigStore(app.getPath('userData'));
+const transcriptCache = new RecordedTranscriptCache(app.getPath('userData'));
 const windowStore = new WindowPreferencesStore(app.getPath('userData'));
 let windowPrefs: WindowPreferences = DEFAULT_WINDOW_PREFERENCES;
 let pendingWindowSave: ReturnType<typeof setTimeout> | null = null;
@@ -483,6 +486,13 @@ function registerHandlers(): void {
       }
       if (
         role === 'speech-to-text' &&
+        session.snapshot().inputMode === 'recorded' &&
+        session.snapshot().transcriptMode === 'cached' &&
+        allowsRecordedSessionMedia(session.snapshot())
+      )
+        throw new Error('Stop cached transcript playback before changing the speech model.');
+      if (
+        role === 'speech-to-text' &&
         audio
           .snapshot()
           .sources.some((source) => source.phase !== 'off' && source.phase !== 'disconnected')
@@ -591,8 +601,20 @@ function registerHandlers(): void {
       segment: import('../shared/audio-contract').AudioSegment,
       captureId: string,
     ) => audio.submit(segment, captureId),
+    'audio:cache:check': (
+      query: import('../shared/recorded-transcript-cache').TranscriptCacheQuery,
+    ) => {
+      const speechModel = installs.snapshot().active['speech-to-text'];
+      if (!speechModel) return { available: false, reason: 'unavailable' as const, count: 0 };
+      return transcriptCache.check(validateTranscriptCacheQuery(query), speechModel);
+    },
     'audio:recorded:start': (source: import('../shared/audio-contract').RecordedAudioStart) => {
       requireRecordedAudio();
+      if (
+        (source?.cache?.mode ?? 'transcribe') !==
+        (session.snapshot().transcriptMode ?? 'transcribe')
+      )
+        throw new Error('Recorded audio transcription mode does not match this Run.');
       return audio.startRecorded(source);
     },
     'audio:recorded:arm': (captureId: string, originMs: number, mediaStartMs: number) => {
@@ -609,7 +631,7 @@ function registerHandlers(): void {
     },
     'audio:recorded:finish': (captureId: string) => {
       requireRecordedAudio();
-      audio.finishRecorded(captureId);
+      return audio.finishRecorded(captureId);
     },
     'models:choose-directory': async () => {
       if (playground.busy || speechTest.busy)
@@ -858,6 +880,8 @@ async function boot(): Promise<void> {
     undefined,
     undefined,
     reportError,
+    transcriptCache,
+    () => installs.snapshot().active['speech-to-text'],
   );
   sessionMedia = new SessionMedia(session, audio, () => {
     ++videoSelectionGeneration;
@@ -1052,6 +1076,7 @@ app.on('will-quit', () => {
   ipcMain.removeHandler('audio:remove');
   ipcMain.removeHandler('audio:stop');
   ipcMain.removeHandler('audio:segment');
+  ipcMain.removeHandler('audio:cache:check');
   ipcMain.removeHandler('audio:recorded:start');
   ipcMain.removeHandler('audio:recorded:arm');
   ipcMain.removeHandler('audio:recorded:resync');
