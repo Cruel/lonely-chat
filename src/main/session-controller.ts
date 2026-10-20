@@ -2,10 +2,10 @@ import type { DiagnosticCapture } from './diagnostic-capture';
 import type { OperationalErrorSink } from './operational-logger';
 import type { ChatService } from './chat-service';
 import { ChatScheduler, systemClock, type TimerClock } from './chat-scheduler';
-import { FakeInference, type InferenceProvider } from './fake-inference';
+import { FakeInference, type InferenceInput, type InferenceProvider } from './fake-inference';
 import { clipSimulationWindow } from './simulation-cycle';
 import { SimulationExecutionError } from './simulation-execution';
-import { InferenceCoordinator } from './inference-coordinator';
+import { InferenceCoordinator, type UnifiedInferenceAdapter } from './inference-coordinator';
 import { fixtureInferenceAdapter, llamaCppAdapter } from './unified-inference-adapters';
 import { InferenceHistory, type CycleInput } from './inference-history';
 import { VideoFrameBuffer } from './video-frame-buffer';
@@ -54,6 +54,7 @@ export class SessionController {
   };
   private subscribers = new Set<(snapshot: SessionSnapshot) => void>();
   private readonly coordinator = new InferenceCoordinator();
+  private remoteAdapter: ((input: InferenceInput) => UnifiedInferenceAdapter) | null = null;
   private readonly scheduler: ChatScheduler;
   private readonly history: InferenceHistory;
   private readonly video: VideoFrameBuffer;
@@ -121,6 +122,13 @@ export class SessionController {
           index,
         ),
     );
+  }
+
+  /** Main-process only; set before starting a remote Run, never exposed as IPC state. */
+  configureRemote(adapter: (input: InferenceInput) => UnifiedInferenceAdapter): void {
+    if (['running', 'starting', 'switching'].includes(this.state.phase))
+      throw new Error('Stop the current Run before changing its remote model.');
+    this.remoteAdapter = adapter;
   }
 
   canExecutePausedPlayground(): boolean {
@@ -260,12 +268,15 @@ export class SessionController {
     const context =
       rawContext === '' && options.inputMode === 'recorded' && options.hasAudioFiles
         ? 'React to the recorded audio inputs.'
-        : rawContext === '' && mode === 'native' && this.video.active
+        : rawContext === '' && mode !== 'fake' && this.video.active
           ? options.inputMode === 'recorded'
             ? 'React to the recorded video input.'
             : 'React to the live video input.'
           : validateContext(rawContext);
-    if (mode !== 'fake' && mode !== 'native') throw new Error('Unknown inference mode.');
+    if (mode !== 'fake' && mode !== 'native' && mode !== 'remote')
+      throw new Error('Unknown inference mode.');
+    if (mode === 'remote' && !this.remoteAdapter)
+      throw new Error('Remote inference is not configured.');
     if (mode === 'native' && !this.nativeInference) {
       throw new Error('The native inference runtime is not configured.');
     }
@@ -301,13 +312,13 @@ export class SessionController {
     this.scheduler.start();
     this.setState({
       runId: this.runId,
-      phase: mode === 'native' ? 'starting' : 'running',
+      phase: mode === 'fake' ? 'running' : 'starting',
       recordedPlayback: options.inputMode === 'recorded' ? 'playing' : null,
       mode,
       inputMode: options.inputMode,
       transcriptMode:
         options.inputMode === 'recorded' ? (options.transcriptMode ?? 'transcribe') : 'transcribe',
-      modelId: mode === 'native' ? modelId : null,
+      modelId: mode === 'fake' ? null : modelId,
       events: [],
       cycle: 0,
       retryAttempt: 0,
@@ -629,7 +640,7 @@ export class SessionController {
     }
     const epoch = ++this.epoch;
     this.setState({
-      phase: this.state.mode === 'native' ? 'starting' : 'running',
+      phase: this.state.mode === 'fake' ? 'running' : 'starting',
       error: null,
       warning: null,
       retryAttempt: 0,
@@ -828,19 +839,22 @@ export class SessionController {
             signal: AbortSignal,
           ) => Promise<unknown>;
         };
-        const adapter = nativeProvider.completeSimulationRequest
-          ? llamaCppAdapter(
-              {
-                completeSimulationRequest: (selected, request, signal) =>
-                  nativeProvider.completeSimulationRequest!(
-                    selected as CycleInput,
-                    request,
-                    signal,
-                  ),
-              },
-              effectiveInput,
-            )
-          : fixtureInferenceAdapter(provider, effectiveInput);
+        const adapter =
+          this.state.mode === 'remote'
+            ? this.remoteAdapter!(effectiveInput)
+            : nativeProvider.completeSimulationRequest
+              ? llamaCppAdapter(
+                  {
+                    completeSimulationRequest: (selected, request, signal) =>
+                      nativeProvider.completeSimulationRequest!(
+                        selected as CycleInput,
+                        request,
+                        signal,
+                      ),
+                  },
+                  effectiveInput,
+                )
+              : fixtureInferenceAdapter(provider, effectiveInput);
         return this.coordinator.execute(effectiveInput, adapter, {
           signal: abort.signal,
           enforceAudience: Boolean(this.audience),
@@ -896,9 +910,7 @@ export class SessionController {
         // Native output is constrained to the predicted upcoming playback window. Preserve
         // deterministic fixture offsets as-is to keep the playback/scheduler test surface.
         const messages =
-          this.state.mode === 'native'
-            ? clipSimulationWindow(accepted, windowMs).messages
-            : resolved;
+          this.state.mode !== 'fake' ? clipSimulationWindow(accepted, windowMs).messages : resolved;
         const enqueuedPhysicalAt = this.clock.wallNow();
         this.trace.update(traceId, {
           stage: 'scheduled',

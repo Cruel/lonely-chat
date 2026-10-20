@@ -30,7 +30,7 @@ export function validateScenarioConfig(value: unknown): RecordedScenarioConfig {
   const video = config.video === null ? null : object(config.video);
   if (
     !text(config.context, 2000) ||
-    (config.mode !== 'fake' && config.mode !== 'native') ||
+    (config.mode !== 'fake' && config.mode !== 'native' && config.mode !== 'remote') ||
     (video &&
       (!filePath(video.path) ||
         (video.offsetMs !== undefined && !integer(video.offsetMs, -86400000, 86400000)))) ||

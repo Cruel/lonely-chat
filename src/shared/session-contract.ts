@@ -1,5 +1,5 @@
 export type SessionPhase = 'stopped' | 'starting' | 'running' | 'switching' | 'error';
-export type InferenceMode = 'fake' | 'native';
+export type InferenceMode = 'fake' | 'native' | 'remote';
 import type { RecordedTranscriptMode } from './recorded-transcript-cache';
 import type { RecordedScenarioConfig } from './recorded-scenario-contract';
 export interface SimulationInputOptions {
@@ -17,6 +17,8 @@ export interface SimulationInputOptions {
   /** Desktop-only frozen source selections; absent for legacy/manual invocations. */
   readonly recordedConfig?: RecordedScenarioConfig;
   readonly recordedScenarioId?: string;
+  /** Main resolves this reference at start; credentials never enter a Run configuration. */
+  readonly remoteModelConfigurationId?: string;
 }
 export type VideoSamplingStrategy = 'uniform' | 'recent-weighted';
 export type ComputeBackend = 'auto' | 'cpu' | 'cuda' | 'vulkan' | 'metal';

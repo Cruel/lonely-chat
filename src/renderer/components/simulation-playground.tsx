@@ -32,6 +32,7 @@ import type {
 import type { ModelManagerSnapshot } from '../../shared/model-install-contract';
 import type { ChatterIdentity } from '../../shared/audience-contract';
 import type { PromptPreset } from '../../shared/prompt-preset-contract';
+import type { RemoteModelConfiguration } from '../../shared/remote-inference-contract';
 
 type Preview = { constructedRequest: unknown; submittedRequest: unknown };
 type HistoryItem = { id: string; result: SimulationExperimentResult; sourceRevision: string };
@@ -52,6 +53,8 @@ export function SimulationPlayground({
 }) {
   const [models, setModels] = useState<ModelManagerSnapshot | null>(null);
   const [modelId, setModelId] = useState('');
+  const [remoteModelId, setRemoteModelId] = useState('');
+  const [remoteModels, setRemoteModels] = useState<readonly RemoteModelConfiguration[]>([]);
   const [context, setContext] = useState('Playing a game on stream.');
   const [cycle, setCycle] = useState('1');
   const [windowMs, setWindowMs] = useState('3000');
@@ -110,6 +113,12 @@ export function SimulationPlayground({
       ?.listPromptPresets()
       .then((value) => {
         if (mounted) setPresets(value);
+      })
+      .catch(() => {});
+    void api
+      ?.listRemoteConfigurations?.()
+      .then((catalog) => {
+        if (mounted) setRemoteModels(catalog.models);
       })
       .catch(() => {});
     const stopModels = api?.onModelsChange((value) => {
@@ -176,7 +185,7 @@ export function SimulationPlayground({
       ) as unknown as SimulationExperimentValues['recentChat'],
     };
     return {
-      modelId: selectedModelId,
+      modelId: remoteModelId || selectedModelId,
       seed,
       values,
       ...(imageMaxTokens === null ? {} : { imageMaxTokens }),
@@ -225,13 +234,14 @@ export function SimulationPlayground({
   async function savePreset() {
     try {
       if (!window.lonelyChat) return;
-      const validated = selectedModelId
-        ? await window.lonelyChat.previewSimulation({
-            ...request(),
-            rawRequestJson: undefined,
-            frames: undefined,
-          })
-        : null;
+      const validated =
+        remoteModelId || selectedModelId
+          ? await window.lonelyChat.previewSimulation({
+              ...request(),
+              rawRequestJson: undefined,
+              frames: undefined,
+            })
+          : null;
       // Only persist structured values. Selected media and raw overrides are ephemeral.
       const preset = await window.lonelyChat.savePromptPreset({
         ...(presetId ? { id: presetId } : {}),
@@ -272,6 +282,8 @@ export function SimulationPlayground({
     try {
       const payload = { ...request(), rawRequestJson: undefined };
       submittedToMain = true;
+      if (remoteModelId)
+        throw new Error('Remote requests are constructed by the shared coordinator at execution.');
       const result = await window.lonelyChat.previewSimulation(payload);
       setPreview(result);
       if (useRaw) setRawJson(JSON.stringify(result.constructedRequest, null, 2));
@@ -291,7 +303,9 @@ export function SimulationPlayground({
       if (!seedLocked && !useRaw) setSeedText(String(seed));
       const payload = request(seed);
       submittedToMain = true;
-      const result = await window.lonelyChat.runSimulationExperiment(payload);
+      const result = remoteModelId
+        ? await window.lonelyChat.runRemoteUnifiedPlayground!(payload, remoteModelId)
+        : await window.lonelyChat.runSimulationExperiment(payload);
       const id = crypto.randomUUID();
       const sourceRevision =
         presetId && loadedRevision
@@ -417,6 +431,25 @@ export function SimulationPlayground({
             ? `Loaded revision ${loadedRevision}. Edits are independent until saved; experiments never update the preset.`
             : 'Unsaved independent experiment.'}
         </p>
+        <Label htmlFor="simulation-remote-model">Remote Model Configuration (optional)</Label>
+        <select
+          id="simulation-remote-model"
+          className="w-full rounded-md border border-zinc-700 bg-zinc-900 p-2 text-sm"
+          value={remoteModelId}
+          onChange={(event) => {
+            setRemoteModelId(event.target.value);
+            setUseRaw(false);
+            setPreview(null);
+            if (event.target.value) setVideoMode('frames');
+          }}
+        >
+          <option value="">Use an installed local model</option>
+          {remoteModels.map((entry) => (
+            <option key={entry.id} value={entry.id}>
+              {entry.name} — {entry.model}
+            </option>
+          ))}
+        </select>
         <Label htmlFor="simulation-model">Installed model</Label>
         <Select
           items={installed.map((item) => ({
@@ -426,7 +459,11 @@ export function SimulationPlayground({
           value={selectedModelId}
           onValueChange={(value) => setModelId(value ?? '')}
         >
-          <SelectTrigger id="simulation-model" className="w-full" disabled={!installed.length}>
+          <SelectTrigger
+            id="simulation-model"
+            className="w-full"
+            disabled={!installed.length || !!remoteModelId}
+          >
             <SelectValue placeholder="Install a language GGUF model first" />
           </SelectTrigger>
           <SelectContent>
@@ -578,13 +615,17 @@ export function SimulationPlayground({
           </div>
         ))}
         <div className="flex flex-wrap gap-2">
-          <Button variant="secondary" onClick={() => void construct()} disabled={!selectedModelId}>
+          <Button
+            variant="secondary"
+            onClick={() => void construct()}
+            disabled={!!remoteModelId || !selectedModelId}
+          >
             Construct request
           </Button>
           <Button
             variant="outline"
             aria-pressed={useRaw}
-            disabled={videoMode === 'native-video'}
+            disabled={videoMode === 'native-video' || !!remoteModelId}
             onClick={() => {
               if (!useRaw && preview)
                 setRawJson(JSON.stringify(preview.constructedRequest, null, 2));
@@ -622,7 +663,7 @@ export function SimulationPlayground({
         )}
         <div className="flex items-center gap-3">
           <Button
-            disabled={busy || simulationActive || !selectedModelId}
+            disabled={busy || simulationActive || (!remoteModelId && !selectedModelId)}
             onClick={() => void run()}
           >
             {busy ? 'Running inference…' : 'Run simulation one-shot'}

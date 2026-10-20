@@ -42,12 +42,20 @@ import {
   Tray,
   Menu,
   nativeImage,
+  safeStorage,
   protocol,
 } from 'electron';
 import { ChatService, publishSample } from './chat-service';
 import { SessionController } from './session-controller';
 import { SessionMedia } from './session-media';
 import { PreferencesStore } from './preferences-store';
+import { RemoteInferenceStore } from './remote-inference-store';
+import {
+  remoteUnifiedAdapter,
+  probeRemoteModel,
+  listRemoteModels,
+} from './remote-inference-adapter';
+import { RemoteInferencePlayground } from './remote-inference-playground';
 import {
   DEFAULT_PREFERENCES,
   validatePreferences,
@@ -173,6 +181,14 @@ const floating = new FloatingChatWindowController(
   reportError,
 );
 const preferenceStore = new PreferencesStore(app.getPath('userData'));
+const remoteStore = new RemoteInferenceStore(app.getPath('userData'), {
+  available: () =>
+    safeStorage.isEncryptionAvailable() &&
+    (process.platform !== 'linux' || safeStorage.getSelectedStorageBackend() !== 'basic_text'),
+  encrypt: (secret) => safeStorage.encryptString(secret),
+  decrypt: (encrypted) => safeStorage.decryptString(encrypted),
+});
+const remotePlayground = new RemoteInferencePlayground();
 const promptPresets = new PromptPresetStore(app.getPath('userData'));
 const audioConfig = new AudioConfigStore(app.getPath('userData'));
 const transcriptCache = new RecordedTranscriptCache(app.getPath('userData'));
@@ -319,6 +335,48 @@ function registerHandlers(): void {
     return status;
   };
   const actions = {
+    'remote:list': () => remoteStore.list(),
+    'remote:connection:save': (
+      connection: import('../shared/remote-inference-contract').RemoteConnection,
+    ) => remoteStore.putConnection(connection),
+    'remote:connection:delete': (id: string) => remoteStore.removeConnection(id),
+    'remote:model:save': (
+      model: import('../shared/remote-inference-contract').RemoteModelConfiguration,
+    ) => remoteStore.putModel(model),
+    'remote:model:delete': (id: string) => remoteStore.removeModel(id),
+    'remote:credential:set': (id: string, secret: string) => remoteStore.setCredential(id, secret),
+    'remote:models:list': async (connectionId: string) => {
+      const { connection, credential } = remoteStore.resolve(connectionId);
+      return listRemoteModels(
+        {
+          connection,
+          credential,
+          model: {
+            id: 'model-discovery',
+            connectionId,
+            name: 'Discovery',
+            model: 'discovery',
+            images: false,
+            allowRemoteImages: false,
+            outputFormat: 'prompt-json',
+          },
+        },
+        AbortSignal.timeout(20_000),
+      );
+    },
+    'remote:model:probe': (modelId: string) =>
+      probeRemoteModel(remoteStore.selected(modelId), AbortSignal.timeout(25_000)),
+    'remote:playground:unified': async (
+      request: import('../shared/playground-contract').SimulationExperimentRequest,
+      modelId: string,
+    ) => {
+      if (
+        ['running', 'starting', 'switching'].includes(session.snapshot().phase) ||
+        sessionStarting
+      )
+        throw new Error('Stop Simulation before running remote Playground.');
+      return remotePlayground.run(request, remoteStore.selected(modelId), session.getPreferences());
+    },
     'playground:status': () => playground.snapshot(),
     'video-tools:status': async () => broadcastVideoTools(await videoTools.status(true)),
     'video-tools:choose-directory': async () => {
@@ -743,11 +801,15 @@ function registerHandlers(): void {
           : undefined;
         if (presetId && !preset) throw new Error('Selected prompt preset was not found.');
         const activeModel =
-          mode === 'native'
-            ? packageE2E
-              ? 'cert-worker'
-              : installs.snapshot().active['vision-language']
-            : null;
+          mode === 'remote'
+            ? recordedConfig?.settingsPolicy === 'saved'
+              ? recordedConfig.modelId
+              : (options?.remoteModelConfigurationId ?? null)
+            : mode === 'native'
+              ? packageE2E
+                ? 'cert-worker'
+                : installs.snapshot().active['vision-language']
+              : null;
         if (
           recordedConfig?.settingsPolicy === 'saved' &&
           mode === 'native' &&
@@ -758,6 +820,8 @@ function registerHandlers(): void {
           recordedConfig?.settingsPolicy === 'saved'
             ? recordedConfig.settingsSnapshot
             : session.getPreferences();
+        if (remotePlayground.busy)
+          throw new Error('Stop remote Playground before starting Simulation.');
         // Audience size is managed outside SessionController; align it with the
         // frozen Run settings before inference (without rewriting global prefs).
         if (effectiveSettings.audienceCount !== audience.snapshot().targetCount)
@@ -783,6 +847,16 @@ function registerHandlers(): void {
         // Playground may own an idle warm worker even though it is not busy.
         // The start reservation prevents another Playground request during this await.
         await playground.stop();
+        if (mode === 'remote') {
+          if (!activeModel) throw new Error('Select a remote Model Configuration.');
+          const selected = remoteStore.selected(activeModel);
+          session.configureRemote((input) =>
+            remoteUnifiedAdapter(selected, {
+              timeoutMs: effectiveSettings.inferenceTimeoutMs,
+              roster: input.roster,
+            }),
+          );
+        }
         const started = session.start(
           preset ? preset.values.context : (recordedConfig?.context ?? context),
           mode,
@@ -1313,6 +1387,7 @@ async function boot(): Promise<void> {
   } catch (error) {
     logger.error('preferences', 'Invalid local preferences; using safe defaults', error);
   }
+  await remoteStore.load();
   await installs.open();
   audience = new AudienceService(app.getPath('userData'), preferences.audienceCount);
   await audience.open();
@@ -1610,6 +1685,7 @@ app.on('window-all-closed', () => {
 const shutdown = new ManagedShutdown(
   () => {
     stopSession();
+    remotePlayground.stop();
   },
   () => {
     installs.cancel();
@@ -1654,6 +1730,18 @@ app.on('before-quit', (event) => {
   });
 });
 app.on('will-quit', () => {
+  for (const channel of [
+    'remote:list',
+    'remote:connection:save',
+    'remote:connection:delete',
+    'remote:model:save',
+    'remote:model:delete',
+    'remote:credential:set',
+    'remote:models:list',
+    'remote:model:probe',
+    'remote:playground:unified',
+  ])
+    ipcMain.removeHandler(channel);
   ipcMain.removeHandler('playground:status');
   ipcMain.removeHandler('video-tools:status');
   ipcMain.removeHandler('video-tools:choose-directory');

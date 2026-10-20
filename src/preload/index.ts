@@ -185,6 +185,16 @@ const api: DesktopAPI = {
     ipcRenderer.on('native:change', receive);
     return () => ipcRenderer.removeListener('native:change', receive);
   },
+  listRemoteConfigurations: () => invoke('remote:list'),
+  saveRemoteConnection: (connection) => invoke('remote:connection:save', connection),
+  deleteRemoteConnection: (id) => invoke('remote:connection:delete', id),
+  saveRemoteModel: (model) => invoke('remote:model:save', model),
+  deleteRemoteModel: (id) => invoke('remote:model:delete', id),
+  setRemoteCredential: (id, secret) => invoke('remote:credential:set', id, secret),
+  listRemoteModels: (connectionId) => invoke('remote:models:list', connectionId),
+  probeRemoteModel: (modelId) => invoke('remote:model:probe', modelId),
+  runRemoteUnifiedPlayground: (request, modelId) =>
+    invoke('remote:playground:unified', request, modelId),
   getPreferences: () => invoke('preferences:get'),
   setPreferences: (preferences) => invoke('preferences:set', preferences),
   getAudience: () => invoke('audience:get'),

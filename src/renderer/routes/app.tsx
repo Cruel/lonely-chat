@@ -30,6 +30,8 @@ import {
   type DesktopSection,
 } from '@/components/desktop-sidebar';
 import { ModelManager } from '@/components/model-manager';
+import { RemoteConnectionsPanel } from '@/components/remote-connections-panel';
+import type { RemoteCatalog } from '../../shared/remote-inference-contract';
 import { NumericSettingCombobox } from '@/components/numeric-setting-combobox';
 import { VideoInput } from '@/components/video-input';
 import { VideoInferenceSettings } from '@/components/video-inference-settings';
@@ -170,6 +172,17 @@ export function DesktopPage() {
   const [selectedPresetRevision, setSelectedPresetRevision] = useState<number | null>(null);
   const [sessionSeedText, setSessionSeedText] = useState('');
   const [inferenceMode, setInferenceMode] = useState<InferenceMode>('fake');
+  const [remoteCatalog, setRemoteCatalog] = useState<RemoteCatalog>({
+    connections: [],
+    models: [],
+  });
+  const [remoteModelId, setRemoteModelId] = useState('');
+  useEffect(() => {
+    void window.lonelyChat
+      ?.listRemoteConfigurations?.()
+      .then(setRemoteCatalog)
+      .catch(() => {});
+  }, []);
   const [inputMode, setInputMode] = useState<'live' | 'recorded'>('live');
   const [publishRecorded, setPublishRecorded] = useState(false);
   const [transcriptMode, setTranscriptMode] = useState<RecordedTranscriptMode>('transcribe');
@@ -349,9 +362,11 @@ export function DesktopPage() {
         'An audio source has no persistent local path. Use “Relink audio file” before saving or starting.',
       );
     const model =
-      inferenceMode === 'native'
-        ? ((await window.lonelyChat?.getModelsSnapshot())?.active['vision-language'] ?? null)
-        : null;
+      inferenceMode === 'remote'
+        ? remoteModelId || null
+        : inferenceMode === 'native'
+          ? ((await window.lonelyChat?.getModelsSnapshot())?.active['vision-language'] ?? null)
+          : null;
     return {
       context: manualContext,
       mode: inferenceMode,
@@ -408,6 +423,7 @@ export function DesktopPage() {
     setScenarioName(scenario.name);
     setManualContext(scenario.config.context);
     setInferenceMode(scenario.config.mode);
+    if (scenario.config.mode === 'remote') setRemoteModelId(scenario.config.modelId ?? '');
     setSelectedPresetId(scenario.config.presetId ?? '');
     setSelectedPresetRevision(scenario.config.presetRevision);
     setSessionSeedText(scenario.config.seed === null ? '' : String(scenario.config.seed));
@@ -468,6 +484,7 @@ export function DesktopPage() {
               : {}),
           }
         : {}),
+      ...(inferenceMode === 'remote' ? { remoteModelConfigurationId: remoteModelId } : {}),
       ...(configuredSeed === undefined ? {} : { seed: configuredSeed }),
       ...(selectedPresetId ? { presetId: selectedPresetId } : {}),
       ...(selectedPresetId && selectedPresetRevision
@@ -707,10 +724,12 @@ export function DesktopPage() {
                   items={[
                     { value: 'fake', label: 'Deterministic fixture (no model)' },
                     { value: 'native', label: 'Local llama.cpp (active GGUF)' },
+                    { value: 'remote', label: 'Remote / OpenAI-compatible' },
                   ]}
                   value={inferenceMode}
                   onValueChange={(value) => {
-                    if (value === 'fake' || value === 'native') setInferenceMode(value);
+                    if (value === 'fake' || value === 'native' || value === 'remote')
+                      setInferenceMode(value);
                   }}
                 >
                   <SelectTrigger
@@ -723,8 +742,32 @@ export function DesktopPage() {
                   <SelectContent>
                     <SelectItem value="fake">Deterministic fixture (no model)</SelectItem>
                     <SelectItem value="native">Local llama.cpp (active GGUF)</SelectItem>
+                    <SelectItem value="remote">Remote / OpenAI-compatible</SelectItem>
                   </SelectContent>
                 </Select>
+                {inferenceMode === 'remote' && (
+                  <div className="mt-4">
+                    <Label htmlFor="remote-simulation-model">Remote Model Configuration</Label>
+                    <select
+                      id="remote-simulation-model"
+                      className="mt-2 w-full rounded-md border border-zinc-700 bg-zinc-900 p-2 text-sm"
+                      value={remoteModelId}
+                      disabled={running}
+                      onChange={(e) => setRemoteModelId(e.target.value)}
+                    >
+                      <option value="">Select a saved remote model</option>
+                      {remoteCatalog.models.map((model) => (
+                        <option key={model.id} value={model.id}>
+                          {model.name} — {model.model}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="mt-2 text-xs text-zinc-400">
+                      Configure Connections, model capabilities and remote image permission in
+                      Settings first.
+                    </p>
+                  </div>
+                )}
                 <Label htmlFor="session-preset" className="mt-4 text-sm text-zinc-200">
                   Prompt preset
                 </Label>
@@ -1514,7 +1557,12 @@ export function DesktopPage() {
                       audience.status.phase === 'generating' ||
                       !seedValid
                     }
-                    onClick={() => void audience.regenerate(inferenceMode, configuredSeed)}
+                    onClick={() =>
+                      void audience.regenerate(
+                        inferenceMode === 'remote' ? 'fake' : inferenceMode,
+                        configuredSeed,
+                      )
+                    }
                   >
                     Regenerate roster ({inferenceMode === 'native' ? 'native model' : 'fixture'})
                   </Button>
@@ -1822,6 +1870,9 @@ export function DesktopPage() {
                 title="Settings"
                 description="Control application behavior, inference timing and context retention."
               />
+              <Panel className="mb-5">
+                <RemoteConnectionsPanel onCatalog={setRemoteCatalog} />
+              </Panel>
               <Panel className="mb-5">
                 <BackgroundControls />
               </Panel>

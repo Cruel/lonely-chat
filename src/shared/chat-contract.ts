@@ -83,7 +83,26 @@ import type { ModelDiscoveryResult, ModelRole } from './model-contract';
 import type { ModelInstallRequest, ModelManagerSnapshot } from './model-install-contract';
 
 /** IPC return contract: renderer methods and main handlers share the same mapped channels. */
+import type {
+  RemoteCatalog,
+  RemoteConnection,
+  RemoteModelConfiguration,
+} from './remote-inference-contract';
+
 export interface DesktopInvocations {
+  'remote:list': RemoteCatalog;
+  'remote:connection:save': RemoteConnection;
+  'remote:connection:delete': void;
+  'remote:model:save': RemoteModelConfiguration;
+  'remote:model:delete': void;
+  'remote:credential:set': 'session' | 'protected';
+  'remote:models:list': string[];
+  'remote:model:probe': {
+    compatible: true;
+    protocol: RemoteConnection['protocol'];
+    usage: import('./playground-contract').FreeformUsage;
+  };
+  'remote:playground:unified': import('./playground-contract').SimulationExperimentResult;
   'diagnostics:get': DiagnosticStatus;
   'diagnostics:configure': DiagnosticStatus;
   'diagnostics:export': boolean;
@@ -203,6 +222,18 @@ export interface DesktopInvocations {
 
 /** Method arguments are also a shared contract, not renderer-defined strings. */
 export interface DesktopArguments {
+  'remote:list': [];
+  'remote:connection:save': [connection: RemoteConnection];
+  'remote:connection:delete': [id: string];
+  'remote:model:save': [configuration: RemoteModelConfiguration];
+  'remote:model:delete': [id: string];
+  'remote:credential:set': [id: string, secret: string];
+  'remote:models:list': [connectionId: string];
+  'remote:model:probe': [modelId: string];
+  'remote:playground:unified': [
+    request: import('./playground-contract').SimulationExperimentRequest,
+    modelConfigurationId: string,
+  ];
   'diagnostics:get': [];
   'diagnostics:configure': [enabled: boolean];
   'diagnostics:export': [];
@@ -327,6 +358,18 @@ export interface DesktopArguments {
 }
 
 export interface DesktopAPI {
+  listRemoteConfigurations?(): Promise<RemoteCatalog>;
+  saveRemoteConnection?(connection: RemoteConnection): Promise<RemoteConnection>;
+  deleteRemoteConnection?(id: string): Promise<void>;
+  saveRemoteModel?(configuration: RemoteModelConfiguration): Promise<RemoteModelConfiguration>;
+  deleteRemoteModel?(id: string): Promise<void>;
+  setRemoteCredential?(id: string, secret: string): Promise<'session' | 'protected'>;
+  listRemoteModels?(connectionId: string): Promise<string[]>;
+  probeRemoteModel?(modelId: string): Promise<DesktopInvocations['remote:model:probe']>;
+  runRemoteUnifiedPlayground?(
+    request: import('./playground-contract').SimulationExperimentRequest,
+    modelConfigurationId: string,
+  ): Promise<import('./playground-contract').SimulationExperimentResult>;
   getDiagnosticCapture(): Promise<DiagnosticStatus>;
   configureDiagnosticCapture(enabled: boolean): Promise<DiagnosticStatus>;
   exportDiagnosticCapture(): Promise<boolean>;
