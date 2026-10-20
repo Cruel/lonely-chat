@@ -287,6 +287,60 @@ describe('ChatGPT OAuth and subscription inference', () => {
     expect(reopen.status().accounts[0]).toMatchObject({ authorized: true, storage: 'protected' });
   });
 
+  it('keeps the OAuth callback alive if automatic browser launch fails and allows manual retry', async () => {
+    const f = fixture();
+    const browser = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('xdg-open unavailable'))
+      .mockImplementation((url: string) => f.browser(url));
+    const notifications: (string | null)[] = [];
+    const { directory } = await service(f);
+    const manual = new ChatGPTAuth(directory, f.protector, {
+      fetcher: f.fetcher,
+      openBrowser: browser,
+      now: () => now,
+      issuer,
+      onAuthorizationLink: (url) => notifications.push(url),
+    });
+    await manual.load();
+    const pending = manual.signIn();
+    await vi.waitFor(() => {
+      expect(notifications[0]).toContain('/api/accounts/authorize?');
+      expect(browser).toHaveBeenCalledTimes(1);
+    });
+    const url = notifications[0]!;
+    expect(manual.authorizationUrl()).toBe(url);
+    expect(manual.status().accounts).toHaveLength(0);
+    await manual.openAuthorizationLink();
+    const status = await pending;
+    expect(status.accounts).toHaveLength(1);
+    expect(browser).toHaveBeenCalledTimes(2);
+    expect(browser.mock.calls[1][0]).toBe(url);
+    expect(manual.authorizationUrl()).toBeNull();
+    expect(notifications.at(-1)).toBeNull();
+    await expect(manual.openAuthorizationLink()).rejects.toThrow(/not active/);
+  });
+
+  it('allows manual copy-and-paste when the system has no browser launcher', async () => {
+    const f = fixture();
+    const directory = await mkdtemp(path.join(tmpdir(), 'lonely-chat-no-browser-'));
+    privateDirs.push(directory);
+    const notifications: (string | null)[] = [];
+    const auth = new ChatGPTAuth(directory, f.protector, {
+      fetcher: f.fetcher,
+      now: () => now,
+      issuer,
+      onAuthorizationLink: (url) => notifications.push(url),
+    });
+    await auth.load();
+    const pending = auth.signIn();
+    await vi.waitFor(() => expect(auth.authorizationUrl()).toContain('/api/accounts/authorize?'));
+    const url = auth.authorizationUrl()!;
+    await f.browser(url); // pasted into an external browser that reaches the loopback listener
+    expect((await pending).accounts).toHaveLength(1);
+    expect(notifications).toEqual([url, null]);
+  });
+
   it('denies forged state, wrong nonce/signatures, and missing plan scope', async () => {
     const forged = await service(fixture({ badState: true }));
     await expect(forged.auth.signIn()).rejects.toThrow(/state mismatch/);

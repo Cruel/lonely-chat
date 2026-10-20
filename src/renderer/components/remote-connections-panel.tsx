@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
+import { Copy } from 'lucide-react';
 import type { ChatGPTStatus, ChatGPTModel } from '../../shared/chatgpt-contract';
 import type {
   RemoteCatalog,
@@ -43,6 +44,7 @@ export function RemoteConnectionsPanel({
   const [catalog, setCatalog] = useState<RemoteCatalog>(EMPTY);
   const [chatGPT, setChatGPT] = useState<ChatGPTStatus>({ activeAccountId: null, accounts: [] });
   const [chatGPTModels, setChatGPTModels] = useState<ChatGPTModel[]>([]);
+  const [authorizationUrl, setAuthorizationUrl] = useState<string | null>(null);
   const [connection, setConnection] = useState<RemoteConnection>(freshConnection);
   const [model, setModel] = useState<RemoteModelConfiguration | null>(null);
   const [secret, setSecret] = useState('');
@@ -62,6 +64,24 @@ export function RemoteConnectionsPanel({
   };
   useEffect(() => {
     void refresh().catch(() => {});
+  }, []);
+  useEffect(() => {
+    let mounted = true;
+    let receivedUpdate = false;
+    const unsubscribe = window.lonelyChat?.onChatGPTAuthorizationChange?.((url) => {
+      receivedUpdate = true;
+      setAuthorizationUrl(url);
+    });
+    void window.lonelyChat
+      ?.getChatGPTAuthorizationUrl?.()
+      .then((url) => {
+        if (mounted && !receivedUpdate) setAuthorizationUrl(url);
+      })
+      .catch(() => {});
+    return () => {
+      mounted = false;
+      unsubscribe?.();
+    };
   }, []);
   useEffect(() => {
     const selected = catalog.connections.find((entry) => entry.id === model?.connectionId);
@@ -156,6 +176,38 @@ export function RemoteConnectionsPanel({
           >
             Continue with ChatGPT
           </Button>
+          {authorizationUrl && (
+            <span className="inline-flex items-center gap-1">
+              <a
+                href={authorizationUrl}
+                className="text-xs text-primary underline underline-offset-4 hover:text-primary/80"
+                title="Retry opening ChatGPT sign-in in your system browser"
+                onClick={(event) => {
+                  event.preventDefault();
+                  void window.lonelyChat?.openChatGPTAuthorizationUrl?.().catch(() => {
+                    setError('Unable to open the browser. Copy the sign-in link instead.');
+                  });
+                }}
+              >
+                Open sign-in link
+              </a>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Copy ChatGPT sign-in link"
+                title="Copy sign-in link to clipboard"
+                onClick={() => {
+                  void window.lonelyChat
+                    ?.copyChatGPTAuthorizationUrl?.()
+                    .then(() => setNotice('Sign-in link copied to clipboard.'))
+                    .catch(() => setError('Unable to copy the ChatGPT sign-in link.'));
+                }}
+              >
+                <Copy aria-hidden="true" />
+              </Button>
+            </span>
+          )}
           {chatGPT.activeAccountId && (
             <>
               <Button

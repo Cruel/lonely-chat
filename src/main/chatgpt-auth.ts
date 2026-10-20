@@ -36,6 +36,8 @@ interface TokenResponse {
 export interface ChatGPTAuthOptions {
   readonly fetcher?: typeof fetch;
   readonly openBrowser?: (url: string) => Promise<void>;
+  /** Emitted only while a live loopback OAuth callback is accepting a sign-in. */
+  readonly onAuthorizationLink?: (url: string | null) => void;
   readonly issuer?: string; // for local HTTP fixtures only; production is pinned
   readonly resource?: string; // for local HTTP fixtures only; production is pinned
   readonly now?: () => number;
@@ -168,6 +170,7 @@ export class ChatGPTAuth {
   private renewals = new Map<string, Promise<string>>();
   private readonly catalogCache = new Map<string, { expiresAt: number; models: ChatGPTModel[] }>();
   private signingIn = false;
+  private pendingAuthorizationUrl: string | null = null;
   private requests = new Map<string, Set<AbortController>>();
   private loaded = false;
   private readonly fetcher: typeof fetch;
@@ -317,6 +320,24 @@ export class ChatGPTAuth {
     return this.status();
   }
 
+  /** The URL is short-lived and may contain a private ID-token hint. Do not log or persist it. */
+  authorizationUrl(): string | null {
+    return this.pendingAuthorizationUrl;
+  }
+
+  /** Retry opening the exact same pending authorization request without rotating its state. */
+  async openAuthorizationLink(): Promise<void> {
+    const url = this.pendingAuthorizationUrl;
+    if (!url) throw new Error('ChatGPT authorization is not active.');
+    if (!this.options.openBrowser)
+      throw new Error('System browser is unavailable; copy the link instead.');
+    try {
+      await this.options.openBrowser(url);
+    } catch {
+      throw new Error('Could not open the browser. Copy the sign-in link instead.');
+    }
+  }
+
   async signIn(accountId?: string): Promise<ChatGPTStatus> {
     if (!this.loaded) throw new Error('ChatGPT accounts have not loaded.');
     if (this.signingIn) throw new Error('A ChatGPT sign-in is already in progress.');
@@ -391,13 +412,11 @@ export class ChatGPTAuth {
       180_000,
     );
     try {
-      if (!this.options.openBrowser) throw new Error('System browser is unavailable.');
-      try {
-        await this.options.openBrowser(`${this.issuer}/api/accounts/authorize?${params}`);
-      } catch {
-        // Never expose a browser launch error containing state, nonce or an ID-token hint.
-        throw new Error('Unable to open ChatGPT sign-in in the system browser.');
-      }
+      this.pendingAuthorizationUrl = `${this.issuer}/api/accounts/authorize?${params}`;
+      this.options.onAuthorizationLink?.(this.pendingAuthorizationUrl);
+      // A failed or unresponsive xdg-open must not invalidate PKCE or close the
+      // loopback listener; the user can use the identical URL in another browser.
+      if (this.options.openBrowser) void this.openAuthorizationLink().catch(() => {});
       const response = await callback;
       if (response.searchParams.has('error'))
         throw new Error('ChatGPT sign-in or plan consent was declined.');
@@ -449,7 +468,9 @@ export class ChatGPTAuth {
     } finally {
       clearTimeout(timeout);
       server.close();
+      this.pendingAuthorizationUrl = null;
       this.signingIn = false;
+      this.options.onAuthorizationLink?.(null);
       // Avoid a dangling rejection after a browser-open error.
       void callback.catch(() => {});
     }

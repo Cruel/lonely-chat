@@ -92,6 +92,9 @@ import type {
 export interface DesktopInvocations {
   'chatgpt:status': import('./chatgpt-contract').ChatGPTStatus;
   'chatgpt:signin': import('./chatgpt-contract').ChatGPTStatus;
+  'chatgpt:authorization:get': string | null;
+  'chatgpt:authorization:open': void;
+  'chatgpt:authorization:copy': void;
   'chatgpt:select': import('./chatgpt-contract').ChatGPTStatus;
   'chatgpt:signout': { status: import('./chatgpt-contract').ChatGPTStatus; revoked: boolean };
   'chatgpt:models': import('./chatgpt-contract').ChatGPTModel[];
@@ -229,6 +232,9 @@ export interface DesktopInvocations {
 export interface DesktopArguments {
   'chatgpt:status': [];
   'chatgpt:signin': [accountId?: string];
+  'chatgpt:authorization:get': [];
+  'chatgpt:authorization:open': [];
+  'chatgpt:authorization:copy': [];
   'chatgpt:select': [accountId: string];
   'chatgpt:signout': [accountId: string];
   'chatgpt:models': [accountId: string];
@@ -370,6 +376,10 @@ export interface DesktopArguments {
 export interface DesktopAPI {
   getChatGPTStatus?(): Promise<import('./chatgpt-contract').ChatGPTStatus>;
   signInChatGPT?(accountId?: string): Promise<import('./chatgpt-contract').ChatGPTStatus>;
+  getChatGPTAuthorizationUrl?(): Promise<string | null>;
+  openChatGPTAuthorizationUrl?(): Promise<void>;
+  copyChatGPTAuthorizationUrl?(): Promise<void>;
+  onChatGPTAuthorizationChange?(listener: (url: string | null) => void): () => void;
   selectChatGPTAccount?(accountId: string): Promise<import('./chatgpt-contract').ChatGPTStatus>;
   signOutChatGPT?(accountId: string): Promise<DesktopInvocations['chatgpt:signout']>;
   listChatGPTModels?(accountId: string): Promise<import('./chatgpt-contract').ChatGPTModel[]>;

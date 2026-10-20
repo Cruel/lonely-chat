@@ -43,6 +43,7 @@ import {
   Menu,
   nativeImage,
   safeStorage,
+  clipboard,
   protocol,
 } from 'electron';
 import { ChatService, publishSample } from './chat-service';
@@ -193,6 +194,10 @@ const credentialProtector = {
 const remoteStore = new RemoteInferenceStore(app.getPath('userData'), credentialProtector);
 const chatGPTAuth = new ChatGPTAuth(app.getPath('userData'), credentialProtector, {
   openBrowser: (url) => shell.openExternal(url),
+  onAuthorizationLink: (url) => {
+    if (mainWindow && !mainWindow.isDestroyed())
+      mainWindow.webContents.send('chatgpt:authorization:change', url);
+  },
 });
 const remotePlayground = new RemoteInferencePlayground();
 const promptPresets = new PromptPresetStore(app.getPath('userData'));
@@ -343,6 +348,13 @@ function registerHandlers(): void {
   const actions = {
     'chatgpt:status': () => chatGPTAuth.status(),
     'chatgpt:signin': (id?: string) => chatGPTAuth.signIn(id),
+    'chatgpt:authorization:get': () => chatGPTAuth.authorizationUrl(),
+    'chatgpt:authorization:open': () => chatGPTAuth.openAuthorizationLink(),
+    'chatgpt:authorization:copy': () => {
+      const url = chatGPTAuth.authorizationUrl();
+      if (!url) throw new Error('ChatGPT authorization is not active.');
+      clipboard.writeText(url);
+    },
     'chatgpt:select': (id: string) => chatGPTAuth.select(id),
     'chatgpt:signout': (id: string) => chatGPTAuth.signOut(id),
     'chatgpt:models': (id: string) => chatGPTAuth.models(id),
@@ -1769,6 +1781,9 @@ app.on('will-quit', () => {
   for (const channel of [
     'chatgpt:status',
     'chatgpt:signin',
+    'chatgpt:authorization:get',
+    'chatgpt:authorization:open',
+    'chatgpt:authorization:copy',
     'chatgpt:select',
     'chatgpt:signout',
     'chatgpt:models',

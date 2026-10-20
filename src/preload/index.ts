@@ -16,6 +16,14 @@ function invoke<K extends keyof DesktopInvocations>(
 const api: DesktopAPI = {
   getChatGPTStatus: () => invoke('chatgpt:status'),
   signInChatGPT: (id) => invoke('chatgpt:signin', id),
+  getChatGPTAuthorizationUrl: () => invoke('chatgpt:authorization:get'),
+  openChatGPTAuthorizationUrl: () => invoke('chatgpt:authorization:open'),
+  copyChatGPTAuthorizationUrl: () => invoke('chatgpt:authorization:copy'),
+  onChatGPTAuthorizationChange: (listener) => {
+    const receive = (_event: Electron.IpcRendererEvent, url: string | null) => listener(url);
+    ipcRenderer.on('chatgpt:authorization:change', receive);
+    return () => ipcRenderer.removeListener('chatgpt:authorization:change', receive);
+  },
   selectChatGPTAccount: (id) => invoke('chatgpt:select', id),
   signOutChatGPT: (id) => invoke('chatgpt:signout', id),
   listChatGPTModels: (id) => invoke('chatgpt:models', id),
