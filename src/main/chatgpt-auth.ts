@@ -103,20 +103,35 @@ export async function verifyChatGPTIdentity(
   } catch {
     throw new Error('Invalid ChatGPT identity token.');
   }
+  // Report only the failing verification category, never untrusted claim values,
+  // signed payloads, account identifiers, nonces or token material.
+  const reject = (reason: string): never => {
+    throw new Error(`ChatGPT identity verification failed: ${reason}.`);
+  };
+  if (header.alg !== 'RS256' || typeof header.kid !== 'string' || !header.kid)
+    reject('unsupported signing algorithm or key identifier');
+  if (claims.iss !== issuer) reject('issuer mismatch');
+  // RFC 7519 / OpenID Connect allow aud to be either a string or an array.
+  const audiences =
+    typeof claims.aud === 'string'
+      ? [claims.aud]
+      : Array.isArray(claims.aud) && claims.aud.every((value) => typeof value === 'string')
+        ? (claims.aud as string[])
+        : [];
+  if (!audiences.includes(clientId)) reject('audience mismatch');
+  // With multiple audiences the authorized party must identify this client.
+  // Also reject a conflicting azp even with a single audience.
   if (
-    header.alg !== 'RS256' ||
-    typeof header.kid !== 'string' ||
-    claims.iss !== issuer ||
-    claims.aud !== clientId ||
-    typeof claims.sub !== 'string' ||
-    !claims.sub ||
-    !Number.isFinite(claims.exp) ||
-    (claims.exp as number) * 1000 <= now ||
-    (claims.iat !== undefined &&
-      (!Number.isFinite(claims.iat) || (claims.iat as number) * 1000 > now + 60_000)) ||
-    (nonce !== null && claims.nonce !== nonce)
+    (audiences.length > 1 && claims.azp !== clientId) ||
+    (claims.azp !== undefined && claims.azp !== clientId)
   )
-    throw new Error('ChatGPT identity verification failed.');
+    reject('authorized party mismatch');
+  if (typeof claims.sub !== 'string' || !claims.sub) reject('missing subject');
+  if (!Number.isFinite(claims.exp) || (claims.exp as number) * 1000 <= now - 5_000)
+    reject('token expired or missing expiry');
+  if (!Number.isFinite(claims.iat) || (claims.iat as number) * 1000 > now + 5_000)
+    reject('invalid issued-at time');
+  if (nonce !== null && claims.nonce !== nonce) reject('nonce mismatch');
   const metadataResponse = await fetcher(`${issuer}/.well-known/openid-configuration`, {
     redirect: 'error',
   });
@@ -157,7 +172,7 @@ export async function verifyChatGPTIdentity(
     throw new Error('ChatGPT identity signature invalid.');
   }
   return {
-    subject: claims.sub,
+    subject: claims.sub as string,
     email: typeof claims.email === 'string' && claims.email.length <= 320 ? claims.email : null,
   };
 }

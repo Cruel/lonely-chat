@@ -31,7 +31,12 @@ const requiredScopes =
   'openid profile email offline_access resource.invoke chatgpt.tokens.use.direct';
 const now = 1792500000000;
 
-function signedIdentity(audience: string, nonce: string, subject = 'account-123') {
+function signedIdentity(
+  audience: string | string[],
+  nonce: string,
+  subject = 'account-123',
+  overrides: Record<string, unknown> = {},
+) {
   const header = Buffer.from(JSON.stringify({ alg: 'RS256', kid: 'fixture-key' })).toString(
     'base64url',
   );
@@ -44,6 +49,7 @@ function signedIdentity(audience: string, nonce: string, subject = 'account-123'
       email: 'user@example.test',
       iat: now / 1000 - 10,
       exp: now / 1000 + 3600,
+      ...overrides,
     }),
   ).toString('base64url');
   const signature = createSign('RSA-SHA256')
@@ -339,6 +345,53 @@ describe('ChatGPT OAuth and subscription inference', () => {
     await f.browser(url); // pasted into an external browser that reaches the loopback listener
     expect((await pending).accounts).toHaveLength(1);
     expect(notifications).toEqual([url, null]);
+  });
+
+  it('accepts OIDC array audiences without relaxing issuer, client, nonce or signature validation', async () => {
+    const f = fixture();
+    const verify = (token: string) =>
+      verifyChatGPTIdentity(token, 'oaiapp_fixture', 'expected-nonce', f.fetcher, issuer, now);
+    const singleAudience = signedIdentity(['oaiapp_fixture'], 'expected-nonce');
+    expect(await verify(singleAudience)).toMatchObject({ subject: 'account-123' });
+
+    const authorizedParty = signedIdentity(
+      ['oaiapp_fixture', 'other-resource'],
+      'expected-nonce',
+      'account-123',
+      { azp: 'oaiapp_fixture' },
+    );
+    expect(await verify(authorizedParty)).toMatchObject({ subject: 'account-123' });
+
+    await expect(
+      verify(signedIdentity(['oaiapp_fixture', 'other-resource'], 'expected-nonce')),
+    ).rejects.toThrow(/authorized party/i);
+    await expect(
+      verify(
+        signedIdentity(['oaiapp_fixture', 'other-resource'], 'expected-nonce', 'account-123', {
+          azp: 'other-resource',
+        }),
+      ),
+    ).rejects.toThrow(/authorized party/i);
+    await expect(verify(signedIdentity(['different-client'], 'expected-nonce'))).rejects.toThrow(
+      /audience/i,
+    );
+    await expect(verify(signedIdentity(['oaiapp_fixture'], 'wrong-nonce'))).rejects.toThrow(
+      /nonce/i,
+    );
+    await expect(
+      verify(
+        signedIdentity(['oaiapp_fixture'], 'expected-nonce', 'account-123', {
+          iss: 'https://other-issuer.example',
+        }),
+      ),
+    ).rejects.toThrow(/issuer/i);
+    await expect(
+      verify(
+        signedIdentity(['oaiapp_fixture'], 'expected-nonce', 'account-123', {
+          exp: now / 1000 - 10,
+        }),
+      ),
+    ).rejects.toThrow(/expired/i);
   });
 
   it('denies forged state, wrong nonce/signatures, and missing plan scope', async () => {
