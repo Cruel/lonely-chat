@@ -18,22 +18,20 @@ import { createServer } from 'node:net';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { AUDIENCE, type InferenceInput, type InferenceProvider } from './fake-inference';
+import {
+  buildUnifiedInferenceRequest,
+  type UnifiedInferenceRequest,
+} from './unified-inference-request';
 import { PrivateInferenceError } from './private-inference-error';
 import { executeNativeSimulation, SimulationExecutionError } from './simulation-execution';
 import { NativeWorkerLog, type WorkerLogSink, type WorkerStream } from './native-worker-log';
-import {
-  AUTHOR_PLACEHOLDER,
-  CHAT_ACTIVITY_LIMITS,
-  type ChatActivity,
-  type ChatterIdentity,
-} from '../shared/audience-contract';
+import { AUTHOR_PLACEHOLDER, type ChatterIdentity } from '../shared/audience-contract';
 
 export interface NativeModelFiles {
   readonly modelPath: string;
   readonly projectorPath: string | null;
 }
 
-const AUTHORS = AUDIENCE.map(({ author }) => author);
 const MAX_REPLY_BYTES = 1024 * 1024;
 const STARTUP_TIMEOUT_MS = 300_000;
 const COMPLETION_MAX_TOKENS = 2048;
@@ -127,138 +125,38 @@ export function nativeFreeformRequest(request: FreeformRequest) {
   };
 }
 
-/** Schema is a generation hint, never a substitute for parseInferenceResult. */
-export const INFERENCE_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  required: ['events', 'messages'],
-  properties: {
-    events: {
-      type: 'array',
-      maxItems: 24,
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['kind', 'summary', 'ageMs'],
-        properties: {
-          kind: { type: 'string', enum: ['context', 'reaction'] },
-          summary: { type: 'string', minLength: 1, maxLength: 300 },
-          ageMs: { type: 'integer', minimum: 0, maximum: 60000 },
-        },
-      },
-    },
-    messages: {
-      type: 'array',
-      maxItems: 64,
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['author', 'text', 'offsetMs'],
-        properties: {
-          author: { type: 'string', enum: [...AUTHORS, AUTHOR_PLACEHOLDER] },
-          text: { type: 'string', minLength: 1, maxLength: 500 },
-          offsetMs: { type: 'integer', minimum: 0, maximum: 60000 },
-        },
-      },
-    },
-  },
-} as const;
+/** The bundled runtime's json_object format uses the canonical output requirement. */
+export {
+  UNIFIED_OUTPUT_SCHEMA as INFERENCE_SCHEMA,
+  unifiedOutputSchema as inferenceSchema,
+} from './unified-inference-request';
 
-/** Dynamic constrained grammar must match the roster actually supplied to the model. */
-export function inferenceSchema(roster: readonly ChatterIdentity[], activity: ChatActivity) {
+export function llamaCppRequest(request: UnifiedInferenceRequest) {
+  const content =
+    request.content.length === 1 && request.content[0].type === 'text'
+      ? request.content[0].text
+      : request.content.map((part) =>
+          part.type === 'text'
+            ? { type: 'text', text: part.text }
+            : { type: 'image_url', image_url: { url: part.dataUrl } },
+        );
   return {
-    ...INFERENCE_SCHEMA,
-    properties: {
-      ...INFERENCE_SCHEMA.properties,
-      messages: {
-        ...INFERENCE_SCHEMA.properties.messages,
-        maxItems: CHAT_ACTIVITY_LIMITS[activity],
-        items: {
-          ...INFERENCE_SCHEMA.properties.messages.items,
-          properties: {
-            ...INFERENCE_SCHEMA.properties.messages.items.properties,
-            author: {
-              type: 'string',
-              enum: [...roster.map((member) => member.author), AUTHOR_PLACEHOLDER],
-            },
-          },
-        },
-      },
-    },
+    stream: false,
+    ...(request.sampling.seed === undefined ? {} : { seed: request.sampling.seed }),
+    temperature: request.sampling.temperature,
+    max_tokens: request.sampling.maxTokens,
+    // The pinned llama-server enforces json_object + schema; json_schema was ignored.
+    response_format: { type: 'json_object', schema: request.response.schema },
+    messages: [
+      { role: 'system', content: request.instructions },
+      { role: 'user', content },
+    ],
   };
 }
 
-/** Prompt snapshots contain no paths, installation metadata or IPC capabilities. */
+/** Playground and Simulation share one model-independent Unified prompt builder. */
 export function nativeChatRequest(input: InferenceInput) {
-  const roster = input.roster ?? AUDIENCE;
-  const activity = input.chatActivity ?? 'normal';
-  const history = (input.recentEvents ?? []).map((event) => ({
-    kind: event.kind,
-    summary: event.summary,
-    observedAt: event.observedAt,
-  }));
-  const context = JSON.stringify({
-    manualContext: input.context,
-    cycle: input.cycle,
-    recentEvents: history,
-    recentTranscripts: input.recentTranscripts ?? [],
-    observations: input.observations ?? [],
-    recentChat: input.recentChat ?? [],
-    roster,
-    chatActivity: activity,
-    observationWindow: input.boundary ?? null,
-    playbackWindowMs: input.playbackWindowMs ?? 3000,
-    videoWindow: input.videoWindow ?? null,
-    videoFrames: (input.frames ?? []).map(
-      ({ observedAt, sourceId, width, height, mediaTimeMs }) => ({
-        observedAt,
-        sourceId,
-        width,
-        height,
-        ...(mediaTimeMs === undefined ? {} : { mediaTimeMs }),
-        offsetMs: input.videoWindow ? observedAt - input.videoWindow.fromMs : 0,
-        ageMs: input.videoWindow ? input.videoWindow.throughMs - observedAt : 0,
-      }),
-    ),
-  });
-  const content = input.frames?.length
-    ? [
-        { type: 'text', text: context },
-        ...input.frames.flatMap((frame, index) => [
-          {
-            type: 'text',
-            text: `Visual frame ${index + 1}, observedAt=${frame.observedAt} ms, relativeMs=${input.videoWindow ? frame.observedAt - input.videoWindow.fromMs : 0}, ageMs=${input.videoWindow ? input.videoWindow.throughMs - frame.observedAt : 0}, source=${frame.sourceId}`,
-          },
-          { type: 'image_url', image_url: { url: frame.dataUrl } },
-        ]),
-      ]
-    : context;
-  return {
-    stream: false,
-    ...(input.seed === undefined ? {} : { seed: input.seed }),
-    temperature: 0.7,
-    max_tokens: COMPLETION_MAX_TOKENS,
-    // Pinned llama-server b11700 enforces this schema via json_object. Its json_schema
-    // response_format variant silently ignored the schema for tested GGUF models.
-    response_format: { type: 'json_object', schema: inferenceSchema(roster, activity) },
-    messages: [
-      {
-        role: 'system',
-        content:
-          `You simulate a friendly live-stream audience. Infer at most 3 short events and write 1-${CHAT_ACTIVITY_LIMITS[activity]} natural viewer chat messages (activity: ${activity}). ` +
-          `Use only roster identities, or ${AUTHOR_PLACEHOLDER} when any eligible roster member can speak. Prefer using explicit authors to follow earlier conversation threads. ` +
-          'Only use the allowed author identities. Each visual frame is ordered and labeled with absolute and relative observation timestamps. Infer visual events from the images, not their metadata alone. A truncated videoWindow indicates missing earlier footage; do not invent it. ' +
-          'ageMs is how many milliseconds before the observationWindow.throughMs an event happened (use 0 for ongoing context). ' +
-          'offsetMs is when to display a chat message after this reply, within the requested playbackWindowMs. ' +
-          'Use the provided observations and labeled transcripts to react to new content; maintain continuity with recent chat and events. ' +
-          'Return only JSON matching the required schema.',
-      },
-      {
-        role: 'user',
-        content,
-      },
-    ],
-  };
+  return llamaCppRequest(buildUnifiedInferenceRequest(input));
 }
 
 function parseCompletion(body: unknown): unknown {

@@ -31,5 +31,6 @@ export class FakeClock implements TimerClock {
 }
 
 export async function flushMicrotasks(): Promise<void> {
-  for (let index = 0; index < 12; index++) await Promise.resolve();
+  // Flush nested transport/coordinator/validation and Session completion queues.
+  for (let index = 0; index < 32; index++) await Promise.resolve();
 }

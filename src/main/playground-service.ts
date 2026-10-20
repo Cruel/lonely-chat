@@ -7,11 +7,9 @@ import type {
 } from '../shared/playground-contract';
 import { validateFreeformRequest } from '../shared/playground-contract';
 import { extractNativeChat, withNativeVideoPlaceholder } from './native-inference';
-import {
-  acceptSimulationExecution,
-  executeNativeSimulation,
-  SimulationExecutionError,
-} from './simulation-execution';
+import { executeNativeSimulation, SimulationExecutionError } from './simulation-execution';
+import { InferenceCoordinator } from './inference-coordinator';
+import { llamaCppAdapter } from './unified-inference-adapters';
 import {
   buildSimulationExperimentInput,
   constructedSimulationRequest,
@@ -75,6 +73,7 @@ const IDLE_WORKER_MS = 5 * 60_000;
  * No Playground work mutates Session, Chat, Audience, or diagnostic capture.
  */
 export class PlaygroundService {
+  private readonly coordinator = new InferenceCoordinator();
   private active: Promise<void> | null = null;
   private abort: AbortController | null = null;
   private cached: { key: string; provider: PlaygroundProvider } | null = null;
@@ -305,6 +304,10 @@ export class PlaygroundService {
       prepared.submitted,
       prepared.frames,
       prepared.input.playbackWindowMs ?? 3000,
+      undefined,
+      undefined,
+      undefined,
+      true,
     );
     return { result, child: await cases.saveChild(input.caseId, result, input.frameIndices) };
   }
@@ -319,6 +322,7 @@ export class PlaygroundService {
     videoToken?: string,
     videoOptions?: NativeVideoPreferences,
     imageMaxTokens?: number,
+    useCapturedRequest = false,
   ): Promise<SimulationExperimentResult> {
     return this.execute(
       modelId,
@@ -348,66 +352,85 @@ export class PlaygroundService {
         });
         let rawNativeOutput: unknown = null;
         let normalizedResult: unknown = null;
-        try {
-          const transported = await executeNativeSimulation(
-            cycleInput,
-            submittedRequest,
-            signal,
-            (nativeRequest, activeSignal) => {
-              if (!provider.completeSimulationRequest)
-                throw new Error(
-                  'Selected provider does not support structured Simulation requests.',
-                );
-              return videoToken
-                ? provider.completeSimulationRequest(
-                    cycleInput,
-                    nativeRequest,
-                    activeSignal,
-                    videoToken,
-                    videoOptions,
-                  )
-                : provider.completeSimulationRequest(cycleInput, nativeRequest, activeSignal);
-            },
-            (raw, selected) => extractNativeChat(raw, selected.roster),
-          );
-          rawNativeOutput = transported.rawNativeOutput;
-          normalizedResult = transported.normalizedResult;
-        } catch (error) {
-          const failed = error instanceof SimulationExecutionError ? error : null;
-          return finish({
-            errorStage: failed?.stage ?? 'transport',
-            error: errorMessage(failed?.cause ?? error),
-            rawNativeOutput:
-              failed?.stage === 'transport'
-                ? boundedTransportDetails(failed.cause)
-                : (failed?.evidence.rawNativeOutput ?? boundedTransportDetails(error)),
-            usage: traceUsage(failed?.evidence.rawNativeOutput),
-          });
-        }
-        const usage = traceUsage(rawNativeOutput);
         let parsedResult: SimulationExperimentResult['parsedResult'] = null;
         try {
-          const { accepted } = acceptSimulationExecution(cycleInput, normalizedResult, {
+          if (!provider.completeSimulationRequest)
+            throw new Error('Selected provider does not support structured Simulation requests.');
+          const adapter = llamaCppAdapter(
+            {
+              completeSimulationRequest: (input, request, activeSignal, token, options) =>
+                provider.completeSimulationRequest!(input, request, activeSignal, token, options),
+            },
+            cycleInput,
+            videoToken ? { token: videoToken, options: videoOptions } : undefined,
+          );
+          // Exact saved cases and explicit raw overrides must send the captured
+          // native bytes, not silently rebuild a changed request.
+          const effectiveAdapter =
+            useCapturedRequest || submittedRequest !== constructedRequest
+              ? {
+                  ...adapter,
+                  complete: async (
+                    _request: Parameters<typeof adapter.complete>[0],
+                    activeSignal: AbortSignal,
+                    observe?: Parameters<typeof adapter.complete>[2],
+                  ) => {
+                    const transported = await executeNativeSimulation(
+                      cycleInput,
+                      submittedRequest,
+                      activeSignal,
+                      (nativeRequest, transportSignal) =>
+                        videoToken
+                          ? provider.completeSimulationRequest!(
+                              cycleInput,
+                              nativeRequest,
+                              transportSignal,
+                              videoToken,
+                              videoOptions,
+                            )
+                          : provider.completeSimulationRequest!(
+                              cycleInput,
+                              nativeRequest,
+                              transportSignal,
+                            ),
+                      (raw, input) => extractNativeChat(raw, input.roster),
+                      observe,
+                    );
+                    return {
+                      raw: transported.rawNativeOutput,
+                      normalized: transported.normalizedResult,
+                    };
+                  },
+                }
+              : adapter;
+          const execution = await this.coordinator.execute(cycleInput, effectiveAdapter, {
+            signal,
+            ...(videoToken ? { nativeVideoRef: videoToken } : {}),
             playbackWindowMs,
             onParsed: (parsed) => {
               parsedResult = parsed;
             },
+            onTransport: (raw, normalized) => {
+              rawNativeOutput = raw;
+              normalizedResult = normalized;
+            },
           });
           return finish({
-            rawNativeOutput,
-            normalizedResult,
-            parsedResult,
-            accepted,
-            usage,
+            rawNativeOutput: execution.raw,
+            normalizedResult: execution.normalized,
+            parsedResult: execution.parsed,
+            accepted: execution.accepted,
+            usage: execution.usage,
           });
         } catch (error) {
           const failed = error instanceof SimulationExecutionError ? error : null;
+          const actualRaw = rawNativeOutput ?? failed?.evidence.rawNativeOutput ?? null;
           return finish({
-            rawNativeOutput,
-            normalizedResult,
-            parsedResult: failed?.evidence.parsedResult ?? parsedResult,
-            usage,
-            errorStage: failed?.stage ?? 'validation',
+            rawNativeOutput: actualRaw ?? boundedTransportDetails(failed?.cause ?? error),
+            normalizedResult: normalizedResult ?? failed?.evidence.normalizedResult ?? null,
+            parsedResult: parsedResult ?? failed?.evidence.parsedResult ?? null,
+            usage: traceUsage(actualRaw),
+            errorStage: failed?.stage ?? 'transport',
             error: errorMessage(failed?.cause ?? error),
           });
         }
@@ -422,6 +445,7 @@ export class PlaygroundService {
   stop(): Promise<void> {
     if (this.shutdown) return this.shutdown;
     this.abort?.abort();
+    this.coordinator.cancelActive();
     const task = (async () => {
       await this.active;
       await this.evictIdle();

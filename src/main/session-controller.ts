@@ -4,7 +4,9 @@ import type { ChatService } from './chat-service';
 import { ChatScheduler, systemClock, type TimerClock } from './chat-scheduler';
 import { FakeInference, type InferenceProvider } from './fake-inference';
 import { clipSimulationWindow } from './simulation-cycle';
-import { acceptSimulationExecution } from './simulation-execution';
+import { SimulationExecutionError } from './simulation-execution';
+import { InferenceCoordinator } from './inference-coordinator';
+import { fixtureInferenceAdapter, llamaCppAdapter } from './unified-inference-adapters';
 import { InferenceHistory, type CycleInput } from './inference-history';
 import { VideoFrameBuffer } from './video-frame-buffer';
 import { PrivateInferenceError } from './private-inference-error';
@@ -51,6 +53,7 @@ export class SessionController {
     droppedObservations: 0,
   };
   private subscribers = new Set<(snapshot: SessionSnapshot) => void>();
+  private readonly coordinator = new InferenceCoordinator();
   private readonly scheduler: ChatScheduler;
   private readonly history: InferenceHistory;
   private readonly video: VideoFrameBuffer;
@@ -488,6 +491,7 @@ export class SessionController {
     this.switchAbort?.abort();
     this.switchAbort = null;
     this.abort?.abort();
+    this.coordinator.cancelActive();
     const provider = this.activeInference;
     this.shutdownPromise = this.stopProvider(provider);
     this.abort = null;
@@ -817,22 +821,47 @@ export class SessionController {
           ].slice(-24),
         });
         this.trace.update(traceId, { stage: 'transport' });
-        const output = await provider.generate(effectiveInput, abort.signal, observer);
-        inferenceCompleted = this.clock.now();
-        rawOutput = output;
-        // Third-party/fixture providers may not implement the optional trace observer.
-        if (this.trace.get(traceId)?.stage === 'transport') observer('normalized', output);
-        if (this.state.mode === 'fake') this.trace.update(traceId, { rawResponse: output });
-        receivedOutput = true;
-        return output;
+        const nativeProvider = provider as InferenceProvider & {
+          completeSimulationRequest?: (
+            input: CycleInput,
+            request: unknown,
+            signal: AbortSignal,
+          ) => Promise<unknown>;
+        };
+        const adapter = nativeProvider.completeSimulationRequest
+          ? llamaCppAdapter(
+              {
+                completeSimulationRequest: (selected, request, signal) =>
+                  nativeProvider.completeSimulationRequest!(
+                    selected as CycleInput,
+                    request,
+                    signal,
+                  ),
+              },
+              effectiveInput,
+            )
+          : fixtureInferenceAdapter(provider, effectiveInput);
+        return this.coordinator.execute(effectiveInput, adapter, {
+          signal: abort.signal,
+          enforceAudience: Boolean(this.audience),
+          beforeAccept: () => this.waitUntilResumed(),
+          observe: observer,
+          onParsed: (parsed) => this.trace.update(traceId, { stage: 'validation', parsed }),
+          onTransport: (raw, normalized) => {
+            inferenceCompleted = this.clock.now();
+            rawOutput = normalized;
+            receivedOutput = true;
+            // Deterministic fixture providers may not send trace callbacks.
+            if (this.trace.get(traceId)?.stage === 'transport') observer('normalized', normalized);
+            if (this.state.mode === 'fake') this.trace.update(traceId, { rawResponse: raw });
+          },
+        });
       })
-      .then(async (raw) => {
+      .then(async (execution) => {
         await this.waitUntilResumed();
         if (!this.active(epoch) || abort.signal.aborted) return;
-        const { parsed: result, accepted } = acceptSimulationExecution(effectiveInput, raw, {
-          enforceAudience: Boolean(this.audience),
-          onParsed: (parsed) => this.trace.update(traceId, { stage: 'validation', parsed }),
-        });
+        if (!execution) return;
+        const { parsed: result, accepted } = execution;
         this.trace.update(traceId, { stage: 'accepted', accepted });
         const resolved = accepted.messages;
         // All validation precedes every state change, history acknowledgement and playback.
@@ -916,22 +945,23 @@ export class SessionController {
         if (!this.active(epoch) || abort.signal.aborted) return;
         this.abort = null;
         this.attemptInFlight = false;
-        const message = error instanceof Error ? error.message : 'Unknown inference error.';
+        const cause = error instanceof SimulationExecutionError ? error.cause : error;
+        const message = cause instanceof Error ? cause.message : 'Unknown inference error.';
         const errorStage = traceFailureStage(this.trace.get(traceId));
         this.trace.update(traceId, {
           stage: 'failed',
           errorStage,
           error: message,
           durationMs: Math.max(0, this.clock.now() - traceStarted),
-          ...(error instanceof PrivateInferenceError
+          ...(cause instanceof PrivateInferenceError
             ? {
-                transportError: error.diagnosticDetails,
+                transportError: cause.diagnosticDetails,
                 rawResponse:
-                  (error.diagnosticDetails as { responseBody?: unknown })?.responseBody ?? null,
+                  (cause.diagnosticDetails as { responseBody?: unknown })?.responseBody ?? null,
               }
             : {}),
         });
-        this.reportError?.('session', 'Inference attempt failed', error, {
+        this.reportError?.('session', 'Inference attempt failed', cause, {
           cycle: input.cycle,
           attempt,
           seed,
@@ -943,8 +973,8 @@ export class SessionController {
           Math.max(0, this.clock.now() - inferenceStarted),
           receivedOutput
             ? { error: message, rawOutput }
-            : error instanceof PrivateInferenceError
-              ? { error: message, privateProviderResponse: error.diagnosticDetails }
+            : cause instanceof PrivateInferenceError
+              ? { error: message, privateProviderResponse: cause.diagnosticDetails }
               : { error: message },
           diagnosticToken,
         );
