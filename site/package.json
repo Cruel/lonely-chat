@@ -15,5 +15,8 @@
   },
   "devDependencies": {
     "astro": "7.4.0"
+  },
+  "dependencies": {
+    "@fortawesome/free-brands-svg-icons": "^7.3.1"
   }
 }
