@@ -3,10 +3,14 @@ import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Copy } from 'lucide-react';
 import type { ChatGPTStatus, ChatGPTModel } from '../../shared/chatgpt-contract';
-import type {
-  RemoteCatalog,
-  RemoteConnection,
-  RemoteModelConfiguration,
+import {
+  currentCapabilityEvidence,
+  effectiveRemoteCapabilities,
+  REMOTE_CAPABILITIES,
+  type RemoteCapability,
+  type RemoteCatalog,
+  type RemoteConnection,
+  type RemoteModelConfiguration,
 } from '../../shared/remote-inference-contract';
 
 const EMPTY: RemoteCatalog = { connections: [], models: [] };
@@ -127,6 +131,17 @@ export function RemoteConnectionsPanel({
       await window.lonelyChat!.saveRemoteConnection?.(connection);
       setNotice('Connection saved.');
     });
+  const selectedModelConnection = catalog.connections.find(
+    (entry) => entry.id === model?.connectionId,
+  );
+  const effective =
+    model && selectedModelConnection
+      ? effectiveRemoteCapabilities(selectedModelConnection, model)
+      : null;
+  const evidence =
+    model && selectedModelConnection
+      ? currentCapabilityEvidence(selectedModelConnection, model)
+      : null;
   const persistModel = () =>
     perform(async () => {
       if (!model) throw new Error('Select a Connection first.');
@@ -692,18 +707,110 @@ export function RemoteConnectionsPanel({
                 />
                 I explicitly authorize sending selected image frames to this model's remote endpoint
               </label>
+              <section
+                className="space-y-2 rounded-md border border-zinc-700 p-3"
+                aria-label="Model capabilities"
+              >
+                <h5 className="text-sm font-medium">Model capabilities</h5>
+                <p className="text-xs text-zinc-400">
+                  {evidence
+                    ? `Last capability check: ${new Date(evidence.checkedAt).toLocaleString()} (valid for 24 hours and only for this endpoint, account, protocol and model).`
+                    : 'Unverified defaults. Retrieve metadata or probe, then override any incorrect claims explicitly.'}
+                </p>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {REMOTE_CAPABILITIES.map((capability: RemoteCapability) => (
+                    <label key={capability} className="text-xs text-zinc-300">
+                      <span className="mb-1 block">
+                        {
+                          (
+                            {
+                              text: 'Text input',
+                              images: 'Image input',
+                              nativeVideo: 'Native video',
+                              jsonSchema: 'Strict JSON Schema',
+                              jsonObject: 'JSON object',
+                              seed: 'Seed',
+                              sampling: 'Temperature sampling',
+                            } as Record<RemoteCapability, string>
+                          )[capability]
+                        }
+                        {' · '}
+                        {effective?.[capability] ? 'supported' : 'unavailable'}
+                        {evidence?.support[capability] !== undefined &&
+                        Date.now() -
+                          (evidence.checkedAtByCapability?.[capability] ?? evidence.checkedAt) <
+                          24 * 60 * 60 * 1000
+                          ? ` (${evidence.sources?.[capability] ?? evidence.source})`
+                          : ' (unverified)'}
+                      </span>
+                      <select
+                        className={field}
+                        aria-label={`${capability} capability override`}
+                        value={
+                          model.capabilityOverrides?.[capability] === undefined
+                            ? 'auto'
+                            : model.capabilityOverrides[capability]
+                              ? 'yes'
+                              : 'no'
+                        }
+                        disabled={
+                          selectedModelConnection?.credentialMode === 'chatgpt' &&
+                          ['nativeVideo', 'jsonSchema', 'jsonObject', 'seed', 'sampling'].includes(
+                            capability,
+                          )
+                        }
+                        onChange={(event) => {
+                          const overrides = { ...model.capabilityOverrides };
+                          if (event.target.value === 'auto') delete overrides[capability];
+                          else overrides[capability] = event.target.value === 'yes';
+                          setModel({ ...model, capabilityOverrides: overrides });
+                        }}
+                      >
+                        <option value="auto">Auto / discovered</option>
+                        <option value="yes">Force supported</option>
+                        <option value="no">Force unsupported</option>
+                      </select>
+                    </label>
+                  ))}
+                </div>
+                <p className="text-xs text-zinc-400">
+                  Native video is not transmissible over the current remote adapters, even if
+                  metadata claims support. A schema/seed/sampling control must also be accepted by
+                  the selected protocol.
+                </p>
+              </section>
               <div className="flex flex-wrap gap-2">
                 <Button disabled={working} onClick={() => void persistModel()}>
                   Save Model Configuration
                 </Button>
                 {catalog.models.some((v) => v.id === model.id) && (
                   <>
+                    {selectedModelConnection?.credentialMode !== 'chatgpt' && (
+                      <Button
+                        variant="secondary"
+                        disabled={working}
+                        onClick={() =>
+                          void perform(async () => {
+                            const checked = await window.lonelyChat!.inspectRemoteModel?.(model.id);
+                            if (checked) setModel({ ...model, capabilityEvidence: checked });
+                            setNotice(
+                              'Endpoint capability metadata saved. Missing claims remain unverified.',
+                            );
+                          })
+                        }
+                      >
+                        Inspect metadata
+                      </Button>
+                    )}
                     <Button
                       variant="secondary"
                       disabled={working}
                       onClick={() =>
                         void perform(async () => {
                           const result = await window.lonelyChat!.probeRemoteModel?.(model.id);
+                          const updated = await window.lonelyChat!.listRemoteConfigurations?.();
+                          const checked = updated?.models.find((entry) => entry.id === model.id);
+                          if (checked) setModel(checked);
                           setNotice(
                             result?.compatible
                               ? 'Compatibility probe passed.'

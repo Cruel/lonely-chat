@@ -207,6 +207,7 @@ const api: DesktopAPI = {
   setRemoteCredential: (id, secret) => invoke('remote:credential:set', id, secret),
   listRemoteModels: (connectionId) => invoke('remote:models:list', connectionId),
   probeRemoteModel: (modelId) => invoke('remote:model:probe', modelId),
+  inspectRemoteModel: (modelId) => invoke('remote:model:inspect', modelId),
   runRemoteUnifiedPlayground: (request, modelId) =>
     invoke('remote:playground:unified', request, modelId),
   getPreferences: () => invoke('preferences:get'),

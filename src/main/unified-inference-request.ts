@@ -32,6 +32,8 @@ export interface InferenceRequest<Role extends InferenceRole = InferenceRole, Sc
     readonly temperature: number;
     readonly maxTokens: number;
     readonly seed?: number;
+    /** Coordinator retry seeds are advisory unless explicitly required by a caller. */
+    readonly seedMode?: 'advisory' | 'required';
   };
   readonly evidenceWindow: { readonly fromMs: number; readonly throughMs: number } | null;
   /** Optional transport-specific media source; never interpreted as an image frame. */

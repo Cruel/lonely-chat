@@ -58,7 +58,9 @@ import {
   remoteUnifiedAdapter,
   probeRemoteModel,
   listRemoteModels,
+  inspectRemoteModel,
 } from './remote-inference-adapter';
+import { remoteConnectionKey } from '../shared/remote-inference-contract';
 import { RemoteInferencePlayground } from './remote-inference-playground';
 import {
   DEFAULT_PREFERENCES,
@@ -408,11 +410,43 @@ function registerHandlers(): void {
         AbortSignal.timeout(20_000),
       );
     },
-    'remote:model:probe': (modelId: string) => {
+    'remote:model:probe': async (modelId: string) => {
       const selection = remoteStore.selected(modelId);
-      return selection.connection.credentialMode === 'chatgpt'
-        ? probeChatGPTModel(selection, chatGPTAuth, AbortSignal.timeout(25_000))
-        : probeRemoteModel(selection, AbortSignal.timeout(25_000));
+      const result =
+        selection.connection.credentialMode === 'chatgpt'
+          ? await probeChatGPTModel(selection, chatGPTAuth, AbortSignal.timeout(25_000))
+          : await probeRemoteModel(selection, AbortSignal.timeout(25_000));
+      await remoteStore.recordCapabilities(
+        modelId,
+        {
+          connectionKey: remoteConnectionKey(selection.connection),
+          model: selection.model.model,
+        },
+        'probe',
+        {
+          text: true,
+          ...(selection.model.outputFormat === 'json-schema' ? { jsonSchema: true } : {}),
+          ...(selection.model.outputFormat === 'json-object' ? { jsonObject: true } : {}),
+        },
+      );
+      return result;
+    },
+    'remote:model:inspect': async (modelId: string) => {
+      const selection = remoteStore.selected(modelId);
+      if (selection.connection.credentialMode === 'chatgpt')
+        throw new Error(
+          'ChatGPT plan catalog does not expose capability metadata. Use a text compatibility probe or explicit overrides.',
+        );
+      const support = await inspectRemoteModel(selection, AbortSignal.timeout(20_000));
+      return remoteStore.recordCapabilities(
+        modelId,
+        {
+          connectionKey: remoteConnectionKey(selection.connection),
+          model: selection.model.model,
+        },
+        'metadata',
+        support,
+      );
     },
     'remote:playground:unified': async (
       request: import('../shared/playground-contract').SimulationExperimentRequest,
@@ -1816,6 +1850,7 @@ app.on('will-quit', () => {
     'remote:credential:set',
     'remote:models:list',
     'remote:model:probe',
+    'remote:model:inspect',
     'remote:playground:unified',
   ])
     ipcMain.removeHandler(channel);

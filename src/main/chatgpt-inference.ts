@@ -2,6 +2,8 @@ import OpenAI from 'openai';
 import type { UnifiedInferenceAdapter } from './inference-coordinator';
 import type { RemoteSelection } from './remote-inference-adapter';
 import { boundedJson, normalizeRemoteResult, usage } from './remote-inference-adapter';
+import { validateRemoteRequest } from './remote-inference-capabilities';
+import { effectiveRemoteCapabilities } from '../shared/remote-inference-contract';
 import type { ChatGPTAuth } from './chatgpt-auth';
 import type { ChatterIdentity } from '../shared/audience-contract';
 import { AUDIENCE } from './fake-inference';
@@ -32,9 +34,15 @@ export function chatGPTUnifiedAdapter(
   const accountId = connection.chatgptAccountId;
   const timeout = options.timeoutMs ?? 45_000;
   return {
-    capabilities: { images: model.images && model.allowRemoteImages, nativeVideo: false },
+    capabilities: {
+      images:
+        effectiveRemoteCapabilities(connection, model).images &&
+        model.images &&
+        model.allowRemoteImages,
+      nativeVideo: false,
+    },
     async complete(request, signal, observe) {
-      if (request.nativeVideo) throw new Error('ChatGPT plan usage does not support native video.');
+      validateRemoteRequest(connection, model, request);
       const images = request.content.filter((part) => part.type === 'image');
       if (images.length && (!model.images || !model.allowRemoteImages))
         throw new Error('ChatGPT image sending requires explicit Model Configuration permission.');
@@ -62,6 +70,11 @@ export function chatGPTUnifiedAdapter(
           model: model.model,
           imageCount: images.length,
           contentTypes: request.content.map((part) => part.type),
+          omittedControls: [
+            'temperature',
+            'maxTokens',
+            ...(request.sampling.seed === undefined ? [] : ['seed']),
+          ],
           evidenceWindow: request.evidenceWindow,
         });
         // The preview route rejects max_output_tokens, temperature, seed, and system-role inputs.
@@ -180,7 +193,7 @@ export function chatGPTUnifiedAdapter(
         if (combined.aborted) throw new Error('ChatGPT inference timed out.');
         if (
           error instanceof Error &&
-          /^ChatGPT (account|plan|image|stream|response|inference)|^Selected model|^Remote inference returned/.test(
+          /^ChatGPT (account|plan|image|stream|response|inference)|^Selected model|^Remote inference returned|^Remote (input|image|text)|^This model|^Native-video transport|^Invalid maximum|^Invalid provider sampling/.test(
             error.message,
           )
         )
@@ -223,7 +236,7 @@ export async function probeChatGPTModel(
       'Return only this exact JSON object: {"events":[],"messages":[]}. No markdown or explanation.',
     content: [{ type: 'text', text: 'Compatibility probe; no history or media.' }],
     response: { kind: 'json', schema: unifiedOutputSchema(AUDIENCE, 'normal') },
-    sampling: { temperature: 0, maxTokens: 100 },
+    sampling: { temperature: 0.7, maxTokens: 100 },
     evidenceWindow: null,
   };
   const result = await chatGPTUnifiedAdapter(selection, auth, {

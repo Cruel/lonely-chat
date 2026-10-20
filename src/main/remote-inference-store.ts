@@ -9,6 +9,9 @@ import {
 import {
   validateRemoteConnection,
   validateRemoteModel,
+  remoteConnectionKey,
+  type RemoteCapabilityEvidence,
+  type RemoteCapabilityFlags,
   validRemoteId,
   type RemoteCatalog,
   type RemoteConnection,
@@ -209,7 +212,19 @@ export class RemoteInferenceStore {
 
   async putModel(value: unknown): Promise<RemoteModelConfiguration> {
     return this.mutate(async () => {
-      const model = validateRemoteModel(value);
+      const submitted = validateRemoteModel(value);
+      // Only main's real inspection/probe may set capability evidence. A renderer
+      // save cannot forge verification or resurrect older, stale results.
+      const previous = this.catalog.models.find((entry) => entry.id === submitted.id);
+      const model = {
+        ...submitted,
+        capabilityEvidence:
+          previous &&
+          previous.model === submitted.model &&
+          previous.connectionId === submitted.connectionId
+            ? previous.capabilityEvidence
+            : undefined,
+      };
       const connection = this.catalog.connections.find((item) => item.id === model.connectionId);
       if (!connection) throw new Error('Remote model refers to a missing Connection.');
       if (connection.credentialMode === 'chatgpt' && model.outputFormat !== 'prompt-json')
@@ -217,6 +232,67 @@ export class RemoteInferenceStore {
       this.catalog.models = [...this.catalog.models.filter((item) => item.id !== model.id), model];
       await this.persist();
       return model;
+    });
+  }
+
+  /** Ignore late probes for a renamed model or changed endpoint/account. */
+  async recordCapabilities(
+    modelId: string,
+    binding: { connectionKey: string; model: string },
+    source: RemoteCapabilityEvidence['source'],
+    support: RemoteCapabilityFlags,
+  ): Promise<RemoteCapabilityEvidence> {
+    return this.mutate(async () => {
+      const selected = this.selected(modelId);
+      if (
+        remoteConnectionKey(selected.connection) !== binding.connectionKey ||
+        selected.model.model !== binding.model
+      )
+        throw new Error('Model or Connection changed during capability check. Run it again.');
+      const now = Date.now();
+      const previous = selected.model.capabilityEvidence;
+      const sameBinding =
+        previous &&
+        previous.connectionKey === binding.connectionKey &&
+        previous.model === binding.model &&
+        now - previous.checkedAt < 24 * 60 * 60 * 1000;
+      const combined = { ...(sameBinding ? previous.support : {}) };
+      const sources: NonNullable<RemoteCapabilityEvidence['sources']> = {
+        ...(sameBinding ? previous.sources : {}),
+      };
+      const checkedAtByCapability: NonNullable<RemoteCapabilityEvidence['checkedAtByCapability']> =
+        {
+          ...(sameBinding ? previous.checkedAtByCapability : {}),
+        };
+      if (sameBinding && previous && !previous.checkedAtByCapability)
+        for (const capability of Object.keys(previous.support) as (keyof typeof combined)[])
+          checkedAtByCapability[capability] = previous.checkedAt;
+      for (const [key, value] of Object.entries(support)) {
+        const capability = key as keyof typeof combined;
+        const priorCheck = checkedAtByCapability[capability] ?? 0;
+        // A recent verified probe is stronger than a contradictory metadata hint.
+        if (
+          source === 'probe' ||
+          sources[capability] !== 'probe' ||
+          now - priorCheck >= 24 * 60 * 60 * 1000
+        ) {
+          combined[capability] = value;
+          sources[capability] = source;
+          checkedAtByCapability[capability] = now;
+        }
+      }
+      const evidence: RemoteCapabilityEvidence = {
+        ...binding,
+        source,
+        support: combined,
+        sources,
+        checkedAtByCapability,
+        checkedAt: now,
+      };
+      const validated = validateRemoteModel({ ...selected.model, capabilityEvidence: evidence });
+      this.catalog.models = this.catalog.models.map((m) => (m.id === modelId ? validated : m));
+      await this.persist();
+      return evidence;
     });
   }
 

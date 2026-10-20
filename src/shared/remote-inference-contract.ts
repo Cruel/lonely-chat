@@ -3,6 +3,131 @@ export type RemoteProtocol = 'responses' | 'chat-completions';
 export type RemoteOutputFormat = 'json-schema' | 'json-object' | 'prompt-json';
 export type RemoteCredentialMode = 'none' | 'environment' | 'managed' | 'chatgpt';
 
+export const REMOTE_CAPABILITIES = [
+  'text',
+  'images',
+  'nativeVideo',
+  'jsonSchema',
+  'jsonObject',
+  'seed',
+  'sampling',
+] as const;
+export type RemoteCapability = (typeof REMOTE_CAPABILITIES)[number];
+export type RemoteCapabilityFlags = Partial<Record<RemoteCapability, boolean>>;
+
+/** Evidence is tied to a particular endpoint, account, protocol and model ID. */
+export interface RemoteCapabilityEvidence {
+  readonly connectionKey: string;
+  readonly model: string;
+  readonly checkedAt: number;
+  readonly source: 'metadata' | 'probe';
+  readonly support: RemoteCapabilityFlags;
+  /** Per-flag provenance is retained when metadata and probes are merged. */
+  readonly sources?: Partial<Record<RemoteCapability, 'metadata' | 'probe'>>;
+  readonly checkedAtByCapability?: Partial<Record<RemoteCapability, number>>;
+}
+
+export function remoteConnectionKey(connection: RemoteConnection): string {
+  return JSON.stringify([
+    connection.id,
+    connection.baseUrl,
+    connection.protocol,
+    connection.credentialMode,
+    connection.environmentVariable ?? null,
+    connection.chatgptAccountId ?? null,
+  ]);
+}
+
+export function currentCapabilityEvidence(
+  connection: RemoteConnection,
+  model: RemoteModelConfiguration,
+  now = Date.now(),
+): RemoteCapabilityEvidence | null {
+  const evidence = model.capabilityEvidence;
+  return evidence &&
+    evidence.connectionKey === remoteConnectionKey(connection) &&
+    evidence.model === model.model &&
+    evidence.checkedAt <= now &&
+    now - evidence.checkedAt < 24 * 60 * 60 * 1000
+    ? evidence
+    : null;
+}
+
+/** Unverified endpoint claims are not proof; manual overrides remain explicit. */
+export function effectiveRemoteCapabilities(
+  connection: RemoteConnection,
+  model: RemoteModelConfiguration,
+  now = Date.now(),
+): Record<RemoteCapability, boolean> {
+  const chatgpt = connection.credentialMode === 'chatgpt';
+  const verified = currentCapabilityEvidence(connection, model, now);
+  const evidence = verified?.support;
+  const defaults: Record<RemoteCapability, boolean> = {
+    text: true,
+    images: model.images,
+    nativeVideo: false,
+    jsonSchema: !chatgpt && model.outputFormat === 'json-schema',
+    jsonObject: !chatgpt && model.outputFormat === 'json-object',
+    seed: !chatgpt && connection.protocol === 'chat-completions',
+    sampling: !chatgpt && connection.protocol === 'chat-completions',
+  };
+  for (const capability of REMOTE_CAPABILITIES) {
+    const checkedAt = verified?.checkedAtByCapability?.[capability] ?? verified?.checkedAt;
+    if (
+      evidence?.[capability] !== undefined &&
+      checkedAt !== undefined &&
+      checkedAt <= now &&
+      now - checkedAt < 24 * 60 * 60 * 1000
+    )
+      defaults[capability] = evidence[capability];
+    if (model.capabilityOverrides?.[capability] !== undefined)
+      defaults[capability] = model.capabilityOverrides[capability];
+  }
+  // Endpoint claims cannot enable a transport format our adapter cannot serialize.
+  defaults.nativeVideo = false;
+  // Neither the standard Responses request builder nor the plan route sends seed.
+  if (connection.protocol === 'responses') defaults.seed = false;
+  if (chatgpt) {
+    defaults.jsonSchema = false;
+    defaults.jsonObject = false;
+    defaults.seed = false;
+    defaults.sampling = false;
+  }
+  return defaults;
+}
+
+function validateCapabilityTimestamps(
+  value: unknown,
+): NonNullable<RemoteCapabilityEvidence['checkedAtByCapability']> {
+  const v = object(value);
+  exact(v, [...REMOTE_CAPABILITIES]);
+  if (
+    Object.values(v).some(
+      (entry) => typeof entry !== 'number' || !Number.isSafeInteger(entry) || entry < 0,
+    )
+  )
+    throw new Error('Invalid capability check timestamp.');
+  return v as NonNullable<RemoteCapabilityEvidence['checkedAtByCapability']>;
+}
+
+function validateCapabilitySources(
+  value: unknown,
+): NonNullable<RemoteCapabilityEvidence['sources']> {
+  const v = object(value);
+  exact(v, [...REMOTE_CAPABILITIES]);
+  if (Object.values(v).some((entry) => entry !== 'metadata' && entry !== 'probe'))
+    throw new Error('Invalid capability provenance.');
+  return v as NonNullable<RemoteCapabilityEvidence['sources']>;
+}
+
+function validateCapabilityFlags(value: unknown): RemoteCapabilityFlags {
+  const v = object(value);
+  exact(v, [...REMOTE_CAPABILITIES]);
+  if (Object.values(v).some((entry) => typeof entry !== 'boolean'))
+    throw new Error('Capability values must be booleans.');
+  return v as RemoteCapabilityFlags;
+}
+
 export interface RemoteConnection {
   readonly id: string;
   readonly name: string;
@@ -26,6 +151,9 @@ export interface RemoteModelConfiguration {
   readonly outputFormat: RemoteOutputFormat;
   /** Requires explicit permission to transmit screenshots over this Connection. */
   readonly allowRemoteImages: boolean;
+  /** Manual compatibility overrides, distinct from the model's chosen output format. */
+  readonly capabilityOverrides?: RemoteCapabilityFlags;
+  readonly capabilityEvidence?: RemoteCapabilityEvidence;
 }
 
 export interface RemoteCatalog {
@@ -144,13 +272,58 @@ export function validateRemoteConnection(value: unknown): RemoteConnection {
 
 export function validateRemoteModel(value: unknown): RemoteModelConfiguration {
   const v = object(value);
-  exact(v, ['id', 'name', 'connectionId', 'model', 'images', 'outputFormat', 'allowRemoteImages']);
+  exact(v, [
+    'id',
+    'name',
+    'connectionId',
+    'model',
+    'images',
+    'outputFormat',
+    'allowRemoteImages',
+    'capabilityOverrides',
+    'capabilityEvidence',
+  ]);
   if (typeof v.images !== 'boolean' || typeof v.allowRemoteImages !== 'boolean')
     throw new Error('Invalid model image capabilities/permission.');
   if (!['json-schema', 'json-object', 'prompt-json'].includes(v.outputFormat as string))
     throw new Error('Invalid remote output format.');
   if (v.allowRemoteImages && !v.images)
     throw new Error('Image permission requires an image-capable model.');
+  let evidence: RemoteCapabilityEvidence | undefined;
+  if (v.capabilityEvidence !== undefined) {
+    const e = object(v.capabilityEvidence);
+    exact(e, [
+      'connectionKey',
+      'model',
+      'checkedAt',
+      'source',
+      'support',
+      'sources',
+      'checkedAtByCapability',
+    ]);
+    if (
+      typeof e.connectionKey !== 'string' ||
+      e.connectionKey.length > 4096 ||
+      typeof e.model !== 'string' ||
+      e.model.length > 200 ||
+      typeof e.checkedAt !== 'number' ||
+      !Number.isSafeInteger(e.checkedAt) ||
+      e.checkedAt < 0 ||
+      (e.source !== 'metadata' && e.source !== 'probe')
+    )
+      throw new Error('Invalid capability evidence.');
+    evidence = {
+      connectionKey: e.connectionKey,
+      model: e.model,
+      checkedAt: e.checkedAt,
+      source: e.source,
+      support: validateCapabilityFlags(e.support),
+      ...(e.sources === undefined ? {} : { sources: validateCapabilitySources(e.sources) }),
+      ...(e.checkedAtByCapability === undefined
+        ? {}
+        : { checkedAtByCapability: validateCapabilityTimestamps(e.checkedAtByCapability) }),
+    };
+  }
   return {
     id: remoteId(v.id),
     name: name(v.name, 'model configuration name', 100),
@@ -159,5 +332,9 @@ export function validateRemoteModel(value: unknown): RemoteModelConfiguration {
     images: v.images,
     outputFormat: v.outputFormat as RemoteOutputFormat,
     allowRemoteImages: v.allowRemoteImages,
+    ...(v.capabilityOverrides === undefined
+      ? {}
+      : { capabilityOverrides: validateCapabilityFlags(v.capabilityOverrides) }),
+    ...(evidence ? { capabilityEvidence: evidence } : {}),
   };
 }

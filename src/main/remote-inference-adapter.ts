@@ -2,10 +2,13 @@ import OpenAI from 'openai';
 import type { InferenceTraceObserver } from './inference-trace';
 import type { UnifiedInferenceAdapter, NormalizedInferenceUsage } from './inference-coordinator';
 import { unifiedOutputSchema, type UnifiedInferenceRequest } from './unified-inference-request';
+import { validateRemoteRequest } from './remote-inference-capabilities';
 import { AUDIENCE } from './fake-inference';
 import { AUTHOR_PLACEHOLDER, type ChatterIdentity } from '../shared/audience-contract';
 import {
   validateRemoteEndpoint,
+  effectiveRemoteCapabilities,
+  type RemoteCapabilityFlags,
   type RemoteConnection,
   type RemoteModelConfiguration,
 } from '../shared/remote-inference-contract';
@@ -89,10 +92,43 @@ export function boundedJson(text: string): unknown {
  * The application's original schema remains authoritative after transport.
  */
 export function strictProviderSchema(value: Record<string, unknown>): Record<string, unknown> {
+  const validate = (entry: unknown): void => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry))
+      throw new Error('Invalid strict provider JSON Schema.');
+    const schema = entry as Record<string, unknown>;
+    if (schema.type === 'object') {
+      if (
+        !schema.properties ||
+        typeof schema.properties !== 'object' ||
+        Array.isArray(schema.properties) ||
+        schema.additionalProperties !== false
+      )
+        throw new Error('Strict JSON Schema requires properties and additionalProperties: false.');
+      const keys = Object.keys(schema.properties);
+      if (
+        !Array.isArray(schema.required) ||
+        keys.some((key) => !(schema.required as unknown[]).includes(key)) ||
+        schema.required.length !== keys.length
+      )
+        throw new Error('Strict JSON Schema must require all declared properties.');
+      for (const property of Object.values(schema.properties)) validate(property);
+    } else if (schema.type === 'array') {
+      validate(schema.items);
+    } else if (
+      !['string', 'integer', 'number', 'boolean', 'null'].includes(schema.type as string)
+    ) {
+      throw new Error('Unsupported strict provider JSON Schema type.');
+    }
+  };
+  validate(value);
   const clean = (entry: unknown): unknown => {
     if (Array.isArray(entry)) return entry.map(clean);
     if (!entry || typeof entry !== 'object') return entry;
-    return strictProviderSchema(entry as Record<string, unknown>);
+    return Object.fromEntries(
+      Object.entries(entry)
+        .filter(([key]) => !unsupported.has(key))
+        .map(([key, item]) => [key, clean(item)]),
+    );
   };
   const unsupported = new Set([
     'maxItems',
@@ -157,12 +193,8 @@ async function remoteComplete(
   roster: readonly ChatterIdentity[],
   observe?: InferenceTraceObserver,
 ): Promise<{ raw: unknown; normalized: unknown; usage: NormalizedInferenceUsage }> {
-  if (request.nativeVideo) throw new Error('This remote model does not support native video.');
+  validateRemoteRequest(selection.connection, selection.model, request);
   const images = request.content.filter((part) => part.type === 'image');
-  if (images.length && (!selection.model.images || !selection.model.allowRemoteImages))
-    throw new Error(
-      'Remote screenshot transmission requires an image-capable model and explicit image permission.',
-    );
   // Never trace the resolved key, request headers, baseURL credentials or entire media.
   observe?.('request', {
     protocol: selection.connection.protocol,
@@ -170,7 +202,12 @@ async function remoteComplete(
     imageCount: images.length,
     evidenceWindow: request.evidenceWindow,
     contentTypes: request.content.map((part) => part.type),
+    ...(request.sampling.seed !== undefined &&
+    !effectiveRemoteCapabilities(selection.connection, selection.model).seed
+      ? { omittedControls: ['seed'] }
+      : {}),
   });
+  const support = effectiveRemoteCapabilities(selection.connection, selection.model);
   const format = selection.model.outputFormat;
   const instructions =
     format === 'prompt-json'
@@ -195,6 +232,7 @@ async function remoteComplete(
         input,
         store: false,
         max_output_tokens: request.sampling.maxTokens,
+        ...(support.sampling ? { temperature: request.sampling.temperature } : {}),
         ...(format === 'json-schema'
           ? {
               text: {
@@ -238,9 +276,11 @@ async function remoteComplete(
   const result = await client.chat.completions.create(
     {
       model,
-      temperature: request.sampling.temperature,
+      ...(support.sampling ? { temperature: request.sampling.temperature } : {}),
       max_tokens: request.sampling.maxTokens,
-      ...(request.sampling.seed === undefined ? {} : { seed: request.sampling.seed }),
+      ...(request.sampling.seed === undefined || !support.seed
+        ? {}
+        : { seed: request.sampling.seed }),
       messages: [
         { role: 'system', content: instructions },
         { role: 'user', content },
@@ -292,7 +332,13 @@ export function remoteUnifiedAdapter(
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 600_000)
     throw new Error('Invalid remote inference timeout.');
   return {
-    capabilities: { images: selection.model.images && selection.model.allowRemoteImages },
+    capabilities: {
+      images:
+        effectiveRemoteCapabilities(selection.connection, selection.model).images &&
+        selection.model.images &&
+        selection.model.allowRemoteImages,
+      nativeVideo: false,
+    },
     async complete(request, signal, observe) {
       const combined = AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]);
       try {
@@ -308,7 +354,18 @@ export function remoteUnifiedAdapter(
         // Validation failures are safe but provider-controlled errors are not.
         if (
           error instanceof Error &&
-          (error.message.startsWith('Remote inference returned ') ||
+          (error.message.startsWith('Remote input ') ||
+            error.message.startsWith('Remote image ') ||
+            error.message.startsWith('Remote text ') ||
+            error.message.startsWith('Selected model ') ||
+            error.message.startsWith('This model') ||
+            error.message.startsWith('Native-video transport ') ||
+            error.message.startsWith('Invalid maximum ') ||
+            error.message.startsWith('Invalid provider sampling ') ||
+            error.message.startsWith('Strict JSON Schema ') ||
+            error.message.startsWith('Invalid strict provider ') ||
+            error.message.startsWith('Unsupported strict provider ') ||
+            error.message.startsWith('Remote inference returned ') ||
             error.message.startsWith('Remote inference did not ') ||
             error.message.startsWith('Remote screenshot ') ||
             error.message.startsWith('This remote model '))
@@ -330,14 +387,28 @@ export async function probeRemoteModel(
   compatible: true;
   protocol: RemoteConnection['protocol'];
   usage: NormalizedInferenceUsage;
+  support: RemoteCapabilityFlags;
 }> {
-  const adapter = remoteUnifiedAdapter(selection, { timeoutMs: 20_000, ...options });
+  // Test the selected output mode even if a previous metadata claim was negative.
+  const formatKey = selection.model.outputFormat === 'json-schema' ? 'jsonSchema' : 'jsonObject';
+  const probeSelection: RemoteSelection = {
+    ...selection,
+    model: {
+      ...selection.model,
+      capabilityOverrides: {
+        ...selection.model.capabilityOverrides,
+        text: true,
+        ...(selection.model.outputFormat === 'prompt-json' ? {} : { [formatKey]: true }),
+      },
+    },
+  };
+  const adapter = remoteUnifiedAdapter(probeSelection, { timeoutMs: 20_000, ...options });
   const probe: UnifiedInferenceRequest = {
     role: 'unified',
     instructions: 'Return JSON with exactly two empty arrays: events and messages.',
     content: [{ type: 'text', text: 'Compatibility probe. No user media or history is supplied.' }],
     response: { kind: 'json', schema: unifiedOutputSchema(AUDIENCE, 'normal') },
-    sampling: { temperature: 0, maxTokens: 100 },
+    sampling: { temperature: 0.7, maxTokens: 100 },
     evidenceWindow: null,
   };
   const result = await adapter.complete(probe, signal);
@@ -357,7 +428,78 @@ export async function probeRemoteModel(
     compatible: true,
     protocol: selection.connection.protocol,
     usage: result.usage ?? usage(null),
+    support: {
+      text: true,
+      ...(selection.model.outputFormat === 'json-schema' ? { jsonSchema: true } : {}),
+      ...(selection.model.outputFormat === 'json-object' ? { jsonObject: true } : {}),
+    },
   };
+}
+
+/** Read only well-understood metadata hints, never an arbitrary remote object. */
+export function readRemoteModelMetadata(value: unknown): RemoteCapabilityFlags {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const data = value as Record<string, unknown>;
+  const caps =
+    data.capabilities && typeof data.capabilities === 'object' && !Array.isArray(data.capabilities)
+      ? (data.capabilities as Record<string, unknown>)
+      : {};
+  const flags: Record<string, boolean> = {};
+  const assign = (key: string, ...names: string[]) => {
+    const found = names.map((name) => caps[name] ?? data[name]).find((v) => typeof v === 'boolean');
+    if (typeof found === 'boolean') flags[key] = found;
+  };
+  assign('text', 'text', 'supports_text');
+  assign('images', 'vision', 'images', 'supports_vision', 'image_input');
+  assign('nativeVideo', 'video', 'native_video', 'supports_video');
+  assign('jsonSchema', 'json_schema', 'supports_json_schema', 'structured_outputs');
+  assign('jsonObject', 'json_object', 'supports_json_object');
+  assign('seed', 'seed', 'supports_seed');
+  assign('sampling', 'sampling', 'supports_temperature');
+  const modalities = data.input_modalities ?? data.modalities;
+  if (Array.isArray(modalities) && modalities.every((entry) => typeof entry === 'string')) {
+    flags.text = modalities.includes('text');
+    flags.images = modalities.includes('image');
+    flags.nativeVideo = modalities.includes('video');
+  }
+  if (
+    Array.isArray(data.supported_parameters) &&
+    data.supported_parameters.every((entry) => typeof entry === 'string')
+  ) {
+    const parameters = data.supported_parameters;
+    // Generic response_format support is not proof of strict JSON Schema support.
+    flags.jsonSchema =
+      parameters.includes('json_schema') ||
+      parameters.includes('response_format.json_schema') ||
+      parameters.includes('text.format.json_schema');
+    flags.jsonObject = parameters.includes('response_format') || parameters.includes('text.format');
+    flags.seed = parameters.includes('seed');
+    flags.sampling = parameters.includes('temperature');
+  }
+  return flags as RemoteCapabilityFlags;
+}
+
+export async function inspectRemoteModel(
+  selection: RemoteSelection,
+  signal: AbortSignal,
+  fetcher?: typeof fetch,
+): Promise<RemoteCapabilityFlags> {
+  const client = makeRemoteClient(selection, fetcher);
+  try {
+    const info = await client.models.retrieve(selection.model.model, { signal });
+    if (info.id !== selection.model.model)
+      throw new Error('Endpoint returned metadata for a different model.');
+    return readRemoteModelMetadata(info);
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('Endpoint returned metadata'))
+      throw error;
+    const status = (error as { status?: unknown } | null)?.status;
+    if (status === 404 || status === 405)
+      throw new Error(
+        'This endpoint does not publish model capability metadata. Use a compatibility probe or explicit overrides.',
+      );
+    throw safeTransportError(error, signal);
+  }
 }
 
 export async function listRemoteModels(

@@ -106,6 +106,7 @@ export interface DesktopInvocations {
   'remote:model:delete': void;
   'remote:credential:set': 'session' | 'protected' | 'file';
   'remote:models:list': string[];
+  'remote:model:inspect': import('./remote-inference-contract').RemoteCapabilityEvidence;
   'remote:model:probe': {
     compatible: true;
     protocol: RemoteConnection['protocol'];
@@ -248,6 +249,7 @@ export interface DesktopArguments {
   'remote:credential:set': [id: string, secret: string];
   'remote:models:list': [connectionId: string];
   'remote:model:probe': [modelId: string];
+  'remote:model:inspect': [modelId: string];
   'remote:playground:unified': [
     request: import('./playground-contract').SimulationExperimentRequest,
     modelConfigurationId: string,
@@ -394,6 +396,7 @@ export interface DesktopAPI {
   setRemoteCredential?(id: string, secret: string): Promise<'session' | 'protected' | 'file'>;
   listRemoteModels?(connectionId: string): Promise<string[]>;
   probeRemoteModel?(modelId: string): Promise<DesktopInvocations['remote:model:probe']>;
+  inspectRemoteModel?(modelId: string): Promise<DesktopInvocations['remote:model:inspect']>;
   runRemoteUnifiedPlayground?(
     request: import('./playground-contract').SimulationExperimentRequest,
     modelConfigurationId: string,
