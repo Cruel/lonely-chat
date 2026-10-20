@@ -4,6 +4,7 @@ import PlatformIcon from '../components/PlatformIcon.astro';
 import SiteHeader from '../components/SiteHeader.astro';
 import SiteFooter from '../components/SiteFooter.astro';
 import '../styles/global.css';
+import prepaintDownloads from '../scripts/prepaint-downloads.js?raw';
 
 const title = 'Download Lonely Chat — Windows, macOS & Linux';
 const description = 'Download the latest Lonely Chat desktop release for Windows, macOS Apple Silicon, or Linux. Local AI-powered simulated streamer chat.';
@@ -12,6 +13,7 @@ const description = 'Download the latest Lonely Chat desktop release for Windows
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <script is:inline>document.documentElement.setAttribute('data-download-booting', '');</script>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#0c0c13" />
     <meta name="description" content={description} />
@@ -68,6 +70,7 @@ const description = 'Download the latest Lonely Chat desktop release for Windows
       </main>
       <SiteFooter />
     </div>
+    <script is:inline set:html={prepaintDownloads} />
     <script>import '../scripts/downloads.js';</script>
   </body>
 </html>

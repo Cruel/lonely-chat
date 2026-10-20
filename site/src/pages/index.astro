@@ -5,6 +5,7 @@ import SiteFooter from '../components/SiteFooter.astro';
 import PlatformIcon from '../components/PlatformIcon.astro';
 import DownloadButton from '../components/DownloadButton.astro';
 import '../styles/global.css';
+import prepaintDownloads from '../scripts/prepaint-downloads.js?raw';
 
 const title = 'Lonely Chat — Give every moment an audience';
 const description = 'A simulated streamer chat that reacts to your video, audio, and on-screen moments using local AI. Bring an audience to your content, even when you are flying solo.';
@@ -14,6 +15,7 @@ const description = 'A simulated streamer chat that reacts to your video, audio,
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <script is:inline>document.documentElement.setAttribute('data-download-booting', '');</script>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#0c0c13" />
     <meta name="description" content={description} />
@@ -148,6 +150,7 @@ const description = 'A simulated streamer chat that reacts to your video, audio,
 
       <SiteFooter />
     </div>
+    <script is:inline set:html={prepaintDownloads} />
     <script>
       import '../scripts/downloads.js';
     </script>

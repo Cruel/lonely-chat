@@ -12,17 +12,26 @@ const platformLinks = [...document.querySelectorAll('[data-platform-download]')]
 const releaseStatuses = [...document.querySelectorAll('[data-release-status]')];
 const releaseLinks = [...document.querySelectorAll('[data-release-link]')];
 
+function setText(element, value) {
+  if (element && element.textContent !== value) element.textContent = value;
+}
+
+function setHref(element, url) {
+  if (element.getAttribute('href') !== url) element.setAttribute('href', url);
+}
+
 function showStatus(message) {
-  for (const element of releaseStatuses) element.textContent = message;
+  for (const element of releaseStatuses) setText(element, message);
 }
 
 function updatePrimaryButtons(release, platform) {
   const selected = getPrimaryDownload(release, platform);
   for (const button of automaticButtons) {
-    button.href = selected.href;
-    button.querySelector('[data-download-label]').textContent = selected.label;
+    setHref(button, selected.href);
+    setText(button.querySelector('[data-download-label]'), selected.label);
     for (const icon of button.querySelectorAll('[data-download-icon]')) {
-      icon.hidden = icon.getAttribute('data-download-icon') !== (selected.platform ?? 'generic');
+      const hidden = icon.getAttribute('data-download-icon') !== (selected.platform ?? 'generic');
+      if (icon.hidden !== hidden) icon.hidden = hidden;
     }
   }
 }
@@ -35,32 +44,43 @@ function updatePlatformLinks(release, failed = false) {
     const size = link.querySelector('[data-platform-size]');
 
     if (installer) {
-      link.href = installer.url;
+      setHref(link, installer.url);
       link.removeAttribute('target');
       link.removeAttribute('aria-disabled');
       link.classList.remove('unavailable');
-      if (label) label.textContent = 'Download';
-      if (size) size.textContent = formatDownloadSize(installer.size);
+      setText(label, 'Download');
+      setText(size, formatDownloadSize(installer.size));
     } else if (failed) {
-      link.href = RELEASES_URL;
+      setHref(link, RELEASES_URL);
       link.setAttribute('target', '_blank');
       link.removeAttribute('aria-disabled');
       link.classList.remove('unavailable');
-      if (label) label.textContent = 'Check GitHub ↗';
-      if (size) size.textContent = '';
+      setText(label, 'Check GitHub ↗');
+      setText(size, '');
     } else {
       link.removeAttribute('href');
       link.removeAttribute('target');
       link.setAttribute('aria-disabled', 'true');
       link.classList.add('unavailable');
-      if (label) label.textContent = 'Not available';
-      if (size) size.textContent = '';
+      setText(label, 'Not available');
+      setText(size, '');
     }
   }
 }
 
 async function identifyPlatform() {
   const hints = navigator.userAgentData;
+  const userAgent = navigator.userAgent;
+  const clientPlatform = hints?.platform || '';
+  try {
+    const saved = JSON.parse(sessionStorage.getItem('lonely-chat-platform-hint') || 'null');
+    if (saved && saved.userAgent === userAgent && saved.clientPlatform === clientPlatform &&
+        ['windows', 'linux', 'macos', null].includes(saved.platform)) {
+      return saved.platform;
+    }
+  } catch {
+    // Ignore unavailable or malformed tab-local platform hints.
+  }
   let architecture = '';
   let bitness = '';
   if (hints?.getHighEntropyValues) {
@@ -72,16 +92,19 @@ async function identifyPlatform() {
       // Browsers may decline high-entropy hints; let visitors choose instead.
     }
   }
-  return detectPlatform({
-    clientPlatform: hints?.platform,
-    userAgent: navigator.userAgent,
-    architecture,
-    bitness,
-  });
+  const platform = detectPlatform({ clientPlatform, userAgent, architecture, bitness });
+  try {
+    sessionStorage.setItem('lonely-chat-platform-hint', JSON.stringify({
+      userAgent, clientPlatform, platform,
+    }));
+  } catch {
+    // Downloads still work when browser storage is blocked.
+  }
+  return platform;
 }
 
 function setReleaseLink(url) {
-  for (const link of releaseLinks) link.href = url;
+  for (const link of releaseLinks) setHref(link, url);
 }
 
 async function loadRelease() {

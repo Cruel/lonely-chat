@@ -219,6 +219,11 @@ h1, h2, h3, p { margin-top: 0; }
   .chat-toolbar { padding-inline: 9px; }
 }
 [hidden] { display: none !important; }
+/* Never paint placeholder download labels before the synchronous cache restore. */
+html[data-download-booting] [data-auto-download],
+html[data-download-booting] [data-platform-download],
+html[data-download-booting] [data-release-status],
+html[data-download-booting] [data-release-link] { visibility: hidden; }
 .site-nav a[aria-current="page"] { color: #dfcdff; }
 .hero-footnote a, .text-link { color: #cfb7ff; text-underline-offset: 4px; }
 .hero-footnote a:hover, .text-link:hover { text-decoration: underline; }
