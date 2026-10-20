@@ -2,7 +2,11 @@ name: Build and verify
 on:
   push:
     branches: ['**']
+    paths-ignore:
+      - 'site/**'
   pull_request:
+    paths-ignore:
+      - 'site/**'
   workflow_dispatch:
   workflow_call:
 
