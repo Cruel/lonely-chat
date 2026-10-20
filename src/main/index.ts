@@ -264,6 +264,8 @@ let videoSelectionGeneration = 0;
 let rosterRegenerating = false;
 let rosterGenerationAbort: AbortController | null = null;
 let speechSwitchBusy = false;
+// Block Playground acquisition throughout asynchronous Simulation start/retry validation.
+let sessionStarting = false;
 // A trusted IPC reservation serializes model ownership while decoder playback
 // restarts; the Session timeline itself remains paused until the commit.
 const resumeReservation = new RecordedResumeReservation();
@@ -652,131 +654,145 @@ function registerHandlers(): void {
       if (rosterRegenerating) throw new Error('Roster regeneration is in progress.');
       if (playground.busy || speechTest.busy)
         throw new Error('Stop Playground experiments before starting Simulation.');
-      if (['running', 'starting', 'switching'].includes(session.snapshot().phase))
-        throw new Error('The simulation is already running.');
-      const recordedConfig =
-        options?.inputMode === 'recorded' && options.recordedConfig
-          ? validateScenarioConfig(options.recordedConfig)
-          : null;
-      if (recordedConfig) {
-        if (mode !== recordedConfig.mode) throw new Error('Run mode does not match Scenario.');
-        await verifyRecordedSources(recordedConfig);
-        if (
-          options?.recordedScenarioId &&
-          !(await recordedScenarios.list()).some((item) => item.id === options.recordedScenarioId)
-        )
-          throw new Error('Selected Scenario no longer exists.');
-      }
-      if (options?.inputMode === 'recorded') {
-        ++videoSelectionGeneration;
-        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('media:stop');
-        session.selectVideoSource(
-          (recordedConfig ? !!recordedConfig.video : options.hasVideoFile)
-            ? 'recorded:video'
-            : null,
-        );
-      } else if (options?.inputMode === 'live' || !options) {
-        // The live capture producer retains ownership of its existing source.
-      } else {
-        throw new Error('Unknown simulation media mode.');
-      }
-      const presetId = recordedConfig?.presetId ?? options?.presetId;
-      const presetRevision = recordedConfig?.presetRevision ?? options?.presetRevision;
-      const preset = presetId
-        ? (await promptPresets.revisions(presetId))
-            .slice()
-            .reverse()
-            .find(
-              (item) =>
-                presetRevision === undefined ||
-                presetRevision === null ||
-                item.revision === presetRevision,
-            )
-        : undefined;
-      if (presetId && !preset) throw new Error('Selected prompt preset was not found.');
-      const activeModel =
-        mode === 'native'
-          ? packageE2E
-            ? 'cert-worker'
-            : installs.snapshot().active['vision-language']
-          : null;
       if (
-        recordedConfig?.settingsPolicy === 'saved' &&
-        mode === 'native' &&
-        recordedConfig.modelId !== activeModel
+        sessionStarting ||
+        ['running', 'starting', 'switching'].includes(session.snapshot().phase)
       )
-        throw new Error('Activate the model saved in this Scenario before starting the Run.');
-      const effectiveSettings =
-        recordedConfig?.settingsPolicy === 'saved'
-          ? recordedConfig.settingsSnapshot
-          : session.getPreferences();
-      // Audience size is managed outside SessionController; align it with the
-      // frozen Run settings before inference (without rewriting global prefs).
-      if (effectiveSettings.audienceCount !== audience.snapshot().targetCount)
-        await audience.setTarget(effectiveSettings.audienceCount);
-      // Validation and file checks above are async: reject starts superseded by
-      // another caller before mutating an already active simulation.
-      if (['running', 'starting', 'switching'].includes(session.snapshot().phase))
         throw new Error('The simulation is already running.');
-      const effectiveOptions = recordedConfig
-        ? {
-            ...options!,
-            publishToOverlay: recordedConfig.publishToOverlay,
-            hasVideoFile: Boolean(recordedConfig.video),
-            hasAudioFiles: recordedConfig.audio.some((source) => source.enabled),
-            transcriptMode: recordedConfig.transcriptMode,
-            ...(recordedConfig.seed === null ? { seed: undefined } : { seed: recordedConfig.seed }),
-            presetId: presetId ?? undefined,
-            presetRevision: presetRevision ?? undefined,
-          }
-        : options;
-      const started = session.start(
-        preset ? preset.values.context : (recordedConfig?.context ?? context),
-        mode,
-        activeModel,
-        effectiveOptions,
-        preset
-          ? {
-              id: preset.id,
-              name: preset.name,
-              revision: preset.revision,
-              chatActivity: preset.values.chatActivity,
-            }
-          : undefined,
-        recordedConfig ? effectiveSettings : undefined,
-      );
-      if (recordedConfig) {
-        try {
-          await pendingRecordedFinish;
-          const saved = await recordedScenarios.begin({
-            scenarioId: options?.recordedScenarioId ?? null,
-            name: options?.recordedScenarioId
-              ? ((await recordedScenarios.list()).find(
-                  (item) => item.id === options.recordedScenarioId,
-                )?.name ?? 'Scenario Run')
-              : 'Ad hoc recorded Run',
-            sessionRunId: started.runId!,
-            effective: recordedConfig,
-            effectiveSettings: session.getRunPreferences(),
-            effectiveModelId: activeModel,
-            effectivePreset: started.promptPreset ?? null,
-            effectivePrompt: {
-              context: preset ? preset.values.context : recordedConfig.context,
-              chatActivity: preset?.values.chatActivity ?? session.getRunPreferences().chatActivity,
-            },
-            effectiveSeed: started.sessionSeed!,
-          });
-          activeRecordedRun = {
-            id: saved.id,
-            sessionRunId: started.runId!,
-            config: recordedConfig,
-          };
-        } catch (error) {
-          stopSession();
-          throw error;
+      sessionStarting = true;
+      try {
+        const recordedConfig =
+          options?.inputMode === 'recorded' && options.recordedConfig
+            ? validateScenarioConfig(options.recordedConfig)
+            : null;
+        if (recordedConfig) {
+          if (mode !== recordedConfig.mode) throw new Error('Run mode does not match Scenario.');
+          await verifyRecordedSources(recordedConfig);
+          if (
+            options?.recordedScenarioId &&
+            !(await recordedScenarios.list()).some((item) => item.id === options.recordedScenarioId)
+          )
+            throw new Error('Selected Scenario no longer exists.');
         }
+        if (options?.inputMode === 'recorded') {
+          ++videoSelectionGeneration;
+          if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('media:stop');
+          session.selectVideoSource(
+            (recordedConfig ? !!recordedConfig.video : options.hasVideoFile)
+              ? 'recorded:video'
+              : null,
+          );
+        } else if (options?.inputMode === 'live' || !options) {
+          // The live capture producer retains ownership of its existing source.
+        } else {
+          throw new Error('Unknown simulation media mode.');
+        }
+        const presetId = recordedConfig?.presetId ?? options?.presetId;
+        const presetRevision = recordedConfig?.presetRevision ?? options?.presetRevision;
+        const preset = presetId
+          ? (await promptPresets.revisions(presetId))
+              .slice()
+              .reverse()
+              .find(
+                (item) =>
+                  presetRevision === undefined ||
+                  presetRevision === null ||
+                  item.revision === presetRevision,
+              )
+          : undefined;
+        if (presetId && !preset) throw new Error('Selected prompt preset was not found.');
+        const activeModel =
+          mode === 'native'
+            ? packageE2E
+              ? 'cert-worker'
+              : installs.snapshot().active['vision-language']
+            : null;
+        if (
+          recordedConfig?.settingsPolicy === 'saved' &&
+          mode === 'native' &&
+          recordedConfig.modelId !== activeModel
+        )
+          throw new Error('Activate the model saved in this Scenario before starting the Run.');
+        const effectiveSettings =
+          recordedConfig?.settingsPolicy === 'saved'
+            ? recordedConfig.settingsSnapshot
+            : session.getPreferences();
+        // Audience size is managed outside SessionController; align it with the
+        // frozen Run settings before inference (without rewriting global prefs).
+        if (effectiveSettings.audienceCount !== audience.snapshot().targetCount)
+          await audience.setTarget(effectiveSettings.audienceCount);
+        // Validation and file checks above are async: reject starts superseded by
+        // another caller before mutating an already active simulation.
+        if (['running', 'starting', 'switching'].includes(session.snapshot().phase))
+          throw new Error('The simulation is already running.');
+        const effectiveOptions = recordedConfig
+          ? {
+              ...options!,
+              publishToOverlay: recordedConfig.publishToOverlay,
+              hasVideoFile: Boolean(recordedConfig.video),
+              hasAudioFiles: recordedConfig.audio.some((source) => source.enabled),
+              transcriptMode: recordedConfig.transcriptMode,
+              ...(recordedConfig.seed === null
+                ? { seed: undefined }
+                : { seed: recordedConfig.seed }),
+              presetId: presetId ?? undefined,
+              presetRevision: presetRevision ?? undefined,
+            }
+          : options;
+        // Playground may own an idle warm worker even though it is not busy.
+        // The start reservation prevents another Playground request during this await.
+        await playground.stop();
+        const started = session.start(
+          preset ? preset.values.context : (recordedConfig?.context ?? context),
+          mode,
+          activeModel,
+          effectiveOptions,
+          preset
+            ? {
+                id: preset.id,
+                name: preset.name,
+                revision: preset.revision,
+                chatActivity: preset.values.chatActivity,
+              }
+            : undefined,
+          recordedConfig ? effectiveSettings : undefined,
+        );
+        if (recordedConfig) {
+          try {
+            await pendingRecordedFinish;
+            const saved = await recordedScenarios.begin({
+              scenarioId: options?.recordedScenarioId ?? null,
+              name: options?.recordedScenarioId
+                ? ((await recordedScenarios.list()).find(
+                    (item) => item.id === options.recordedScenarioId,
+                  )?.name ?? 'Scenario Run')
+                : 'Ad hoc recorded Run',
+              sessionRunId: started.runId!,
+              effective: recordedConfig,
+              effectiveSettings: session.getRunPreferences(),
+              effectiveModelId: activeModel,
+              effectivePreset: started.promptPreset ?? null,
+              effectivePrompt: {
+                context: preset ? preset.values.context : recordedConfig.context,
+                chatActivity:
+                  preset?.values.chatActivity ?? session.getRunPreferences().chatActivity,
+              },
+              effectiveSeed: started.sessionSeed!,
+            });
+            activeRecordedRun = {
+              id: saved.id,
+              sessionRunId: started.runId!,
+              config: recordedConfig,
+            };
+          } catch (error) {
+            stopSession();
+            throw error;
+          }
+        }
+        return started;
+      } finally {
+        sessionStarting = false;
       }
-      return started;
     },
     'session:stop': async () => {
       const result = stopSession();
@@ -789,11 +805,18 @@ function registerHandlers(): void {
       audio.pauseRecorded();
       return state;
     },
-    'session:resume:prepare': () =>
+    'session:resume:prepare': async () => {
       resumeReservation.prepare(
         session.snapshot().recordedPlayback === 'paused',
         playground.busy || speechTest.resourcesBusy,
-      ),
+      );
+      try {
+        await playground.stop();
+      } catch (error) {
+        resumeReservation.cancel();
+        throw error;
+      }
+    },
     'session:resume:cancel': () => resumeReservation.cancel(),
     'session:resume': () => {
       resumeReservation.commit(playground.busy || speechTest.resourcesBusy);
@@ -801,10 +824,16 @@ function registerHandlers(): void {
       return session.resumeRecorded();
     },
     'session:recorded:eof': () => session.finishRecorded(),
-    'session:retry': () => {
-      if (playground.busy || speechTest.busy)
+    'session:retry': async () => {
+      if (playground.busy || speechTest.busy || sessionStarting)
         throw new Error('Stop Playground experiments before retrying Simulation.');
-      return session.retry();
+      sessionStarting = true;
+      try {
+        await playground.stop();
+        return session.retry();
+      } finally {
+        sessionStarting = false;
+      }
     },
     'native:status': () => nativeInference.snapshot(),
     'preferences:get': () => session.getPreferences(),
@@ -845,6 +874,7 @@ function registerHandlers(): void {
       const abort = new AbortController();
       rosterGenerationAbort = abort;
       try {
+        await playground.stop();
         await session.awaitShutdown();
         return await audience.ensure(provider, abort.signal, true, seed);
       } finally {
@@ -871,6 +901,7 @@ function registerHandlers(): void {
       ) {
         throw new Error('Another model transition is in progress.');
       }
+      await playground.stop();
       const current = session.snapshot();
       if (
         current.mode === 'native' &&
@@ -895,6 +926,7 @@ function registerHandlers(): void {
       }
       // Download before stopping the live worker. Only reassignment needs a worker reload.
       const projector = await installs.prepareProjector(id, source, candidateId);
+      await playground.stop();
       const current = session.snapshot();
       if (
         current.mode === 'native' &&
@@ -932,6 +964,7 @@ function registerHandlers(): void {
       }
       const current = installs.snapshot().active[role];
       if (current === id) return installs.snapshot();
+      if (role === 'vision-language') await playground.stop();
       if (
         role === 'vision-language' &&
         session.snapshot().mode === 'native' &&
@@ -994,6 +1027,7 @@ function registerHandlers(): void {
         throw new Error('Stop audio capture before removing a speech model.');
       }
       await session.awaitShutdown();
+      await playground.stop();
       return installs.remove(id);
     },
     'video:clock': () => observationNow(),
@@ -1111,6 +1145,7 @@ function registerHandlers(): void {
         defaultPath: installs.snapshot().storageDirectory,
       });
       if (choice.canceled || !choice.filePaths[0]) return installs.snapshot();
+      await playground.stop();
       return installs.changeDirectory(choice.filePaths[0]);
     },
   } satisfies {
@@ -1284,6 +1319,7 @@ async function boot(): Promise<void> {
     () =>
       !quitting &&
       !resumeReservation.reserved &&
+      !sessionStarting &&
       !rosterRegenerating &&
       !speechSwitchBusy &&
       !speechTest?.busy &&
@@ -1309,6 +1345,18 @@ async function boot(): Promise<void> {
     },
     () => session.preparePausedPlayground(),
     () => session.getPreferences(),
+    (modelId) => {
+      const registry = installs.snapshot();
+      const model = registry.installations.find((item) => item.id === modelId);
+      const assigned = registry.projectorAssignments?.[modelId] ?? model?.projectorId;
+      return JSON.stringify({
+        settings: session.getPreferences(),
+        storageDirectory: registry.storageDirectory,
+        model,
+        assigned,
+        projector: registry.installations.find((item) => item.id === assigned),
+      });
+    },
   );
   speechTest = new SpeechPlaygroundService(
     () =>

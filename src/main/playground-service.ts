@@ -61,13 +61,20 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Unknown native inference error.';
 }
 
+const IDLE_WORKER_MS = 5 * 60_000;
+
 /**
- * One exclusive, ephemeral native worker at a time. Read-only with respect to
- * SessionController, ChatService, AudienceService and diagnostic capture.
+ * One exclusive native worker at a time. Successful Playground requests retain
+ * an idle worker for prompt/KV cache reuse; Simulation and shutdown evict it.
+ * No Playground work mutates Session, Chat, Audience, or diagnostic capture.
  */
 export class PlaygroundService {
   private active: Promise<void> | null = null;
   private abort: AbortController | null = null;
+  private cached: { key: string; provider: PlaygroundProvider } | null = null;
+  private idleTimer: ReturnType<typeof setTimeout> | null = null;
+  private retiring: Promise<void> = Promise.resolve();
+  private shutdown: Promise<void> | null = null;
   private listeners = new Set<(status: PlaygroundStatus) => void>();
 
   constructor(
@@ -78,6 +85,9 @@ export class PlaygroundService {
       SessionPreferences,
       'historyMaxAgeMs' | 'historyMaxCount'
     > = () => DEFAULT_PREFERENCES,
+    private readonly workerFingerprint: (modelId: string, needsVision: boolean) => string = () =>
+      '',
+    private readonly idleWorkerMs = IDLE_WORKER_MS,
   ) {}
 
   get busy(): boolean {
@@ -94,18 +104,50 @@ export class PlaygroundService {
     for (const listener of this.listeners) listener(this.snapshot());
   }
 
+  private clearIdleTimer(): void {
+    if (this.idleTimer !== null) clearTimeout(this.idleTimer);
+    this.idleTimer = null;
+  }
+
+  private armIdleTimer(): void {
+    this.clearIdleTimer();
+    if (!this.cached || this.active || this.shutdown) return;
+    this.idleTimer = setTimeout(() => {
+      // Eviction is serialized with any new request's worker acquisition.
+      void this.evictIdle().catch(() => {});
+    }, this.idleWorkerMs);
+    this.idleTimer.unref?.();
+  }
+
+  private async retire(provider: PlaygroundProvider): Promise<void> {
+    const task = this.retiring.then(() => provider.stop());
+    this.retiring = task.catch(() => {});
+    await task;
+  }
+
+  /** Release an idle worker (and await in-progress retirement) before other model ownership. */
+  async evictIdle(): Promise<void> {
+    this.clearIdleTimer();
+    const cached = this.cached;
+    this.cached = null;
+    if (cached) await this.retire(cached.provider);
+    else await this.retiring;
+  }
+
   private execute<T>(
     modelId: string,
     needsVision: boolean,
     operation: (provider: PlaygroundProvider, signal: AbortSignal) => Promise<T>,
+    reusable: (result: T) => boolean = () => true,
   ): Promise<T> {
-    if (this.busy) throw new Error('Another Playground inference is in progress.');
+    if (this.busy || this.shutdown) throw new Error('Another Playground inference is in progress.');
     if (!this.canRun())
       throw new Error(
         'Stop Simulation and other native model operations before running Playground.',
       );
     const abort = new AbortController();
     this.abort = abort;
+    this.clearIdleTimer();
     let resolveDone!: () => void;
     const done = new Promise<void>((resolve) => {
       resolveDone = resolve;
@@ -116,17 +158,39 @@ export class PlaygroundService {
       let provider: PlaygroundProvider | null = null;
       try {
         await this.beforeRun();
-        if (!this.canRun() || abort.signal.aborted)
+        await this.retiring;
+        if (!this.canRun() || abort.signal.aborted || this.shutdown)
           throw new Error('Playground inference cancelled or Simulation became active.');
-        provider = this.makeProvider(modelId, needsVision);
-        return await operation(provider, abort.signal);
+        const key = JSON.stringify([
+          modelId,
+          needsVision,
+          this.workerFingerprint(modelId, needsVision),
+        ]);
+        if (this.cached && this.cached.key !== key) await this.evictIdle();
+        if (!this.canRun() || abort.signal.aborted || this.shutdown)
+          throw new Error('Playground inference cancelled or Simulation became active.');
+        if (this.cached) {
+          provider = this.cached.provider;
+          this.cached = null;
+        } else {
+          provider = this.makeProvider(modelId, needsVision);
+        }
+        const result = await operation(provider, abort.signal);
+        // Structured experiments report transport/cancellation errors in their result.
+        // Preserve that result, but never retain a cancelled or unhealthy worker.
+        if (!abort.signal.aborted && !this.shutdown && reusable(result)) {
+          this.cached = { key, provider };
+          provider = null;
+        }
+        return result;
       } finally {
         try {
-          await provider?.stop();
+          if (provider) await this.retire(provider);
         } finally {
           this.abort = null;
           this.active = null;
           resolveDone();
+          this.armIdleTimer();
           this.notify();
         }
       }
@@ -219,89 +283,108 @@ export class PlaygroundService {
     frames: readonly PlaygroundFrame[],
     playbackWindowMs: number,
   ): Promise<SimulationExperimentResult> {
-    return this.execute(modelId, frames.length > 0, async (provider, signal) => {
-      const startedAt = new Date().toISOString();
-      const start = performance.now();
-      const result: SimulationExperimentResult = {
-        modelId,
-        ...(frames.length ? { submittedFrames: frames } : {}),
-        startedAt,
-        durationMs: 0,
-        constructedRequest,
-        submittedRequest,
-        rawNativeOutput: null,
-        normalizedResult: null,
-        parsedResult: null,
-        accepted: null,
-        errorStage: null,
-        error: null,
-        usage: null,
-      };
-      const finish = (updates: Partial<SimulationExperimentResult>) => ({
-        ...result,
-        ...updates,
-        durationMs: Math.round(performance.now() - start),
-      });
-      let rawNativeOutput: unknown = null;
-      let normalizedResult: unknown = null;
-      try {
-        const transported = await executeNativeSimulation(
-          cycleInput,
+    return this.execute(
+      modelId,
+      frames.length > 0,
+      async (provider, signal) => {
+        const startedAt = new Date().toISOString();
+        const start = performance.now();
+        const result: SimulationExperimentResult = {
+          modelId,
+          ...(frames.length ? { submittedFrames: frames } : {}),
+          startedAt,
+          durationMs: 0,
+          constructedRequest,
           submittedRequest,
-          signal,
-          (nativeRequest, activeSignal) => {
-            if (!provider.completeSimulationRequest)
-              throw new Error('Selected provider does not support structured Simulation requests.');
-            return provider.completeSimulationRequest(cycleInput, nativeRequest, activeSignal);
-          },
-          (raw, selected) => extractNativeChat(raw, selected.roster),
-        );
-        rawNativeOutput = transported.rawNativeOutput;
-        normalizedResult = transported.normalizedResult;
-      } catch (error) {
-        const failed = error instanceof SimulationExecutionError ? error : null;
-        return finish({
-          errorStage: failed?.stage ?? 'transport',
-          error: errorMessage(failed?.cause ?? error),
-          rawNativeOutput:
-            failed?.stage === 'transport'
-              ? boundedTransportDetails(failed.cause)
-              : (failed?.evidence.rawNativeOutput ?? boundedTransportDetails(error)),
-          usage: traceUsage(failed?.evidence.rawNativeOutput),
+          rawNativeOutput: null,
+          normalizedResult: null,
+          parsedResult: null,
+          accepted: null,
+          errorStage: null,
+          error: null,
+          usage: null,
+        };
+        const finish = (updates: Partial<SimulationExperimentResult>) => ({
+          ...result,
+          ...updates,
+          durationMs: Math.round(performance.now() - start),
         });
-      }
-      const usage = traceUsage(rawNativeOutput);
-      let parsedResult: SimulationExperimentResult['parsedResult'] = null;
-      try {
-        const { accepted } = acceptSimulationExecution(cycleInput, normalizedResult, {
-          playbackWindowMs,
-          onParsed: (parsed) => {
-            parsedResult = parsed;
-          },
-        });
-        return finish({
-          rawNativeOutput,
-          normalizedResult,
-          parsedResult,
-          accepted,
-          usage,
-        });
-      } catch (error) {
-        const failed = error instanceof SimulationExecutionError ? error : null;
-        return finish({
-          rawNativeOutput,
-          normalizedResult,
-          parsedResult: failed?.evidence.parsedResult ?? parsedResult,
-          usage,
-          errorStage: failed?.stage ?? 'validation',
-          error: errorMessage(failed?.cause ?? error),
-        });
-      }
-    });
+        let rawNativeOutput: unknown = null;
+        let normalizedResult: unknown = null;
+        try {
+          const transported = await executeNativeSimulation(
+            cycleInput,
+            submittedRequest,
+            signal,
+            (nativeRequest, activeSignal) => {
+              if (!provider.completeSimulationRequest)
+                throw new Error(
+                  'Selected provider does not support structured Simulation requests.',
+                );
+              return provider.completeSimulationRequest(cycleInput, nativeRequest, activeSignal);
+            },
+            (raw, selected) => extractNativeChat(raw, selected.roster),
+          );
+          rawNativeOutput = transported.rawNativeOutput;
+          normalizedResult = transported.normalizedResult;
+        } catch (error) {
+          const failed = error instanceof SimulationExecutionError ? error : null;
+          return finish({
+            errorStage: failed?.stage ?? 'transport',
+            error: errorMessage(failed?.cause ?? error),
+            rawNativeOutput:
+              failed?.stage === 'transport'
+                ? boundedTransportDetails(failed.cause)
+                : (failed?.evidence.rawNativeOutput ?? boundedTransportDetails(error)),
+            usage: traceUsage(failed?.evidence.rawNativeOutput),
+          });
+        }
+        const usage = traceUsage(rawNativeOutput);
+        let parsedResult: SimulationExperimentResult['parsedResult'] = null;
+        try {
+          const { accepted } = acceptSimulationExecution(cycleInput, normalizedResult, {
+            playbackWindowMs,
+            onParsed: (parsed) => {
+              parsedResult = parsed;
+            },
+          });
+          return finish({
+            rawNativeOutput,
+            normalizedResult,
+            parsedResult,
+            accepted,
+            usage,
+          });
+        } catch (error) {
+          const failed = error instanceof SimulationExecutionError ? error : null;
+          return finish({
+            rawNativeOutput,
+            normalizedResult,
+            parsedResult: failed?.evidence.parsedResult ?? parsedResult,
+            usage,
+            errorStage: failed?.stage ?? 'validation',
+            error: errorMessage(failed?.cause ?? error),
+          });
+        }
+      },
+      (result) => result.errorStage !== 'transport',
+    );
   }
 
-  async stop(): Promise<void> {
+  /** Shutdown or another owner: cancel active work, then release even an idle cached worker. */
+  stop(): Promise<void> {
+    if (this.shutdown) return this.shutdown;
     this.abort?.abort();
-    await this.active;
+    const task = (async () => {
+      await this.active;
+      await this.evictIdle();
+    })();
+    this.shutdown = task;
+    void task
+      .finally(() => {
+        if (this.shutdown === task) this.shutdown = null;
+      })
+      .catch(() => {});
+    return task;
   }
 }

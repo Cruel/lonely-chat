@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { PlaygroundService, type PlaygroundProvider } from './playground-service';
 import { DEFAULT_FREEFORM_SAMPLING, validateFreeformRequest } from '../shared/playground-contract';
@@ -15,6 +16,119 @@ const request = {
 };
 
 describe('Playground worker ownership and isolation', () => {
+  it('reuses a warm worker across freeform requests and releases it on explicit stop', async () => {
+    const stop = vi.fn(async () => {});
+    const completeFreeform = vi.fn(async () => ({
+      startedAt: '2026-10-18T12:00:00.000Z',
+      durationMs: 5,
+      effectiveSeed: 1234,
+      content: 'Hello',
+      finishReason: 'stop',
+      usage: null,
+    }));
+    const factory = vi.fn(() => ({ completeFreeform, stop }));
+    const service = new PlaygroundService(() => true, factory);
+    await service.run(request);
+    await service.run({ ...request, userPrompt: 'Again' });
+    expect(factory).toHaveBeenCalledTimes(1);
+    expect(completeFreeform).toHaveBeenCalledTimes(2);
+    expect(stop).not.toHaveBeenCalled();
+    await service.stop();
+    expect(stop).toHaveBeenCalledOnce();
+  });
+  it('restarts only when the model, vision capability, or worker settings change', async () => {
+    let settings = 'cuda-4threads';
+    const workers: Array<{ stop: ReturnType<typeof vi.fn> }> = [];
+    const factory = vi.fn(() => {
+      const worker = {
+        completeFreeform: async () => ({
+          startedAt: '',
+          durationMs: 1,
+          effectiveSeed: 1234,
+          content: 'ok',
+          finishReason: 'stop',
+          usage: null,
+        }),
+        stop: vi.fn(async () => {}),
+      };
+      workers.push(worker);
+      return worker;
+    });
+    const service = new PlaygroundService(
+      () => true,
+      factory,
+      undefined,
+      undefined,
+      () => settings,
+    );
+    await service.run(request);
+    await service.run({ ...request, modelId: 'different' });
+    await service.run({ ...request, modelId: 'different' });
+    expect(factory).toHaveBeenCalledTimes(2);
+    expect(workers[0].stop).toHaveBeenCalledOnce();
+    settings = 'cpu-2threads';
+    await service.run({ ...request, modelId: 'different' });
+    expect(factory).toHaveBeenCalledTimes(3);
+    expect(workers[1].stop).toHaveBeenCalledOnce();
+    await service.run({
+      ...request,
+      modelId: 'different',
+      frames: [
+        {
+          sourceId: 'still',
+          width: 4,
+          height: 4,
+          dataUrl:
+            'data:image/jpeg;base64,' +
+            readFileSync(
+              new URL('../../tests/fixtures/playground-red.jpg', import.meta.url),
+            ).toString('base64'),
+        },
+      ],
+    });
+    expect(factory).toHaveBeenCalledTimes(4);
+    expect(workers[2].stop).toHaveBeenCalledOnce();
+    await service.stop();
+    expect(workers[3].stop).toHaveBeenCalledOnce();
+  });
+
+  it('unloads a warm idle worker after its timeout and reloads on the next request', async () => {
+    vi.useFakeTimers();
+    try {
+      const stop = vi.fn(async () => {});
+      const factory = vi.fn(() => ({
+        completeFreeform: async () => ({
+          startedAt: '',
+          durationMs: 1,
+          effectiveSeed: 1234,
+          content: 'ok',
+          finishReason: 'stop',
+          usage: null,
+        }),
+        stop,
+      }));
+      const service = new PlaygroundService(
+        () => true,
+        factory,
+        undefined,
+        undefined,
+        undefined,
+        1000,
+      );
+      await service.run(request);
+      await vi.advanceTimersByTimeAsync(999);
+      expect(stop).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(stop).toHaveBeenCalledOnce();
+      await service.run(request);
+      expect(factory).toHaveBeenCalledTimes(2);
+      await service.stop();
+      expect(stop).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('accepts a bounded optional response schema and forwards it to llama.cpp', () => {
     const input = {
       ...request,
@@ -71,8 +185,10 @@ describe('Playground worker ownership and isolation', () => {
     unlock();
     expect((await pending).content).toBe('Hello');
     expect(factory).toHaveBeenCalledTimes(1);
-    expect(stop).toHaveBeenCalledTimes(1);
+    expect(stop).not.toHaveBeenCalled();
     expect(service.snapshot()).toEqual({ busy: false });
+    await service.stop();
+    expect(stop).toHaveBeenCalledOnce();
   });
 
   it('does not touch Session, Chat, or Audience and releases lock after failure', async () => {
@@ -112,6 +228,8 @@ describe('Playground worker ownership and isolation', () => {
     expect(service.busy).toBe(false);
     expect((await service.run(request)).content).toBe('Recovery worked');
     expect(snapshots()).toEqual(original);
+    expect(provider.stop).toHaveBeenCalledOnce();
+    await service.stop();
     expect(provider.stop).toHaveBeenCalledTimes(2);
   });
 

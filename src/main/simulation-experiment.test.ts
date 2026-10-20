@@ -102,6 +102,8 @@ describe('structured Playground and production Session seam', () => {
       messages: [{ author: 'pixelpilot', text: 'Who is there?', offsetMs: 200 }],
     });
     expect(result.usage).toMatchObject({ totalTokens: 35 });
+    expect(stop).not.toHaveBeenCalled();
+    await playground.stop();
     expect(stop).toHaveBeenCalledOnce();
     expect({ session: session.snapshot(), chat: chat.snapshot() }).toEqual(before);
   });
@@ -111,16 +113,15 @@ describe('structured Playground and production Session seam', () => {
       httpStatus: 422,
       responseBody: { error: 'invalid schema', requestId: 'test-123' },
     };
-    const service = new PlaygroundService(
-      () => true,
-      () => ({
-        completeFreeform: vi.fn(),
-        completeSimulationRequest: async () => {
-          throw new PrivateInferenceError('llama.cpp inference failed (HTTP 422)', detail);
-        },
-        stop: async () => {},
-      }),
-    );
+    const stop = vi.fn(async () => {});
+    const factory = vi.fn(() => ({
+      completeFreeform: vi.fn(),
+      completeSimulationRequest: async () => {
+        throw new PrivateInferenceError('llama.cpp inference failed (HTTP 422)', detail);
+      },
+      stop,
+    }));
+    const service = new PlaygroundService(() => true, factory);
     const result = await service.runSimulation(input);
     expect(result).toMatchObject({
       errorStage: 'transport',
@@ -129,6 +130,11 @@ describe('structured Playground and production Session seam', () => {
       accepted: null,
     });
     expect(result.error).toContain('HTTP 422');
+    // A transport failure must evict the unhealthy worker despite the returned inspector result.
+    expect(stop).toHaveBeenCalledOnce();
+    await service.runSimulation(input);
+    expect(factory).toHaveBeenCalledTimes(2);
+    expect(stop).toHaveBeenCalledTimes(2);
   });
 
   it('reports normalization and validation failures with native content preserved, and does not accept a batch', async () => {
@@ -159,7 +165,9 @@ describe('structured Playground and production Session seam', () => {
     const third = await playground.runSimulation(input);
     expect(third).toMatchObject({ errorStage: null, error: null });
     expect(third.accepted?.messages).toHaveLength(1);
-    expect(stop).toHaveBeenCalledTimes(3);
+    expect(stop).not.toHaveBeenCalled();
+    await playground.stop();
+    expect(stop).toHaveBeenCalledOnce();
   });
 
   it('validates advanced raw JSON before worker acquisition and records constructed vs submitted requests', async () => {
