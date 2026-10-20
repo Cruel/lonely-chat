@@ -68,6 +68,11 @@ import type {
 } from './recorded-scenario-contract';
 import type { SimulationExperimentValues } from './playground-contract';
 import type { SpeechTestStart, SpeechTestSnapshot } from './speech-playground-contract';
+import type {
+  VideoToolsStatus,
+  PlaygroundVideoSelection,
+  NativeVideoPreferences,
+} from './video-tools-contract';
 import type { SpeechCaptureStatus } from './speech-capture-contract';
 import type {
   TranscriptCacheAvailability,
@@ -94,6 +99,11 @@ export interface DesktopInvocations {
   'logs:export': boolean;
   'renderer:report-failure': void;
   'playground:status': PlaygroundStatus;
+  'video-tools:status': VideoToolsStatus;
+  'video-tools:choose-directory': VideoToolsStatus;
+  'video-tools:reset': VideoToolsStatus;
+  'video-tools:preferences': VideoToolsStatus;
+  'playground:video:choose': PlaygroundVideoSelection | null;
   'presets:list': PromptPreset[];
   'presets:revisions': PromptPreset[];
   'presets:save': PromptPreset;
@@ -211,6 +221,11 @@ export interface DesktopArguments {
   'logs:export': [ids: readonly string[]];
   'renderer:report-failure': [failure: RendererFailure];
   'playground:status': [];
+  'video-tools:status': [];
+  'video-tools:choose-directory': [];
+  'video-tools:reset': [];
+  'video-tools:preferences': [preferences: NativeVideoPreferences];
+  'playground:video:choose': [preferences?: NativeVideoPreferences];
   'presets:list': [];
   'presets:revisions': [id: string];
   'presets:save': [input: { id?: string; name: string; values: SimulationExperimentValues }];
@@ -328,6 +343,13 @@ export interface DesktopAPI {
   listCompactAttempts(): Promise<CompactAttemptSummary[]>;
   reconstructCompactAttempt(id: string, recordingId: string): Promise<CompactReconstruction | null>;
   getPlaygroundStatus(): Promise<PlaygroundStatus>;
+  getVideoTools(): Promise<VideoToolsStatus>;
+  chooseVideoToolsDirectory(): Promise<VideoToolsStatus>;
+  resetVideoToolsDirectory(): Promise<VideoToolsStatus>;
+  configureNativeVideoPreferences(preferences: NativeVideoPreferences): Promise<VideoToolsStatus>;
+  choosePlaygroundVideo(
+    preferences?: NativeVideoPreferences,
+  ): Promise<PlaygroundVideoSelection | null>;
   listPromptPresets(): Promise<PromptPreset[]>;
   listPromptPresetRevisions(id: string): Promise<PromptPreset[]>;
   savePromptPreset(input: {

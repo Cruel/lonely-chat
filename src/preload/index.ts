@@ -15,6 +15,11 @@ function invoke<K extends keyof DesktopInvocations>(
 
 const api: DesktopAPI = {
   getPlaygroundStatus: () => invoke('playground:status'),
+  getVideoTools: () => invoke('video-tools:status'),
+  chooseVideoToolsDirectory: () => invoke('video-tools:choose-directory'),
+  resetVideoToolsDirectory: () => invoke('video-tools:reset'),
+  configureNativeVideoPreferences: (preferences) => invoke('video-tools:preferences', preferences),
+  choosePlaygroundVideo: (preferences) => invoke('playground:video:choose', preferences),
   listPromptPresets: () => invoke('presets:list'),
   listPromptPresetRevisions: (id) => invoke('presets:revisions', id),
   savePromptPreset: (input) => invoke('presets:save', input),

@@ -19,6 +19,11 @@ import { JsonInspector } from './json-inspector';
 import { PlaygroundMediaPicker } from './playground-media-picker';
 import { SavedCasePlayground } from './saved-case-playground';
 import type { PlaygroundFrame } from '../../shared/playground-media-contract';
+import type { PlaygroundVideoMode } from '../../shared/playground-contract';
+import type {
+  PlaygroundVideoSelection,
+  NativeVideoPreferences,
+} from '../../shared/video-tools-contract';
 import type {
   SimulationExperimentRequest,
   SimulationExperimentResult,
@@ -55,11 +60,20 @@ export function SimulationPlayground({
   const [activity, setActivity] = useState<'quiet' | 'normal' | 'busy'>('normal');
   const [roster, setRoster] = useState(JSON.stringify(defaultRoster, null, 2));
   const [frames, setFrames] = useState<PlaygroundFrame[]>([]);
+  const [videoMode, setVideoMode] = useState<PlaygroundVideoMode>('frames');
+  const [selectedVideo, setSelectedVideo] = useState<PlaygroundVideoSelection | null>(null);
+  const [videoOptions, setVideoOptions] = useState<NativeVideoPreferences | null>(null);
   const [events, setEvents] = useState('[]');
   const [transcripts, setTranscripts] = useState('[]');
   const [observations, setObservations] = useState('[]');
   const [recentChat, setRecentChat] = useState('[]');
   const [useRaw, setUseRaw] = useState(false);
+  useEffect(() => {
+    if (videoMode === 'native-video') {
+      setUseRaw(false);
+      setRawJson('');
+    }
+  }, [videoMode]);
   const [rawJson, setRawJson] = useState('');
   const [preview, setPreview] = useState<Preview | null>(null);
   const [serverBusy, setServerBusy] = useState(false);
@@ -164,7 +178,14 @@ export function SimulationPlayground({
       modelId: selectedModelId,
       seed,
       values,
-      ...(frames.length ? { frames } : {}),
+      ...(videoMode === 'frames' && frames.length ? { frames } : {}),
+      ...(videoMode === 'native-video'
+        ? {
+            videoMode,
+            ...(selectedVideo ? { video: { token: selectedVideo.token } } : {}),
+            ...(videoOptions ? { videoOptions } : {}),
+          }
+        : {}),
       ...(useRaw ? { rawRequestJson: rawJson } : {}),
     };
   }
@@ -497,7 +518,16 @@ export function SimulationPlayground({
           When unlocked, each structured execution generates and retains a new seed. Advanced raw
           JSON may override it.
         </p>
-        <PlaygroundMediaPicker frames={frames} onChange={setFrames} />
+        <PlaygroundMediaPicker
+          frames={frames}
+          onChange={setFrames}
+          mode={videoMode}
+          onModeChange={setVideoMode}
+          selectedVideo={selectedVideo}
+          onVideoChange={setSelectedVideo}
+          videoOptions={videoOptions}
+          onVideoOptionsChange={setVideoOptions}
+        />
         <p className="text-xs text-zinc-400">
           Provide JSON arrays for the roster and optional historical inputs. Each history item uses
           ageMs (milliseconds before this request). Only the bounded production history reaches the
@@ -550,6 +580,7 @@ export function SimulationPlayground({
           <Button
             variant="outline"
             aria-pressed={useRaw}
+            disabled={videoMode === 'native-video'}
             onClick={() => {
               if (!useRaw && preview)
                 setRawJson(JSON.stringify(preview.constructedRequest, null, 2));
@@ -559,6 +590,11 @@ export function SimulationPlayground({
             {useRaw ? 'Disable advanced raw JSON' : 'Edit advanced raw JSON'}
           </Button>
         </div>
+        {videoMode === 'native-video' && (
+          <p className="text-xs text-zinc-400">
+            Native video bytes are injected only during transport. Raw JSON editing is disabled.
+          </p>
+        )}
         {preview && (
           <JsonInspector title="Constructed request preview" value={preview.constructedRequest} />
         )}

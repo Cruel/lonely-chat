@@ -32,6 +32,7 @@ import {
 import { ModelManager } from '@/components/model-manager';
 import { NumericSettingCombobox } from '@/components/numeric-setting-combobox';
 import { VideoInput } from '@/components/video-input';
+import { VideoInferenceSettings } from '@/components/video-inference-settings';
 import {
   RecordedVideoInput,
   type RecordedVideoHandle,
@@ -1801,6 +1802,9 @@ export function DesktopPage() {
               />
               <Panel className="mb-5">
                 <BackgroundControls />
+              </Panel>
+              <Panel className="mb-5">
+                <VideoInferenceSettings />
               </Panel>
               <Panel className="mb-5">
                 <h3 className="font-medium">Browser overlay server</h3>

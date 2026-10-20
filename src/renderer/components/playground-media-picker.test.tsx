@@ -3,6 +3,10 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { useState } from 'react';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { PlaygroundFrame } from '../../shared/playground-media-contract';
+import {
+  DEFAULT_NATIVE_VIDEO_PREFERENCES,
+  type NativeVideoPreferences,
+} from '../../shared/video-tools-contract';
 import { PlaygroundMediaPicker } from './playground-media-picker';
 
 afterEach(() => {
@@ -26,6 +30,64 @@ function setup(onChange = vi.fn<(frames: PlaygroundFrame[]) => void>()) {
   vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue('data:image/jpeg;base64,/9j/');
   return { onChange, revoke };
 }
+
+it('selects an opaque native clip without passing source bytes through renderer state', async () => {
+  setup();
+  const selected = {
+    token: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+    name: 'recorded.webm',
+    durationSeconds: 4,
+    sizeBytes: 1234,
+  };
+  const choose = vi.fn(async (_options?: NativeVideoPreferences) => selected);
+  window.lonelyChat = {
+    getVideoTools: async () => ({
+      available: true,
+      directory: '/usr/bin',
+      configuredDirectory: null,
+      version: 'ffmpeg version 7.1',
+      error: null,
+      preferences: DEFAULT_NATIVE_VIDEO_PREFERENCES,
+    }),
+    choosePlaygroundVideo: choose,
+  } as unknown as NonNullable<typeof window.lonelyChat>;
+  function Harness() {
+    const [mode, setMode] = useState<'frames' | 'native-video'>('frames');
+    const [video, setVideo] = useState<typeof selected | null>(null);
+    const [options, setOptions] = useState<NativeVideoPreferences | null>(null);
+    return (
+      <PlaygroundMediaPicker
+        frames={[]}
+        onChange={() => {}}
+        mode={mode}
+        onModeChange={setMode}
+        selectedVideo={video}
+        onVideoChange={setVideo}
+        videoOptions={options}
+        onVideoOptionsChange={setOptions}
+      />
+    );
+  }
+  render(<Harness />);
+  fireEvent.change(screen.getByLabelText('Video inference mode'), {
+    target: { value: 'native-video' },
+  });
+  await screen.findByText(/FFmpeg detected/);
+  fireEvent.click(screen.getByLabelText('Override native video defaults'));
+  fireEvent.change(screen.getByLabelText(/Video FPS/), { target: { value: '8' } });
+  fireEvent.change(screen.getByLabelText(/Max clip size/), { target: { value: '42' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Choose native video clip…' }));
+  await waitFor(() =>
+    expect(choose).toHaveBeenCalledWith({
+      ...DEFAULT_NATIVE_VIDEO_PREFERENCES,
+      fps: 8,
+      maxClipSizeMiB: 42,
+    }),
+  );
+  expect(await screen.findByText(/recorded.webm/)).toBeTruthy();
+  expect(screen.queryByLabelText('Import images')).toBeNull();
+  delete window.lonelyChat;
+});
 
 it('selects the currently decoded video frame at the actual timestamp, supports reordering/removal and cleans up the source', async () => {
   const { revoke } = setup();

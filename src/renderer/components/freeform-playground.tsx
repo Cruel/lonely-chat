@@ -19,6 +19,11 @@ import {
 } from '../../shared/playground-contract';
 import type { ModelManagerSnapshot } from '../../shared/model-install-contract';
 import type { PlaygroundFrame } from '../../shared/playground-media-contract';
+import type { PlaygroundVideoMode } from '../../shared/playground-contract';
+import type {
+  PlaygroundVideoSelection,
+  NativeVideoPreferences,
+} from '../../shared/video-tools-contract';
 import { PlaygroundMediaPicker } from './playground-media-picker';
 
 function randomSeed(): number {
@@ -37,6 +42,9 @@ export function FreeformPlayground({
   const [modelId, setModelId] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('You are a helpful assistant.');
   const [frames, setFrames] = useState<PlaygroundFrame[]>([]);
+  const [videoMode, setVideoMode] = useState<PlaygroundVideoMode>('frames');
+  const [selectedVideo, setSelectedVideo] = useState<PlaygroundVideoSelection | null>(null);
+  const [videoOptions, setVideoOptions] = useState<NativeVideoPreferences | null>(null);
   const [userPrompt, setUserPrompt] = useState('');
   const [temperature, setTemperature] = useState(String(DEFAULT_FREEFORM_SAMPLING.temperature));
   const [topP, setTopP] = useState(String(DEFAULT_FREEFORM_SAMPLING.topP));
@@ -123,7 +131,14 @@ export function FreeformPlayground({
       topK: Number(topK),
       maxTokens: Number(maxTokens),
       seed,
-      ...(frames.length ? { frames } : {}),
+      ...(videoMode === 'frames' && frames.length ? { frames } : {}),
+      ...(videoMode === 'native-video'
+        ? {
+            videoMode,
+            ...(selectedVideo ? { video: { token: selectedVideo.token } } : {}),
+            ...(videoOptions ? { videoOptions } : {}),
+          }
+        : {}),
     };
     try {
       const prepared: FreeformRequest = structured
@@ -199,7 +214,16 @@ export function FreeformPlayground({
           onChange={(event) => setUserPrompt(event.target.value)}
         />
         <div className="mt-5">
-          <PlaygroundMediaPicker frames={frames} onChange={setFrames} />
+          <PlaygroundMediaPicker
+            frames={frames}
+            onChange={setFrames}
+            mode={videoMode}
+            onModeChange={setVideoMode}
+            selectedVideo={selectedVideo}
+            onVideoChange={setSelectedVideo}
+            videoOptions={videoOptions}
+            onVideoOptionsChange={setVideoOptions}
+          />
         </div>
         <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {(

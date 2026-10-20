@@ -52,6 +52,46 @@ const simulation = {
 };
 
 describe('Playground selected media contract and multimodal transport', () => {
+  it('bounds native-video selection to exactly one opaque clip and rejects mixed frames', () => {
+    const video = { token: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' };
+    expect(
+      validateFreeformRequest({ ...freeform, videoMode: 'native-video', video }),
+    ).toMatchObject({
+      videoMode: 'native-video',
+      video,
+    });
+    expect(() =>
+      validateFreeformRequest({
+        ...freeform,
+        videoMode: 'native-video',
+        video,
+        frames: [red],
+      }),
+    ).toThrow(/either selected JPEG/);
+    expect(() =>
+      validateFreeformRequest({
+        ...freeform,
+        videoMode: 'native-video',
+        video: { token: '/tmp/private.mp4' },
+      }),
+    ).toThrow(/Choose a native video/);
+    expect(() => validateFreeformRequest({ ...freeform, video })).toThrow(/requires native-video/);
+    const request = validateSimulationExperiment({
+      ...simulation,
+      videoMode: 'native-video',
+      video,
+    });
+    expect(request.video).toEqual(video);
+    expect(() =>
+      validateSimulationExperiment({
+        ...simulation,
+        videoMode: 'native-video',
+        video,
+        rawRequestJson: '{}',
+      }),
+    ).toThrow(/Raw JSON overrides/);
+  });
+
   it('rejects oversized, unsupported and mismatched JPEGs before worker acquisition', () => {
     const valid = validatePlaygroundFrames([red, blue]);
     expect(valid).toEqual([red, blue]);

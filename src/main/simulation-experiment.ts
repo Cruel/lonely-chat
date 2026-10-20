@@ -12,6 +12,7 @@ import {
   type SessionPreferences,
 } from '../shared/session-contract';
 import { validateChatterName, type ChatterIdentity } from '../shared/audience-contract';
+import { validatePlaygroundVideo, validateVideoOverrides } from '../shared/playground-contract';
 import type {
   SimulationExperimentRequest,
   SimulationExperimentValues,
@@ -49,7 +50,15 @@ function entries(value: unknown, label: string): Record<string, unknown>[] {
 /** IPC input is bounded and cannot inject private frames or an unbounded session history. */
 export function validateSimulationExperiment(value: unknown): SimulationExperimentRequest {
   const v = object(value, 'simulation experiment');
-  fields(v, ['modelId', 'values', 'rawRequestJson', 'frames', 'seed'], 'simulation experiment');
+  fields(
+    v,
+    ['modelId', 'values', 'rawRequestJson', 'frames', 'seed', 'videoMode', 'video', 'videoOptions'],
+    'simulation experiment',
+  );
+  const video = validatePlaygroundVideo(v.videoMode, v.video, v.frames);
+  const videoOptions = validateVideoOverrides(v.videoMode, v.videoOptions);
+  if (video.videoMode === 'native-video' && v.rawRequestJson !== undefined)
+    throw new Error('Raw JSON overrides are not available for native video clips.');
   if (v.seed !== undefined) integer(v.seed, 'seed', 0, 2147483647);
   const frames = validatePlaygroundFrames(v.frames);
   const modelId = text(v.modelId, 'model', 200);
@@ -138,6 +147,8 @@ export function validateSimulationExperiment(value: unknown): SimulationExperime
     modelId,
     ...(v.seed === undefined ? {} : { seed: v.seed as number }),
     ...(frames.length ? { frames } : {}),
+    ...video,
+    ...videoOptions,
     values: {
       context,
       cycle,

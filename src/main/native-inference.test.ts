@@ -2,7 +2,15 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { NativeInference, extractNativeChat, nativeChatRequest } from './native-inference';
+import {
+  NativeInference,
+  extractNativeChat,
+  nativeChatRequest,
+  nativeFreeformRequest,
+  withNativeVideoData,
+  withNativeVideoPlaceholder,
+  VIDEO_DATA_PLACEHOLDER,
+} from './native-inference';
 import { PrivateInferenceError } from './private-inference-error';
 import { AUTHOR_PLACEHOLDER } from '../shared/audience-contract';
 import { DEFAULT_PREFERENCES } from '../shared/session-contract';
@@ -77,6 +85,105 @@ process.on('SIGTERM',()=>server.close(()=>process.exit(0)));
 `;
 
 describe('native llama.cpp adapter', () => {
+  it('transports native video through the private worker without exposing its base64 in request previews', async () => {
+    const token = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+    const payloads: unknown[] = [];
+    const launches: string[][] = [];
+    const worker = new NativeInference({
+      executable: process.execPath,
+      resolveModel: async () => ({
+        modelPath: '/model.gguf',
+        projectorPath: '/projector.gguf',
+      }),
+      videoFfmpegDir: () => '/configured/ffmpeg',
+      videoPreferences: {
+        fps: 8,
+        timestampIntervalMs: 2000,
+        maxClipSizeMiB: 50,
+        maxClipDurationSeconds: 30,
+      },
+      resolveVideo: async (selected, limits) => {
+        expect(selected).toBe(token);
+        expect(limits).toMatchObject({ fps: 8, maxClipSizeMiB: 50 });
+        return 'RklYVFVSRQ==';
+      },
+      launch: (_binary, args, options) => {
+        launches.push([...args]);
+        return spawn(
+          process.execPath,
+          [
+            '--input-type=module',
+            '-e',
+            childScript,
+            args[args.indexOf('--port') + 1],
+            args[args.indexOf('--api-key') + 1],
+          ],
+          options,
+        );
+      },
+      fetcher: async (url, options) => {
+        if (!String(url).endsWith('/v1/chat/completions')) return fetch(url, options);
+        payloads.push(JSON.parse(options?.body as string));
+        return new Response(
+          JSON.stringify({
+            choices: [{ finish_reason: 'stop', message: { content: 'Video described' } }],
+          }),
+          { status: 200 },
+        );
+      },
+    });
+    providers.push(worker);
+    const freeform = {
+      modelId: 'video',
+      systemPrompt: '',
+      userPrompt: 'Summarize movement',
+      temperature: 0.7,
+      topP: 0.95,
+      topK: 40,
+      maxTokens: 32,
+      seed: 123,
+      videoMode: 'native-video' as const,
+      video: { token },
+      videoOptions: {
+        fps: 8,
+        timestampIntervalMs: 2000,
+        maxClipSizeMiB: 50,
+        maxClipDurationSeconds: 30,
+      },
+    };
+    const preview = nativeFreeformRequest(freeform);
+    expect(JSON.stringify(preview)).toContain(VIDEO_DATA_PLACEHOLDER);
+    const result = await worker.completeFreeform(freeform, new AbortController().signal);
+    expect(result.content).toBe('Video described');
+    const experimentPreview = withNativeVideoPlaceholder(
+      nativeChatRequest({
+        context: 'game',
+        cycle: 1,
+      }),
+    );
+    await worker.completeSimulationRequest(
+      { context: 'game', cycle: 1 },
+      experimentPreview,
+      new AbortController().signal,
+      token,
+      freeform.videoOptions,
+    );
+    expect(launches[0].slice(-2)).not.toEqual(['--video-ffmpeg-dir', '/configured/ffmpeg']);
+    expect(launches[0]).toContain('--video-ffmpeg-dir');
+    expect(launches[0][launches[0].indexOf('--video-ffmpeg-dir') + 1]).toBe('/configured/ffmpeg');
+    expect(launches[0][launches[0].indexOf('--video-fps') + 1]).toBe('8');
+    expect(launches[0][launches[0].indexOf('--video-timestamp-interval') + 1]).toBe('2000');
+    for (const sent of payloads) {
+      expect(JSON.stringify(sent)).toContain('"input_video"');
+      expect(JSON.stringify(sent)).toContain('RklYVFVSRQ==');
+      expect(JSON.stringify(sent)).not.toContain(VIDEO_DATA_PLACEHOLDER);
+    }
+    expect(JSON.stringify(experimentPreview)).not.toContain('RklYVFVSRQ==');
+    expect(withNativeVideoData(preview, 'RklYVFVSRQ==')).toMatchObject({
+      messages: [{ role: 'user', content: expect.any(Array) }],
+    });
+  });
+
   it('creates bounded structured prompts and rejects untrusted output atomically', () => {
     const prompt = nativeChatRequest({ context: 'campfire', cycle: 1 });
     expect(prompt.response_format.type).toBe('json_object');

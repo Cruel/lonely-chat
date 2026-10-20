@@ -17,6 +17,7 @@ import { OperationalLogger } from './operational-logger';
 import { serializeOperationalLogs } from './operational-log-export';
 import { validateRendererFailure } from '../shared/renderer-log-contract';
 import { PlaygroundService } from './playground-service';
+import { PlaygroundVideoTools } from './playground-video-tools';
 import { canStartPausedSpeech } from './paused-speech-gate';
 import { RecordedResumeReservation } from './recorded-resume-reservation';
 import { PromptPresetStore } from './prompt-preset-store';
@@ -249,6 +250,7 @@ function windowStatus() {
 }
 const models = new ModelDiscovery();
 const installs = new ModelInstallManager(app.getPath('userData'), models);
+const videoTools = new PlaygroundVideoTools(app.getPath('userData'));
 let session: SessionController;
 let audience: AudienceService;
 let nativeInference: NativeInference;
@@ -311,6 +313,38 @@ function requireRecordedAudio(): void {
 function registerHandlers(): void {
   const actions = {
     'playground:status': () => playground.snapshot(),
+    'video-tools:status': () => videoTools.status(true),
+    'video-tools:choose-directory': async () => {
+      const selection = await dialog.showOpenDialog({
+        title: 'Select directory containing ffmpeg and ffprobe',
+        properties: ['openDirectory'],
+      });
+      if (selection.canceled || !selection.filePaths[0]) return videoTools.status();
+      await playground.stop();
+      return videoTools.configure(selection.filePaths[0]);
+    },
+    'video-tools:reset': async () => {
+      await playground.stop();
+      return videoTools.configure(null);
+    },
+    'video-tools:preferences': async (
+      preferences: import('../shared/video-tools-contract').NativeVideoPreferences,
+    ) => {
+      await playground.stop();
+      return videoTools.configurePreferences(preferences);
+    },
+    'playground:video:choose': async (
+      preferences?: import('../shared/video-tools-contract').NativeVideoPreferences,
+    ) => {
+      if (playground.busy) throw new Error('Wait for the current Playground request.');
+      const selection = await dialog.showOpenDialog({
+        title: 'Choose a native video clip',
+        properties: ['openFile'],
+        filters: [{ name: 'Video clips', extensions: ['mp4', 'webm', 'mov', 'mkv'] }],
+      });
+      if (selection.canceled || !selection.filePaths[0]) return null;
+      return videoTools.select(selection.filePaths[0], preferences);
+    },
     'presets:list': () => promptPresets.list(),
     'presets:revisions': (id: string) => promptPresets.revisions(id),
     'presets:save': (input: {
@@ -1286,6 +1320,7 @@ async function boot(): Promise<void> {
   const buildNative = (
     resolveModel: () => Promise<{ modelPath: string; projectorPath: string | null }>,
     settings: () => import('../shared/session-contract').SessionPreferences,
+    videoOptions?: import('../shared/video-tools-contract').NativeVideoPreferences,
   ) =>
     new NativeInference({
       executable: bundledLlamaServer(app.getAppPath(), app.isPackaged, process.resourcesPath),
@@ -1307,6 +1342,9 @@ async function boot(): Promise<void> {
       reasoningEnabled: () => settings().reasoningEnabled,
       inferenceTimeoutMs: () => settings().inferenceTimeoutMs,
       resourcePreferences: settings,
+      videoFfmpegDir: () => videoTools.directory,
+      videoPreferences: videoOptions,
+      resolveVideo: (token, preferences) => videoTools.encoded(token, preferences),
       log: logger,
       privateWorkerLine: (worker, stream, line) =>
         diagnostics.recordWorkerLine(worker, stream, line),
@@ -1315,6 +1353,7 @@ async function boot(): Promise<void> {
     () => installs.activeVisionFiles(),
     nativeWorkerSettings(session, 'simulation'),
   );
+  await videoTools.open();
   playground = new PlaygroundService(
     () =>
       !quitting &&
@@ -1327,21 +1366,25 @@ async function boot(): Promise<void> {
       (['stopped', 'error'].includes(session.snapshot().phase) ||
         session.canExecutePausedPlayground()) &&
       installs.snapshot().progress.phase === 'idle',
-    (id, needsVision) => {
+    (id, needsVision, videoOptions) => {
       if (packageE2E) return certificationPlaygroundProvider();
       // Playground workers own a fresh immutable snapshot, never the previous Run's settings.
       const playgroundSettings = nativeWorkerSettings(session, 'playground');
-      return buildNative(async () => {
-        const files = await installs.visionFiles(id);
-        if (needsVision && !files.projectorPath)
-          throw new Error(
-            'Selected model has no installed vision projector. Install a matching projector or remove selected frames.',
-          );
-        return {
-          modelPath: files.modelPath,
-          projectorPath: needsVision ? files.projectorPath : null,
-        };
-      }, playgroundSettings);
+      return buildNative(
+        async () => {
+          const files = await installs.visionFiles(id);
+          if (needsVision && !files.projectorPath)
+            throw new Error(
+              'Selected model has no installed vision projector. Install a matching projector or remove selected frames.',
+            );
+          return {
+            modelPath: files.modelPath,
+            projectorPath: needsVision ? files.projectorPath : null,
+          };
+        },
+        playgroundSettings,
+        videoOptions,
+      );
     },
     () => session.preparePausedPlayground(),
     () => session.getPreferences(),
@@ -1357,6 +1400,8 @@ async function boot(): Promise<void> {
         projector: registry.installations.find((item) => item.id === assigned),
       });
     },
+    undefined,
+    () => videoTools.preferences,
   );
   speechTest = new SpeechPlaygroundService(
     () =>
@@ -1601,6 +1646,11 @@ app.on('before-quit', (event) => {
 });
 app.on('will-quit', () => {
   ipcMain.removeHandler('playground:status');
+  ipcMain.removeHandler('video-tools:status');
+  ipcMain.removeHandler('video-tools:choose-directory');
+  ipcMain.removeHandler('video-tools:reset');
+  ipcMain.removeHandler('video-tools:preferences');
+  ipcMain.removeHandler('playground:video:choose');
   ipcMain.removeHandler('playground:run');
   ipcMain.removeHandler('playground:simulation:preview');
   ipcMain.removeHandler('playground:simulation:run');

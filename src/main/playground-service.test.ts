@@ -16,6 +16,55 @@ const request = {
 };
 
 describe('Playground worker ownership and isolation', () => {
+  it('uses stored video defaults and replaces the warm worker when sampling overrides change', async () => {
+    const token = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+    const defaults = {
+      fps: 4,
+      timestampIntervalMs: 5000,
+      maxClipSizeMiB: 20,
+      maxClipDurationSeconds: 15,
+    };
+    const workers: Array<{ stop: ReturnType<typeof vi.fn> }> = [];
+    const factory = vi.fn((_model: string, _vision: boolean, _options?: typeof defaults) => {
+      const worker = {
+        completeFreeform: async () => ({
+          startedAt: '',
+          durationMs: 1,
+          effectiveSeed: 1,
+          content: 'ok',
+          finishReason: 'stop',
+          usage: null,
+        }),
+        stop: vi.fn(async () => {}),
+      };
+      workers.push(worker);
+      return worker;
+    });
+    const service = new PlaygroundService(
+      () => true,
+      factory,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      () => defaults,
+    );
+    const native = { ...request, videoMode: 'native-video' as const, video: { token } };
+    const first = await service.run(native);
+    expect(first.request.videoOptions).toEqual(defaults);
+    await service.run(native);
+    expect(factory).toHaveBeenCalledTimes(1);
+    const override = { ...defaults, fps: 8, timestampIntervalMs: 2000 };
+    await service.run({ ...native, videoOptions: override });
+    expect(factory).toHaveBeenCalledTimes(2);
+    expect(factory).toHaveBeenLastCalledWith(request.modelId, true, override);
+    expect(workers[0].stop).toHaveBeenCalledOnce();
+    await service.run({ ...native, videoOptions: { ...override, maxClipSizeMiB: 100 } });
+    expect(factory).toHaveBeenCalledTimes(3);
+    expect(workers[1].stop).toHaveBeenCalledOnce();
+    await service.stop();
+  });
+
   it('reuses a warm worker across freeform requests and releases it on explicit stop', async () => {
     const stop = vi.fn(async () => {});
     const completeFreeform = vi.fn(async () => ({

@@ -10,6 +10,7 @@ import {
   type SessionSnapshot,
 } from '../../shared/session-contract';
 import type { ModelManagerSnapshot } from '../../shared/model-install-contract';
+import { DEFAULT_NATIVE_VIDEO_PREFERENCES } from '../../shared/video-tools-contract';
 
 const emptyModels: ModelManagerSnapshot = {
   storageDirectory: '/models',
@@ -213,6 +214,41 @@ const modelsAPI = {
     error: null,
   }),
   onAudienceChange: () => () => {},
+  getVideoTools: async () => ({
+    available: false,
+    directory: null,
+    configuredDirectory: null,
+    version: null,
+    error: 'FFmpeg unavailable',
+    preferences: DEFAULT_NATIVE_VIDEO_PREFERENCES,
+  }),
+  chooseVideoToolsDirectory: async () => ({
+    available: false,
+    directory: null,
+    configuredDirectory: null,
+    version: null,
+    error: 'FFmpeg unavailable',
+    preferences: DEFAULT_NATIVE_VIDEO_PREFERENCES,
+  }),
+  resetVideoToolsDirectory: async () => ({
+    available: false,
+    directory: null,
+    configuredDirectory: null,
+    version: null,
+    error: 'FFmpeg unavailable',
+    preferences: DEFAULT_NATIVE_VIDEO_PREFERENCES,
+  }),
+  configureNativeVideoPreferences: async (
+    preferences: import('../../shared/video-tools-contract').NativeVideoPreferences,
+  ) => ({
+    available: false,
+    directory: null,
+    configuredDirectory: null,
+    version: null,
+    error: 'FFmpeg unavailable',
+    preferences,
+  }),
+  choosePlaygroundVideo: async () => null,
   getModelsSnapshot: async () => emptyModels,
   onModelsChange: () => () => {},
   installModel: async () => emptyModels,

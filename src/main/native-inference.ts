@@ -12,6 +12,7 @@ import type { InferenceTraceObserver } from './inference-trace';
 import type { NativeRuntimeResources } from '../shared/native-service-contract';
 import type { NativeServiceStatus } from '../shared/native-service-contract';
 import type { FreeformRequest, FreeformResult, FreeformUsage } from '../shared/playground-contract';
+import type { NativeVideoPreferences } from '../shared/video-tools-contract';
 import { randomBytes } from 'node:crypto';
 import { createServer } from 'node:net';
 import path from 'node:path';
@@ -37,6 +38,55 @@ const MAX_REPLY_BYTES = 1024 * 1024;
 const STARTUP_TIMEOUT_MS = 300_000;
 const COMPLETION_MAX_TOKENS = 2048;
 
+/** Only a temporary main-process resolver may replace this diagnostic placeholder. */
+export const VIDEO_DATA_PLACEHOLDER = '[video loaded only at transport]';
+
+/** Native video payloads stay out of IPC results, run inspectors, and persisted traces. */
+export function withNativeVideoPlaceholder<
+  T extends { messages: Array<{ role: string; content: unknown }> },
+>(request: T): T {
+  const messages = request.messages.map((message) =>
+    message.role === 'user'
+      ? {
+          ...message,
+          content: [
+            { type: 'text', text: message.content },
+            { type: 'input_video', input_video: { data: VIDEO_DATA_PLACEHOLDER } },
+          ],
+        }
+      : message,
+  );
+  return { ...request, messages } as T;
+}
+
+export function withNativeVideoData(request: unknown, data: string): unknown {
+  if (!request || typeof request !== 'object') throw new Error('Invalid native video request.');
+  const record = request as { messages?: Array<{ role: string; content: unknown }> };
+  if (!Array.isArray(record.messages)) throw new Error('Missing native video messages.');
+  let replacements = 0;
+  const messages = record.messages.map((message) => ({
+    ...message,
+    content: Array.isArray(message.content)
+      ? message.content.map((part: unknown) => {
+          if (
+            part &&
+            typeof part === 'object' &&
+            (part as { type?: string }).type === 'input_video'
+          ) {
+            const content = part as { input_video?: { data?: string } };
+            if (content.input_video?.data !== VIDEO_DATA_PLACEHOLDER)
+              throw new Error('Unexpected native video content.');
+            replacements++;
+            return { type: 'input_video', input_video: { data } };
+          }
+          return part;
+        })
+      : message.content,
+  }));
+  if (replacements !== 1) throw new Error('Expected exactly one native video placeholder.');
+  return { ...request, messages };
+}
+
 /** Freeform multimodal requests use the same llama.cpp image parts as Session. */
 export function nativeFreeformRequest(request: FreeformRequest) {
   const frames = request.frames ?? [];
@@ -46,18 +96,24 @@ export function nativeFreeformRequest(request: FreeformRequest) {
       ...(request.systemPrompt ? [{ role: 'system', content: request.systemPrompt }] : []),
       {
         role: 'user',
-        content: frames.length
-          ? [
-              { type: 'text', text: request.userPrompt },
-              ...frames.flatMap((frame, index) => [
-                {
-                  type: 'text',
-                  text: `Selected frame ${index + 1}, source=${frame.sourceId}${frame.mediaTimeMs === undefined ? '' : `, mediaTimeMs=${frame.mediaTimeMs}`}`,
-                },
-                { type: 'image_url', image_url: { url: frame.dataUrl } },
-              ]),
-            ]
-          : request.userPrompt,
+        content:
+          request.videoMode === 'native-video'
+            ? [
+                { type: 'text', text: request.userPrompt },
+                { type: 'input_video', input_video: { data: VIDEO_DATA_PLACEHOLDER } },
+              ]
+            : frames.length
+              ? [
+                  { type: 'text', text: request.userPrompt },
+                  ...frames.flatMap((frame, index) => [
+                    {
+                      type: 'text',
+                      text: `Selected frame ${index + 1}, source=${frame.sourceId}${frame.mediaTimeMs === undefined ? '' : `, mediaTimeMs=${frame.mediaTimeMs}`}`,
+                    },
+                    { type: 'image_url', image_url: { url: frame.dataUrl } },
+                  ]),
+                ]
+              : request.userPrompt,
       },
     ],
     temperature: request.temperature,
@@ -339,6 +395,10 @@ interface NativeOptions {
   /** Evaluated per request so saved changes apply without restarting the model. */
   readonly inferenceTimeoutMs?: () => number;
   readonly resourcePreferences?: () => SessionPreferences;
+  /** Optional host FFmpeg directory for llama.cpp native video decoding. */
+  readonly videoFfmpegDir?: () => string | null;
+  readonly videoPreferences?: NativeVideoPreferences;
+  readonly resolveVideo?: (token: string, preferences?: NativeVideoPreferences) => Promise<string>;
   /** Injectable device detection; production probes the shipped executable. */
   readonly probeDevices?: () => Promise<readonly BackendDevice[]>;
   readonly log?: WorkerLogSink;
@@ -566,6 +626,15 @@ export class NativeInference implements InferenceProvider {
       '--reasoning',
       this.options.reasoningEnabled?.() ? 'on' : 'off',
     ];
+    const ffmpegDir = this.options.videoFfmpegDir?.();
+    if (ffmpegDir) args.push('--video-ffmpeg-dir', ffmpegDir);
+    if (this.options.videoPreferences)
+      args.push(
+        '--video-fps',
+        String(this.options.videoPreferences.fps),
+        '--video-timestamp-interval',
+        String(this.options.videoPreferences.timestampIntervalMs),
+      );
     if (selection.device && gpuOffloadLayers > 0) args.push('--device', selection.device);
     if (files.projectorPath) args.push('--mmproj', files.projectorPath);
     this.port = port;
@@ -737,11 +806,19 @@ export class NativeInference implements InferenceProvider {
     const startedAt = new Date().toISOString();
     const started = performance.now();
     await this.prepare(signal);
-    if (request.frames?.length && !this.visionReady)
+    if ((request.frames?.length || request.videoMode === 'native-video') && !this.visionReady)
       throw new Error(
-        'Selected model is not vision-capable. Install a matching projector or remove selected frames.',
+        'Selected model is not vision-capable. Install a matching projector or remove selected frames/video.',
       );
-    const response = await this.complete(nativeFreeformRequest(request), signal);
+    const draft = nativeFreeformRequest(request);
+    const payload =
+      request.videoMode === 'native-video'
+        ? withNativeVideoData(
+            draft,
+            await this.resolveNativeVideo(request.video?.token, request.videoOptions),
+          )
+        : draft;
+    const response = await this.complete(payload, signal);
     if (!response || typeof response !== 'object' || Array.isArray(response))
       throw new Error('llama.cpp returned an invalid Playground response.');
     const body = response as Record<string, unknown>;
@@ -783,18 +860,32 @@ export class NativeInference implements InferenceProvider {
   }
 
   /** Preserve the original native completion for Simulation Playground inspection. */
+  private async resolveNativeVideo(
+    token: string | undefined,
+    preferences?: NativeVideoPreferences,
+  ): Promise<string> {
+    if (!token || !this.options.resolveVideo)
+      throw new Error('Native video clips are only supported in Playground.');
+    return this.options.resolveVideo(token, preferences);
+  }
+
   async completeSimulationRequest(
     input: InferenceInput,
     request: unknown,
     signal: AbortSignal,
+    videoToken?: string,
+    videoOptions?: NativeVideoPreferences,
   ): Promise<unknown> {
     await this.prepare(signal);
-    if (input.frames?.length && !this.visionReady) {
+    if ((input.frames?.length || videoToken) && !this.visionReady) {
       throw new Error(
         'Live video requires a model/projector pair verified as vision-capable by the pinned llama.cpp runtime. Install a matching projector or stop video for text-only inference.',
       );
     }
-    return this.complete(request, signal);
+    const payload = videoToken
+      ? withNativeVideoData(request, await this.resolveNativeVideo(videoToken, videoOptions))
+      : request;
+    return this.complete(payload, signal);
   }
 
   async generate(

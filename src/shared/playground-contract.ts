@@ -2,6 +2,16 @@ import type { ChatActivity, ChatterIdentity } from './audience-contract';
 import type { InferredEvent } from './session-contract';
 import type { PlaygroundFrame } from './playground-media-contract';
 import { validatePlaygroundFrames } from './playground-media-contract';
+import {
+  validateNativeVideoPreferences,
+  type NativeVideoPreferences,
+} from './video-tools-contract';
+
+export type PlaygroundVideoMode = 'frames' | 'native-video';
+/** Desktop-only opaque token issued by the native video file chooser. */
+export interface SelectedPlaygroundVideo {
+  readonly token: string;
+}
 
 /** Desktop-only, transient Freeform and Simulation inference. No chat/overlay serialization. */
 export interface FreeformRequest {
@@ -16,6 +26,9 @@ export interface FreeformRequest {
   /** Optional llama.cpp JSON-object response constraint. */
   readonly responseSchema?: Record<string, unknown>;
   readonly frames?: readonly PlaygroundFrame[];
+  readonly videoMode?: PlaygroundVideoMode;
+  readonly video?: SelectedPlaygroundVideo;
+  readonly videoOptions?: NativeVideoPreferences;
 }
 export interface FreeformUsage {
   readonly promptTokens: number | null;
@@ -59,6 +72,9 @@ export interface SimulationExperimentRequest {
   readonly seed?: number;
   readonly values: SimulationExperimentValues;
   readonly frames?: readonly PlaygroundFrame[];
+  readonly videoMode?: PlaygroundVideoMode;
+  readonly video?: SelectedPlaygroundVideo;
+  readonly videoOptions?: NativeVideoPreferences;
   /** Advanced override, submitted without rewriting the production-constructed reference. */
   readonly rawRequestJson?: string;
 }
@@ -112,6 +128,37 @@ export function validateFreeformSchema(value: unknown): Record<string, unknown> 
   return JSON.parse(encoded) as Record<string, unknown>;
 }
 
+export function validatePlaygroundVideo(mode: unknown, video: unknown, frames: unknown) {
+  if (mode !== undefined && mode !== 'frames' && mode !== 'native-video')
+    throw new Error('Invalid Playground video mode.');
+  if (mode !== 'native-video') {
+    if (video !== undefined) throw new Error('Native video requires native-video mode.');
+    return mode === undefined ? {} : { videoMode: 'frames' as const };
+  }
+  if (frames !== undefined && Array.isArray(frames) && frames.length)
+    throw new Error('Choose either selected JPEG frames or native video, not both.');
+  if (
+    !video ||
+    typeof video !== 'object' ||
+    Array.isArray(video) ||
+    Object.keys(video).join(',') !== 'token' ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      (video as { token?: unknown }).token as string,
+    )
+  )
+    throw new Error('Choose a native video clip first.');
+  return {
+    videoMode: 'native-video' as const,
+    video: { token: (video as { token: string }).token },
+  };
+}
+
+export function validateVideoOverrides(mode: unknown, options: unknown) {
+  if (options === undefined) return {};
+  if (mode !== 'native-video') throw new Error('Video settings require native-video mode.');
+  return { videoOptions: validateNativeVideoPreferences(options) };
+}
+
 export function validateFreeformRequest(value: unknown): FreeformRequest {
   if (!value || typeof value !== 'object' || Array.isArray(value))
     throw new Error('Invalid Playground request.');
@@ -129,8 +176,11 @@ export function validateFreeformRequest(value: unknown): FreeformRequest {
       'topK',
       'topP',
       'userPrompt',
+      'video',
+      'videoMode',
+      'videoOptions',
     ]
-      .filter((key) => (key !== 'frames' && key !== 'responseSchema') || Object.hasOwn(v, key))
+      .filter((key) => Object.hasOwn(v, key))
       .join(',')
   )
     throw new Error('Invalid Playground request fields.');
@@ -169,5 +219,7 @@ export function validateFreeformRequest(value: unknown): FreeformRequest {
       ? {}
       : { responseSchema: validateFreeformSchema(v.responseSchema) }),
     ...(v.frames === undefined ? {} : { frames: validatePlaygroundFrames(v.frames) }),
+    ...validatePlaygroundVideo(v.videoMode, v.video, v.frames),
+    ...validateVideoOverrides(v.videoMode, v.videoOptions),
   };
 }

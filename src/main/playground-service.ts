@@ -6,7 +6,7 @@ import type {
   SimulationExperimentResult,
 } from '../shared/playground-contract';
 import { validateFreeformRequest } from '../shared/playground-contract';
-import { extractNativeChat } from './native-inference';
+import { extractNativeChat, withNativeVideoPlaceholder } from './native-inference';
 import {
   acceptSimulationExecution,
   executeNativeSimulation,
@@ -25,6 +25,10 @@ import type { PlaygroundFrame } from '../shared/playground-media-contract';
 import { DEFAULT_PREFERENCES, type SessionPreferences } from '../shared/session-contract';
 import { PrivateInferenceError } from './private-inference-error';
 import { traceUsage } from './inference-trace';
+import {
+  DEFAULT_NATIVE_VIDEO_PREFERENCES,
+  type NativeVideoPreferences,
+} from '../shared/video-tools-contract';
 
 export interface PlaygroundProvider {
   completeFreeform(
@@ -35,6 +39,8 @@ export interface PlaygroundProvider {
     input: InferenceInput,
     request: unknown,
     signal: AbortSignal,
+    videoToken?: string,
+    videoOptions?: NativeVideoPreferences,
   ): Promise<unknown>;
   stop(): Promise<void>;
 }
@@ -79,7 +85,11 @@ export class PlaygroundService {
 
   constructor(
     private readonly canRun: () => boolean,
-    private readonly makeProvider: (modelId: string, needsVision: boolean) => PlaygroundProvider,
+    private readonly makeProvider: (
+      modelId: string,
+      needsVision: boolean,
+      videoOptions?: NativeVideoPreferences,
+    ) => PlaygroundProvider,
     private readonly beforeRun: () => Promise<void> = async () => {},
     private readonly historyLimits: () => Pick<
       SessionPreferences,
@@ -88,6 +98,8 @@ export class PlaygroundService {
     private readonly workerFingerprint: (modelId: string, needsVision: boolean) => string = () =>
       '',
     private readonly idleWorkerMs = IDLE_WORKER_MS,
+    private readonly videoDefaults: () => NativeVideoPreferences = () =>
+      DEFAULT_NATIVE_VIDEO_PREFERENCES,
   ) {}
 
   get busy(): boolean {
@@ -139,6 +151,7 @@ export class PlaygroundService {
     needsVision: boolean,
     operation: (provider: PlaygroundProvider, signal: AbortSignal) => Promise<T>,
     reusable: (result: T) => boolean = () => true,
+    videoOptions?: NativeVideoPreferences,
   ): Promise<T> {
     if (this.busy || this.shutdown) throw new Error('Another Playground inference is in progress.');
     if (!this.canRun())
@@ -164,6 +177,7 @@ export class PlaygroundService {
         const key = JSON.stringify([
           modelId,
           needsVision,
+          videoOptions ?? null,
           this.workerFingerprint(modelId, needsVision),
         ]);
         if (this.cached && this.cached.key !== key) await this.evictIdle();
@@ -173,7 +187,9 @@ export class PlaygroundService {
           provider = this.cached.provider;
           this.cached = null;
         } else {
-          provider = this.makeProvider(modelId, needsVision);
+          provider = videoOptions
+            ? this.makeProvider(modelId, needsVision, videoOptions)
+            : this.makeProvider(modelId, needsVision);
         }
         const result = await operation(provider, abort.signal);
         // Structured experiments report transport/cancellation errors in their result.
@@ -199,14 +215,18 @@ export class PlaygroundService {
 
   run(input: unknown): Promise<FreeformResult> {
     const request = validateFreeformRequest(input);
+    const videoOptions = request.video ? (request.videoOptions ?? this.videoDefaults()) : undefined;
+    const prepared = videoOptions ? { ...request, videoOptions } : request;
     return this.execute(
       request.modelId,
-      Boolean(request.frames?.length),
+      Boolean(request.frames?.length || request.video),
       async (provider, signal) => ({
-        ...(await provider.completeFreeform(request, signal)),
+        ...(await provider.completeFreeform(prepared, signal)),
         modelId: request.modelId,
-        request,
+        request: prepared,
       }),
+      () => true,
+      videoOptions,
     );
   }
 
@@ -220,7 +240,9 @@ export class PlaygroundService {
       request.frames,
       request.seed,
     );
-    const constructedRequest = constructedSimulationRequest(cycleInput);
+    const constructedRequest = request.video
+      ? withNativeVideoPlaceholder(constructedSimulationRequest(cycleInput))
+      : constructedSimulationRequest(cycleInput);
     const raw =
       request.rawRequestJson === undefined
         ? null
@@ -240,7 +262,9 @@ export class PlaygroundService {
       request.frames,
       request.seed,
     );
-    const constructedRequest = constructedSimulationRequest(cycleInput);
+    const constructedRequest = request.video
+      ? withNativeVideoPlaceholder(constructedSimulationRequest(cycleInput))
+      : constructedSimulationRequest(cycleInput);
     const raw =
       request.rawRequestJson === undefined
         ? null
@@ -255,6 +279,8 @@ export class PlaygroundService {
       submittedRequest,
       request.frames ?? [],
       request.values.playbackWindowMs,
+      request.video?.token,
+      request.video ? (request.videoOptions ?? this.videoDefaults()) : undefined,
     );
   }
 
@@ -282,10 +308,12 @@ export class PlaygroundService {
     submittedRequest: unknown,
     frames: readonly PlaygroundFrame[],
     playbackWindowMs: number,
+    videoToken?: string,
+    videoOptions?: NativeVideoPreferences,
   ): Promise<SimulationExperimentResult> {
     return this.execute(
       modelId,
-      frames.length > 0,
+      frames.length > 0 || Boolean(videoToken),
       async (provider, signal) => {
         const startedAt = new Date().toISOString();
         const start = performance.now();
@@ -321,7 +349,15 @@ export class PlaygroundService {
                 throw new Error(
                   'Selected provider does not support structured Simulation requests.',
                 );
-              return provider.completeSimulationRequest(cycleInput, nativeRequest, activeSignal);
+              return videoToken
+                ? provider.completeSimulationRequest(
+                    cycleInput,
+                    nativeRequest,
+                    activeSignal,
+                    videoToken,
+                    videoOptions,
+                  )
+                : provider.completeSimulationRequest(cycleInput, nativeRequest, activeSignal);
             },
             (raw, selected) => extractNativeChat(raw, selected.roster),
           );
@@ -368,6 +404,7 @@ export class PlaygroundService {
         }
       },
       (result) => result.errorStage !== 'transport',
+      videoOptions,
     );
   }
 
