@@ -11,7 +11,12 @@ import { unifiedOutputSchema, type UnifiedInferenceRequest } from './unified-inf
 export function chatGPTUnifiedAdapter(
   selection: RemoteSelection,
   auth: ChatGPTAuth,
-  options: { timeoutMs?: number; roster: readonly ChatterIdentity[]; fetcher?: typeof fetch },
+  options: {
+    timeoutMs?: number;
+    roster: readonly ChatterIdentity[];
+    fetcher?: typeof fetch;
+    probe?: boolean;
+  },
 ): UnifiedInferenceAdapter {
   const { connection, model } = selection;
   if (
@@ -69,7 +74,9 @@ export function chatGPTUnifiedAdapter(
         const stream = await client.responses.create(
           {
             model: model.model,
-            instructions: `${request.instructions}\nReturn exactly one JSON object matching this schema: ${JSON.stringify(request.response.schema)}`,
+            instructions: options.probe
+              ? request.instructions
+              : `${request.instructions}\nReturn exactly one JSON object matching this schema: ${JSON.stringify(request.response.schema)}`,
             input: [{ role: 'user', content }],
             store: false,
             stream: true,
@@ -77,10 +84,49 @@ export function chatGPTUnifiedAdapter(
           { signal: combined },
         );
         let completed: OpenAI.Responses.Response | null = null;
+        // On some plan streams the terminal response carries no message content;
+        // output_text events are the authoritative source of streamed assistant text.
+        // Keep finalized parts and deltas separately so the same text is never doubled.
+        const textParts = new Map<string, { deltas: string; final: string | null }>();
+        const acceptText = (
+          outputIndex: number,
+          contentIndex: number,
+          text: string,
+          final: boolean,
+        ) => {
+          const key = `${outputIndex}:${contentIndex}`;
+          const part = textParts.get(key) ?? { deltas: '', final: null };
+          if (final) part.final = text;
+          else if (part.final === null) part.deltas += text;
+          textParts.set(key, part);
+          // Count across every part, not just per event, to bound untrusted streams.
+          const size = [...textParts.values()].reduce(
+            (sum, value) => sum + Math.max(value.deltas.length, value.final?.length ?? 0),
+            0,
+          );
+          if (size > 2_000_000 || textParts.size > 64)
+            throw new Error('ChatGPT response text exceeded the supported size limit.');
+        };
         for await (const event of stream) {
           if (combined.aborted)
             throw new DOMException('ChatGPT inference cancelled.', 'AbortError');
           if (event.type === 'response.completed') completed = event.response;
+          else if (event.type === 'response.output_text.delta')
+            acceptText(event.output_index, event.content_index, event.delta, false);
+          else if (event.type === 'response.output_text.done')
+            acceptText(event.output_index, event.content_index, event.text, true);
+          else if (event.type === 'response.content_part.done' && event.part.type === 'output_text')
+            acceptText(event.output_index, event.content_index, event.part.text, true);
+          else if (
+            event.type === 'response.output_item.done' &&
+            event.item.type === 'message' &&
+            event.item.role === 'assistant' &&
+            event.item.status === 'completed'
+          )
+            event.item.content.forEach((part, contentIndex) => {
+              if (part.type === 'output_text')
+                acceptText(event.output_index, contentIndex, part.text, true);
+            });
           else if (event.type === 'response.failed')
             throw new Error(
               'ChatGPT response failed. Check account plan access and model entitlement.',
@@ -93,12 +139,28 @@ export function chatGPTUnifiedAdapter(
             'ChatGPT stream ended without response.completed. No Chat batch was accepted.',
           );
         const chunks: string[] = [];
-        for (const item of completed.output) {
+        for (const item of completed.output ?? []) {
           if (item.type === 'message' && item.role === 'assistant' && item.status === 'completed')
             for (const part of item.content)
               if (part.type === 'output_text') chunks.push(part.text);
         }
-        const normalized = normalizeRemoteResult(boundedJson(chunks.join('')), options.roster);
+        // Prefer final assistant output when included; fall back to independently
+        // finalized streaming parts or deltas only after response.completed.
+        const terminalText = chunks.join('');
+        const streamedText = [...textParts.entries()]
+          .sort(([left], [right]) => {
+            const a = left.split(':').map(Number);
+            const b = right.split(':').map(Number);
+            return a[0] - b[0] || a[1] - b[1];
+          })
+          .map(([, part]) => part.final ?? part.deltas)
+          .join('');
+        const responseText = terminalText || streamedText;
+        if (!responseText.trim())
+          throw new Error(
+            'ChatGPT response completed with no assistant text (only non-text output).',
+          );
+        const normalized = normalizeRemoteResult(boundedJson(responseText), options.roster);
         const counts = usage(completed.usage);
         const raw = {
           id: completed.id,
@@ -153,19 +215,22 @@ export async function probeChatGPTModel(
   selection: RemoteSelection,
   auth: ChatGPTAuth,
   signal: AbortSignal,
+  fetcher?: typeof fetch,
 ) {
   const probe: UnifiedInferenceRequest = {
     role: 'unified',
-    instructions: 'Return exactly JSON with two empty arrays: events and messages.',
+    instructions:
+      'Return only this exact JSON object: {"events":[],"messages":[]}. No markdown or explanation.',
     content: [{ type: 'text', text: 'Compatibility probe; no history or media.' }],
     response: { kind: 'json', schema: unifiedOutputSchema(AUDIENCE, 'normal') },
     sampling: { temperature: 0, maxTokens: 100 },
     evidenceWindow: null,
   };
-  const result = await chatGPTUnifiedAdapter(selection, auth, { roster: AUDIENCE }).complete(
-    probe,
-    signal,
-  );
+  const result = await chatGPTUnifiedAdapter(selection, auth, {
+    roster: AUDIENCE,
+    fetcher,
+    probe: true,
+  }).complete(probe, signal);
   const output = result.normalized as { events?: unknown; messages?: unknown };
   if (
     !Array.isArray(output.events) ||

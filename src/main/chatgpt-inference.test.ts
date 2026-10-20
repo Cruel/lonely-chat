@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { ChatGPTAuth, verifyChatGPTIdentity } from './chatgpt-auth';
-import { chatGPTUnifiedAdapter } from './chatgpt-inference';
+import { chatGPTUnifiedAdapter, probeChatGPTModel } from './chatgpt-inference';
 import { InferenceCoordinator } from './inference-coordinator';
 import { ChatService } from './chat-service';
 import { SessionController } from './session-controller';
@@ -68,6 +68,15 @@ function fixture(
     readonly badNonce?: boolean;
     readonly failingStream?: boolean;
     readonly partialStream?: boolean;
+    readonly sparseOutput?:
+      | 'delta'
+      | 'done'
+      | 'delta-done'
+      | 'part'
+      | 'item'
+      | 'reasoning-only'
+      | 'empty';
+    readonly probeOutput?: boolean;
     readonly code?: string;
     readonly author?: string;
     readonly ageMs?: number;
@@ -124,35 +133,105 @@ function fixture(
           { error: { code: options.code, message: 'provider-private-content' } },
           { status: 429 },
         );
+      const responseText = JSON.stringify(
+        options.probeOutput
+          ? { events: [], messages: [] }
+          : {
+              events: [{ kind: 'reaction', summary: 'a reunion', ageMs: options.ageMs ?? 100 }],
+              messages: [
+                { author: options.author ?? 'viewer', text: 'Good to see you!', offsetMs: 100 },
+              ],
+            },
+      );
       const result = {
         id: 'resp-complete',
         status: 'completed',
-        output: [
-          {
-            type: 'message',
-            role: 'assistant',
-            status: 'completed',
-            id: 'm1',
-            content: [
+        output: options.sparseOutput
+          ? options.sparseOutput === 'reasoning-only'
+            ? [{ type: 'reasoning', id: 'rs-1', summary: [] }]
+            : []
+          : [
               {
-                type: 'output_text',
-                text: JSON.stringify({
-                  events: [{ kind: 'reaction', summary: 'a reunion', ageMs: options.ageMs ?? 100 }],
-                  messages: [
-                    { author: options.author ?? 'viewer', text: 'Good to see you!', offsetMs: 100 },
-                  ],
-                }),
-                annotations: [],
+                type: 'message',
+                role: 'assistant',
+                status: 'completed',
+                id: 'm1',
+                content: [{ type: 'output_text', text: responseText, annotations: [] }],
               },
             ],
-          },
-        ],
         usage: { input_tokens: 15, output_tokens: 7, total_tokens: 22 },
       };
+      const deltas = [
+        {
+          type: 'response.output_text.delta',
+          output_index: 0,
+          content_index: 0,
+          item_id: 'm1',
+          delta: responseText.slice(0, 15),
+        },
+        {
+          type: 'response.output_text.delta',
+          output_index: 0,
+          content_index: 0,
+          item_id: 'm1',
+          delta: responseText.slice(15),
+        },
+      ];
+      const streamText =
+        options.sparseOutput === 'delta'
+          ? deltas
+          : options.sparseOutput === 'delta-done'
+            ? [
+                ...deltas,
+                {
+                  type: 'response.output_text.done',
+                  output_index: 0,
+                  content_index: 0,
+                  item_id: 'm1',
+                  text: responseText,
+                },
+              ]
+            : options.sparseOutput === 'done'
+              ? [
+                  {
+                    type: 'response.output_text.done',
+                    output_index: 0,
+                    content_index: 0,
+                    item_id: 'm1',
+                    text: responseText,
+                  },
+                ]
+              : options.sparseOutput === 'part'
+                ? [
+                    {
+                      type: 'response.content_part.done',
+                      output_index: 0,
+                      content_index: 0,
+                      item_id: 'm1',
+                      part: { type: 'output_text', text: responseText },
+                    },
+                  ]
+                : options.sparseOutput === 'item'
+                  ? [
+                      {
+                        type: 'response.output_item.done',
+                        output_index: 0,
+                        item: {
+                          type: 'message',
+                          id: 'm1',
+                          role: 'assistant',
+                          status: 'completed',
+                          content: [{ type: 'output_text', text: responseText }],
+                        },
+                      },
+                    ]
+                  : options.sparseOutput === 'reasoning-only' || options.sparseOutput === 'empty'
+                    ? []
+                    : [{ type: 'response.output_text.delta', delta: 'partial-but-not-accepted' }];
       const events = options.failingStream
         ? [{ type: 'response.failed', response: { status: 'failed' } }]
         : [
-            { type: 'response.output_text.delta', delta: 'partial-but-not-accepted' },
+            ...streamText,
             ...(options.partialStream ? [] : [{ type: 'response.completed', response: result }]),
           ];
       return new Response(
@@ -495,6 +574,74 @@ describe('ChatGPT OAuth and subscription inference', () => {
     expect(post.headers?.get('authorization')).toContain(secret);
     expect(JSON.stringify(result)).not.toContain(secret);
     expect(JSON.stringify(auth.status())).not.toContain(secret);
+  });
+
+  it.each(['delta', 'done', 'delta-done', 'part', 'item'] as const)(
+    'accepts complete ChatGPT streams whose text is provided by %s events rather than the terminal payload',
+    async (kind) => {
+      const f = fixture({ sparseOutput: kind });
+      const { auth } = await service(f);
+      const id = (await auth.signIn()).activeAccountId!;
+      const result = await new InferenceCoordinator().execute(
+        input,
+        chatGPTUnifiedAdapter(selection(id), auth, { roster: input.roster!, fetcher: f.fetcher }),
+        { signal: new AbortController().signal },
+      );
+      expect(result.accepted.messages).toHaveLength(1);
+      expect(result.accepted.messages[0].text).toBe('Good to see you!');
+    },
+  );
+
+  it('probes a sparse completed ChatGPT response with minimal JSON', async () => {
+    const f = fixture({ sparseOutput: 'done', probeOutput: true });
+    const { auth } = await service(f);
+    const id = (await auth.signIn()).activeAccountId!;
+    const probe = await probeChatGPTModel(
+      selection(id),
+      auth,
+      AbortSignal.timeout(5000),
+      f.fetcher,
+    );
+    expect(probe.compatible).toBe(true);
+    const sent = f.requests.find((entry) => entry.url.endsWith('/responses'))!;
+    const body = sent.body as {
+      instructions: string;
+      input: unknown[];
+      store: boolean;
+      stream: boolean;
+    };
+    expect(body.instructions.length).toBeLessThan(1200);
+    expect(body.store).toBe(false);
+    expect(body.stream).toBe(true);
+    expect(JSON.stringify(body)).not.toContain('private-subscription-access-token');
+  });
+
+  it('rejects completed ChatGPT streams with no assistant text instead of exposing raw JSON errors', async () => {
+    for (const sparseOutput of ['empty', 'reasoning-only'] as const) {
+      const f = fixture({ sparseOutput });
+      const { auth } = await service(f);
+      const id = (await auth.signIn()).activeAccountId!;
+      await expect(
+        new InferenceCoordinator().execute(
+          input,
+          chatGPTUnifiedAdapter(selection(id), auth, { roster: input.roster!, fetcher: f.fetcher }),
+          { signal: new AbortController().signal },
+        ),
+      ).rejects.toThrow(/ChatGPT.*no assistant text/i);
+    }
+  });
+
+  it('never accepts streamed text from an interrupted or failed ChatGPT response', async () => {
+    const f = fixture({ sparseOutput: 'done', partialStream: true });
+    const { auth } = await service(f);
+    const id = (await auth.signIn()).activeAccountId!;
+    await expect(
+      new InferenceCoordinator().execute(
+        input,
+        chatGPTUnifiedAdapter(selection(id), auth, { roster: input.roster!, fetcher: f.fetcher }),
+        { signal: new AbortController().signal },
+      ),
+    ).rejects.toThrow(/without response.completed/);
   });
 
   it('rejects partial streams and provider usage exhaustion without publishing a Chat batch', async () => {
