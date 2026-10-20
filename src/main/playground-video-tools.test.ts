@@ -113,6 +113,16 @@ describe('optional host FFmpeg discovery and bounded video selections', () => {
       reopened.encoded(selected.token, { ...custom, maxClipDurationSeconds: 3 }),
     ).rejects.toThrow(/changed/);
     expect((await reopened.encoded(selected.token, custom)).length).toBeGreaterThan(2_000_000);
+    // Omitting a Playground override must use the newest saved defaults, both
+    // when selecting a new clip and when submitting an earlier selection.
+    await reopened.configurePreferences({ ...custom, maxClipDurationSeconds: 3 });
+    await expect(reopened.select(file)).rejects.toThrow(/at most 3 seconds/);
+    await expect(reopened.encoded(selected.token)).rejects.toThrow(/changed/);
+    await reopened.configurePreferences({ ...custom, maxClipSizeMiB: 1 });
+    await expect(reopened.select(file)).rejects.toThrow(/1 MiB/);
+    await reopened.configurePreferences(custom);
+    const next = await reopened.select(file);
+    expect(await reopened.encoded(next.token)).toBe(await reopened.encoded(selected.token));
     expect(() => validateNativeVideoPreferences({ ...custom, fps: 0 })).toThrow(/fps/);
     expect(() => validateNativeVideoPreferences({ ...custom, timestampIntervalMs: 275 })).toThrow(
       /timestampIntervalMs/,

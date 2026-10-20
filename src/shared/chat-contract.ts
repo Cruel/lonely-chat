@@ -347,6 +347,7 @@ export interface DesktopAPI {
   chooseVideoToolsDirectory(): Promise<VideoToolsStatus>;
   resetVideoToolsDirectory(): Promise<VideoToolsStatus>;
   configureNativeVideoPreferences(preferences: NativeVideoPreferences): Promise<VideoToolsStatus>;
+  onVideoToolsChange(listener: (status: VideoToolsStatus) => void): () => void;
   choosePlaygroundVideo(
     preferences?: NativeVideoPreferences,
   ): Promise<PlaygroundVideoSelection | null>;

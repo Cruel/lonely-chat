@@ -1,3 +1,5 @@
+import { MAX_SIMULATION_FRAME_WIDTH, MAX_SIMULATION_FRAME_HEIGHT } from '../shared/video-contract';
+
 /**
  * Inspect untrusted portable JPEG blobs without allocating decoded image surfaces.
  * Enforce a complete marker stream, a frame header, bounded encoded dimensions,
@@ -48,8 +50,8 @@ export function inspectJpeg(bytes: Buffer): { width: number; height: number } {
       if (
         width < 1 ||
         height < 1 ||
-        width > 640 ||
-        height > 360 ||
+        width > MAX_SIMULATION_FRAME_WIDTH ||
+        height > MAX_SIMULATION_FRAME_HEIGHT ||
         components < 1 ||
         components > 4 ||
         length !== 8 + 3 * components

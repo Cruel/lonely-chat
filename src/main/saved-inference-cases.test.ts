@@ -136,6 +136,35 @@ describe('immutable exact inference cases', () => {
     expect((await store.list()).map((item) => item.id)).toHaveLength(2);
   });
 
+  it('accepts larger exact JPEG evidence and round-trips it as a saved case', async () => {
+    const { cases } = await setup();
+    const original = Buffer.from(image.slice('data:image/jpeg;base64,'.length), 'base64');
+    const payload = Buffer.alloc(65_000, 0);
+    const app = Buffer.alloc(4);
+    app[0] = 0xff;
+    app[1] = 0xe1;
+    app.writeUInt16BE(payload.length + 2, 2);
+    const jpeg = Buffer.concat([
+      original.subarray(0, 2),
+      app,
+      payload,
+      app,
+      payload,
+      original.subarray(2),
+    ]);
+    const large = 'data:image/jpeg;base64,' + jpeg.toString('base64');
+    expect(large.length).toBeGreaterThan(120_000);
+    const inputWithFrame = { ...input, frames: [{ ...frame, dataUrl: large }] };
+    const stored = await cases.save({
+      ...attempt,
+      input: inputWithFrame,
+      request: nativeChatRequest(inputWithFrame),
+    });
+    expect((await cases.get(stored.id)).frames[0].dataUrl).toEqual(large);
+    const copy = await cases.importPortable(await cases.exportPortable(stored.id));
+    expect((await cases.get(copy.id)).frames[0].dataUrl).toEqual(large);
+  });
+
   it('still opens legacy saved cases with no original outcome rather than inventing one', async () => {
     const { root, cases } = await setup();
     const saved = await cases.save(attempt);

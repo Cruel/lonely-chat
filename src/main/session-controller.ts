@@ -318,6 +318,8 @@ export class SessionController {
       smoothedInferenceMs: null,
       playbackWindowMs: this.runPreferences.cycleIntervalMs,
       effectiveVideoCaptureIntervalMs: this.runPreferences.videoCaptureIntervalMs,
+      effectiveVideoCaptureMaxWidth: this.runPreferences.videoCaptureMaxWidth,
+      effectiveVideoCaptureMaxHeight: this.runPreferences.videoCaptureMaxHeight,
       droppedObservations: 0,
       estimatedNextInferenceMs: null,
       adaptiveFrameLimit: null,

@@ -248,6 +248,7 @@ const modelsAPI = {
     error: 'FFmpeg unavailable',
     preferences,
   }),
+  onVideoToolsChange: () => () => {},
   choosePlaygroundVideo: async () => null,
   getModelsSnapshot: async () => emptyModels,
   onModelsChange: () => () => {},

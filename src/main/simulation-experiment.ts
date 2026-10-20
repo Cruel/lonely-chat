@@ -12,7 +12,11 @@ import {
   type SessionPreferences,
 } from '../shared/session-contract';
 import { validateChatterName, type ChatterIdentity } from '../shared/audience-contract';
-import { validatePlaygroundVideo, validateVideoOverrides } from '../shared/playground-contract';
+import {
+  validatePlaygroundVideo,
+  validateVideoOverrides,
+  validateImageTokenOverride,
+} from '../shared/playground-contract';
 import type {
   SimulationExperimentRequest,
   SimulationExperimentValues,
@@ -52,11 +56,22 @@ export function validateSimulationExperiment(value: unknown): SimulationExperime
   const v = object(value, 'simulation experiment');
   fields(
     v,
-    ['modelId', 'values', 'rawRequestJson', 'frames', 'seed', 'videoMode', 'video', 'videoOptions'],
+    [
+      'modelId',
+      'values',
+      'rawRequestJson',
+      'frames',
+      'seed',
+      'videoMode',
+      'video',
+      'videoOptions',
+      'imageMaxTokens',
+    ],
     'simulation experiment',
   );
   const video = validatePlaygroundVideo(v.videoMode, v.video, v.frames);
   const videoOptions = validateVideoOverrides(v.videoMode, v.videoOptions);
+  const imageTokenOptions = validateImageTokenOverride(v.imageMaxTokens);
   if (video.videoMode === 'native-video' && v.rawRequestJson !== undefined)
     throw new Error('Raw JSON overrides are not available for native video clips.');
   if (v.seed !== undefined) integer(v.seed, 'seed', 0, 2147483647);
@@ -149,6 +164,7 @@ export function validateSimulationExperiment(value: unknown): SimulationExperime
     ...(frames.length ? { frames } : {}),
     ...video,
     ...videoOptions,
+    ...imageTokenOptions,
     values: {
       context,
       cycle,
@@ -242,8 +258,9 @@ export function buildSimulationExperimentInput(
 export function validateRawSimulationRequest(
   raw: string,
   selectedFrames: readonly PlaygroundFrame[] = [],
+  maxFrameChars = 120_000,
 ): ReturnType<typeof nativeChatRequest> {
-  if (raw.length > 131072 + selectedFrames.length * 120000)
+  if (raw.length > 131072 + selectedFrames.length * maxFrameChars)
     throw new Error('Raw request exceeds the JSON/media size limit.');
   let value: unknown;
   try {

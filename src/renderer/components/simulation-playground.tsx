@@ -63,6 +63,7 @@ export function SimulationPlayground({
   const [videoMode, setVideoMode] = useState<PlaygroundVideoMode>('frames');
   const [selectedVideo, setSelectedVideo] = useState<PlaygroundVideoSelection | null>(null);
   const [videoOptions, setVideoOptions] = useState<NativeVideoPreferences | null>(null);
+  const [imageMaxTokens, setImageMaxTokens] = useState<number | null>(null);
   const [events, setEvents] = useState('[]');
   const [transcripts, setTranscripts] = useState('[]');
   const [observations, setObservations] = useState('[]');
@@ -178,6 +179,7 @@ export function SimulationPlayground({
       modelId: selectedModelId,
       seed,
       values,
+      ...(imageMaxTokens === null ? {} : { imageMaxTokens }),
       ...(videoMode === 'frames' && frames.length ? { frames } : {}),
       ...(videoMode === 'native-video'
         ? {
@@ -527,6 +529,8 @@ export function SimulationPlayground({
           onVideoChange={setSelectedVideo}
           videoOptions={videoOptions}
           onVideoOptionsChange={setVideoOptions}
+          imageMaxTokens={imageMaxTokens}
+          onImageMaxTokensChange={setImageMaxTokens}
         />
         <p className="text-xs text-zinc-400">
           Provide JSON arrays for the roster and optional historical inputs. Each history item uses

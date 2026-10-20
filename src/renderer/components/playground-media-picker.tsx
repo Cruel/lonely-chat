@@ -9,6 +9,7 @@ import {
   type PlaygroundFrame,
 } from '../../shared/playground-media-contract';
 import type { PlaygroundVideoMode } from '../../shared/playground-contract';
+import { IMAGE_MAX_TOKEN_OPTIONS } from '../../shared/session-contract';
 import {
   DEFAULT_NATIVE_VIDEO_PREFERENCES,
   type NativeVideoPreferences,
@@ -58,6 +59,8 @@ export function PlaygroundMediaPicker({
   onVideoChange,
   videoOptions,
   onVideoOptionsChange,
+  imageMaxTokens = null,
+  onImageMaxTokensChange,
 }: {
   readonly frames: readonly PlaygroundFrame[];
   readonly onChange: (frames: PlaygroundFrame[]) => void;
@@ -67,6 +70,8 @@ export function PlaygroundMediaPicker({
   readonly onVideoChange?: (video: PlaygroundVideoSelection | null) => void;
   readonly videoOptions?: NativeVideoPreferences | null;
   readonly onVideoOptionsChange?: (options: NativeVideoPreferences | null) => void;
+  readonly imageMaxTokens?: number | null;
+  readonly onImageMaxTokensChange?: (value: number | null) => void;
 }) {
   const [tools, setTools] = useState<VideoToolsStatus | null>(null);
   const [nativeBusy, setNativeBusy] = useState(false);
@@ -81,14 +86,20 @@ export function PlaygroundMediaPicker({
   useEffect(() => {
     if (!onModeChange) return;
     let live = true;
+    let receivedUpdate = false;
+    const unsubscribe = window.lonelyChat?.onVideoToolsChange?.((status) => {
+      receivedUpdate = true;
+      if (live) setTools(status);
+    });
     void window.lonelyChat
       ?.getVideoTools?.()
       ?.then((value) => {
-        if (live) setTools(value);
+        if (live && !receivedUpdate) setTools(value);
       })
       .catch(() => {});
     return () => {
       live = false;
+      unsubscribe?.();
     };
   }, [onModeChange]);
 
@@ -96,9 +107,9 @@ export function PlaygroundMediaPicker({
     setNativeBusy(true);
     setError(null);
     try {
-      const clip = await window.lonelyChat?.choosePlaygroundVideo(
-        videoOptions ?? tools?.preferences ?? DEFAULT_NATIVE_VIDEO_PREFERENCES,
-      );
+      // Omit the argument when no override is enabled: the main process always
+      // validates the clip against the latest saved defaults, not a stale UI snapshot.
+      const clip = await window.lonelyChat?.choosePlaygroundVideo(videoOptions ?? undefined);
       if (clip) onVideoChange?.(clip);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -265,6 +276,34 @@ export function PlaygroundMediaPicker({
             <option value="frames">Multi-image frames</option>
             <option value="native-video">Native video (FFmpeg)</option>
           </select>
+        </div>
+      )}
+      {onImageMaxTokensChange && (
+        <div className="space-y-2">
+          <Label htmlFor="playground-image-max-tokens">Max visual tokens per image</Label>
+          <select
+            id="playground-image-max-tokens"
+            aria-label="Max visual tokens per image"
+            className="block w-full rounded-md border border-border bg-background p-2 text-sm"
+            value={imageMaxTokens === null ? 'global' : String(imageMaxTokens)}
+            onChange={(event) =>
+              onImageMaxTokensChange(
+                event.target.value === 'global' ? null : Number(event.target.value),
+              )
+            }
+          >
+            <option value="global">Use global setting</option>
+            {IMAGE_MAX_TOKEN_OPTIONS.map((value) => (
+              <option key={value} value={value}>
+                {value === 0 ? 'Model default (no override)' : `${value} tokens / image`}
+              </option>
+            ))}
+          </select>
+          <p className="text-xs text-zinc-400">
+            Applies to individual JPEG frames and native-video frames on supported
+            dynamic-resolution models. Selected stills are already downscaled to a maximum of
+            640×360 pixels.
+          </p>
         </div>
       )}
       {mode === 'native-video' ? (

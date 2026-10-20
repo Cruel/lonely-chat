@@ -87,9 +87,22 @@ describe('temporal frame sampling', () => {
       ring.push({ ...frame(5500), dataUrl: 'data:text/html;base64,AA' }, 5500),
     ).toThrow();
     expect(() =>
-      ring.push({ ...frame(5500), dataUrl: 'data:image/jpeg;base64,' + 'A'.repeat(130_000) }, 5500),
+      ring.push(
+        { ...frame(5500), dataUrl: 'data:image/jpeg;base64,' + 'A'.repeat(2_700_001) },
+        5500,
+      ),
     ).toThrow();
     expect(() => ring.sample(6000, 5000, false)).toThrow(/interval/);
+  });
+
+  it('accepts higher-resolution frames while bounding decoded dimensions and transport size', () => {
+    const ring = new VideoFrameBuffer();
+    ring.selectSource('camera:123');
+    ring.push({ ...frame(1000), width: 1280, height: 720 }, 1000);
+    ring.push({ ...frame(2000), width: 1920, height: 1080 }, 2000);
+    expect(ring.sample(0, 2000, true).frames.map((item) => item.width)).toEqual([1280, 1920]);
+    expect(() => ring.push({ ...frame(3000), width: 1921, height: 1080 }, 3000)).toThrow();
+    expect(() => ring.push({ ...frame(3000), width: 1920, height: 1081 }, 3000)).toThrow();
   });
 
   it('chooses the freshest available frame when limited to a single sample', () => {

@@ -6,7 +6,7 @@ import {
   type SessionPreferences,
 } from '../shared/session-contract';
 
-const VERSION = 7;
+const VERSION = 9;
 const FILE = 'preferences.json';
 
 /** Only approved UI preferences are persisted, never manual context or observed content. */
@@ -32,7 +32,7 @@ export class PreferencesStore {
         }
         return validatePreferences(legacy);
       }
-      if (![2, 3, 4, 5, 6, VERSION].includes(document.version as number)) {
+      if (![2, 3, 4, 5, 6, 7, 8, VERSION].includes(document.version as number)) {
         throw new Error('Unsupported preferences version.');
       }
       const validated = validatePreferences(document.simulation);
@@ -66,6 +66,8 @@ export class PreferencesStore {
               'gpuOffloadLayers',
             ]
           : []),
+        ...(Number(document.version) >= 8 ? ['imageMaxTokens'] : []),
+        ...(Number(document.version) >= 9 ? ['videoCaptureMaxWidth', 'videoCaptureMaxHeight'] : []),
       ];
       const keys = Object.keys(document.simulation as Record<string, unknown>);
       if (keys.length !== fields.length || fields.some((field) => !keys.includes(field))) {

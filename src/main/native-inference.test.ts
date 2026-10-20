@@ -413,14 +413,17 @@ describe('native llama.cpp adapter', () => {
       { sourceId: 'video:clip', width: 4, height: 4, dataUrl: red, mediaTimeMs: 9000 },
     ];
     const requests: unknown[] = [];
+    const frameLaunches: string[][] = [];
     const provider = new NativeInference({
       executable: process.execPath,
       resolveModel: async () => ({
         modelPath: '/managed/vision.gguf',
         projectorPath: '/managed/mmproj.gguf',
       }),
-      launch: (_binary, args, options) =>
-        spawn(
+      resourcePreferences: () => ({ ...DEFAULT_PREFERENCES, imageMaxTokens: 128 }),
+      launch: (_binary, args, options) => {
+        frameLaunches.push([...args]);
+        return spawn(
           process.execPath,
           [
             '--input-type=module',
@@ -430,7 +433,8 @@ describe('native llama.cpp adapter', () => {
             args[args.indexOf('--api-key') + 1],
           ],
           options,
-        ),
+        );
+      },
       fetcher: async (url, options) => {
         if (!String(url).endsWith('/v1/chat/completions')) return fetch(url, options);
         requests.push(JSON.parse(options?.body as string));
@@ -458,6 +462,12 @@ describe('native llama.cpp adapter', () => {
       },
       new AbortController().signal,
     );
+    expect(
+      frameLaunches[0].slice(
+        frameLaunches[0].indexOf('--image-max-tokens'),
+        frameLaunches[0].indexOf('--image-max-tokens') + 2,
+      ),
+    ).toEqual(['--image-max-tokens', '128']);
     expect(result.content).toBe('Frame order received');
     expect(result.usage?.totalTokens).toBe(81);
     const transport = requests[0] as {
@@ -558,7 +568,8 @@ describe('native llama.cpp adapter', () => {
       vramBudgetMiB: 4096,
       gpuComputeTargetPercent: 40,
       cpuThreads: 7,
-      contextTokens: 8192,
+      contextTokens: 42000,
+      imageMaxTokens: 512,
       gpuOffloadLayers: 16,
     };
     const provider = new NativeInference({
@@ -585,7 +596,13 @@ describe('native llama.cpp adapter', () => {
     ).toEqual(['--threads', '7']);
     expect(
       launches[0].slice(launches[0].indexOf('--ctx-size'), launches[0].indexOf('--ctx-size') + 2),
-    ).toEqual(['--ctx-size', '8192']);
+    ).toEqual(['--ctx-size', '42000']);
+    expect(
+      launches[0].slice(
+        launches[0].indexOf('--image-max-tokens'),
+        launches[0].indexOf('--image-max-tokens') + 2,
+      ),
+    ).toEqual(['--image-max-tokens', '512']);
     expect(
       launches[0].slice(
         launches[0].indexOf('--n-gpu-layers'),
@@ -597,7 +614,7 @@ describe('native llama.cpp adapter', () => {
       backend: 'cpu',
       availableBackends: ['cpu'],
       cpuThreads: 7,
-      contextTokens: 8192,
+      contextTokens: 42000,
       gpuOffloadLayers: 0,
     });
     expect(provider.snapshot().resources?.diagnostic).toMatch(/CUDA is not available/);

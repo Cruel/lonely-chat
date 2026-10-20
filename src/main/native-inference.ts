@@ -626,6 +626,10 @@ export class NativeInference implements InferenceProvider {
       '--reasoning',
       this.options.reasoningEnabled?.() ? 'on' : 'off',
     ];
+    // This applies to image_url frames and FFmpeg-extracted input_video frames alike.
+    // llama.cpp only honors it on dynamic-resolution vision models.
+    if (settings.imageMaxTokens > 0)
+      args.push('--image-max-tokens', String(settings.imageMaxTokens));
     const ffmpegDir = this.options.videoFfmpegDir?.();
     if (ffmpegDir) args.push('--video-ffmpeg-dir', ffmpegDir);
     if (this.options.videoPreferences)

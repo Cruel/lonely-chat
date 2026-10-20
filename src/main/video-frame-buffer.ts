@@ -1,8 +1,12 @@
-import type { VideoFrame } from '../shared/video-contract';
+import {
+  MAX_SIMULATION_FRAME_WIDTH,
+  MAX_SIMULATION_FRAME_HEIGHT,
+  MAX_SIMULATION_FRAME_DATA_URL,
+  type VideoFrame,
+} from '../shared/video-contract';
 import { DEFAULT_PREFERENCES, type SessionPreferences } from '../shared/session-contract';
 import { VIDEO_SAMPLERS, type VideoSampler } from './video-sampler';
 
-const MAX_FRAME_BYTES = 120_000;
 const MAX_BUFFERED_FRAMES = 260; // 60 s at the fastest allowed 250 ms cadence plus baseline.
 const MAX_BUFFERED_BYTES = 32 * 1024 * 1024;
 const BASELINE_LOOKBACK_MS = 2000;
@@ -67,11 +71,11 @@ export class VideoFrameBuffer {
       !Number.isSafeInteger(frame.width) ||
       !Number.isSafeInteger(frame.height) ||
       frame.width < 1 ||
-      frame.width > 640 ||
+      frame.width > MAX_SIMULATION_FRAME_WIDTH ||
       frame.height < 1 ||
-      frame.height > 360 ||
+      frame.height > MAX_SIMULATION_FRAME_HEIGHT ||
       typeof frame.dataUrl !== 'string' ||
-      frame.dataUrl.length > MAX_FRAME_BYTES ||
+      frame.dataUrl.length > MAX_SIMULATION_FRAME_DATA_URL ||
       !DATA_URL.test(frame.dataUrl)
     ) {
       throw new Error('Invalid, expired, or inactive video frame.');

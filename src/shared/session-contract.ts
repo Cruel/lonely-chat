@@ -84,6 +84,8 @@ export interface SessionSnapshot {
   readonly playbackWindowMs: number;
   /** Capture cadence frozen for this Run, including recoverable errors. */
   readonly effectiveVideoCaptureIntervalMs?: number;
+  readonly effectiveVideoCaptureMaxWidth?: number;
+  readonly effectiveVideoCaptureMaxHeight?: number;
   readonly droppedObservations: number;
   readonly estimatedNextInferenceMs?: number | null;
   readonly adaptiveFrameLimit?: number | null;
@@ -125,6 +127,9 @@ export interface SessionPreferences {
   readonly inferenceTimeoutMs: number;
   /** Sampling cadence of the renderer (in milliseconds); distinct from model frame count. */
   readonly videoCaptureIntervalMs: number;
+  /** Maximum captured JPEG bounding box (no stretching or upscaling). */
+  readonly videoCaptureMaxWidth: number;
+  readonly videoCaptureMaxHeight: number;
   /** Maximum video look-back per cycle; truncated intervals are explicitly identified. */
   readonly videoCoverageMs: number;
   readonly videoMinFrames: number;
@@ -137,6 +142,8 @@ export interface SessionPreferences {
   readonly computeBackend: ComputeBackend;
   readonly cpuThreads: number;
   readonly contextTokens: number;
+  /** Maximum visual tokens per image on dynamic-resolution models; 0 = model default. */
+  readonly imageMaxTokens: number;
   readonly gpuOffloadLayers: number;
 }
 
@@ -150,6 +157,8 @@ export const DEFAULT_PREFERENCES: SessionPreferences = {
   reasoningEnabled: false,
   inferenceTimeoutMs: 600_000,
   videoCaptureIntervalMs: 500,
+  videoCaptureMaxWidth: 320,
+  videoCaptureMaxHeight: 180,
   videoCoverageMs: 60_000,
   videoMinFrames: 2,
   videoMaxFrames: 24,
@@ -160,6 +169,7 @@ export const DEFAULT_PREFERENCES: SessionPreferences = {
   computeBackend: 'auto',
   cpuThreads: 4,
   contextTokens: 4096,
+  imageMaxTokens: 0,
   gpuOffloadLayers: 0,
 };
 export const AUDIENCE_COUNT_OPTIONS = [3, 5, 10, 25, 50] as const;
@@ -169,13 +179,20 @@ export const HISTORY_COUNT_OPTIONS = [16, 32, 64] as const;
 export const HISTORY_AGE_OPTIONS = [30000, 60000, 300000] as const;
 export const INFERENCE_TIMEOUT_OPTIONS = [30000, 120000, 300000, 600000, 1200000] as const;
 export const VIDEO_CAPTURE_INTERVAL_OPTIONS = [250, 500, 1000, 2000] as const;
+export const VIDEO_CAPTURE_WIDTH_OPTIONS = [320, 640, 960, 1280, 1920] as const;
+export const VIDEO_CAPTURE_HEIGHT_OPTIONS = [180, 360, 540, 720, 1080] as const;
 export const VIDEO_COVERAGE_OPTIONS = [10000, 30000, 60000] as const;
 export const VIDEO_FRAME_COUNT_OPTIONS = [2, 4, 8, 12, 24, 32] as const;
 export const RAM_BUDGET_OPTIONS = [1024, 2048, 4096, 8192, 16384] as const;
 export const VRAM_BUDGET_OPTIONS = [0, 2048, 4096, 8192, 12288, 16384] as const;
 export const GPU_COMPUTE_OPTIONS = [0, 25, 40, 60, 80, 100] as const;
 export const CPU_THREAD_OPTIONS = [1, 2, 4, 8, 12, 16] as const;
-export const CONTEXT_TOKEN_OPTIONS = [2048, 4096, 8192, 16384] as const;
+export const CONTEXT_TOKEN_OPTIONS = [
+  2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144,
+] as const;
+export const IMAGE_MAX_TOKEN_OPTIONS = [
+  0, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192,
+] as const;
 export const GPU_LAYER_OPTIONS = [0, 8, 16, 32, 64] as const;
 
 /** Editable settings use strict bounds to limit timers, memory and prompt size. */
@@ -187,6 +204,8 @@ export const NUMERIC_PREFERENCE_LIMITS = {
   historyMaxAgeMs: { min: 1000, max: 3600000, step: 1000 },
   inferenceTimeoutMs: { min: 10000, max: 3600000, step: 1000 },
   videoCaptureIntervalMs: { min: 250, max: 5000, step: 50 },
+  videoCaptureMaxWidth: { min: 64, max: 1920, step: 1 },
+  videoCaptureMaxHeight: { min: 64, max: 1080, step: 1 },
   videoCoverageMs: { min: 3000, max: 60000, step: 1000 },
   videoMinFrames: { min: 1, max: 32, step: 1 },
   videoMaxFrames: { min: 1, max: 32, step: 1 },
@@ -194,7 +213,8 @@ export const NUMERIC_PREFERENCE_LIMITS = {
   vramBudgetMiB: { min: 0, max: 262144, step: 1 },
   gpuComputeTargetPercent: { min: 0, max: 100, step: 1 },
   cpuThreads: { min: 1, max: 128, step: 1 },
-  contextTokens: { min: 512, max: 32768, step: 256 },
+  contextTokens: { min: 512, max: 262144, step: 1 },
+  imageMaxTokens: { min: 0, max: 8192, step: 1 },
   gpuOffloadLayers: { min: 0, max: 999, step: 1 },
 } as const;
 
@@ -241,6 +261,10 @@ export function validatePreferences(value: unknown): SessionPreferences {
     (record.reasoningEnabled !== undefined && typeof record.reasoningEnabled !== 'boolean') ||
     (record.videoCaptureIntervalMs !== undefined &&
       !validNumericPreference('videoCaptureIntervalMs', record.videoCaptureIntervalMs)) ||
+    (record.videoCaptureMaxWidth !== undefined &&
+      !validNumericPreference('videoCaptureMaxWidth', record.videoCaptureMaxWidth)) ||
+    (record.videoCaptureMaxHeight !== undefined &&
+      !validNumericPreference('videoCaptureMaxHeight', record.videoCaptureMaxHeight)) ||
     (record.videoCoverageMs !== undefined &&
       !validNumericPreference('videoCoverageMs', record.videoCoverageMs)) ||
     (record.ramBudgetMiB !== undefined &&
@@ -252,6 +276,8 @@ export function validatePreferences(value: unknown): SessionPreferences {
     (record.cpuThreads !== undefined && !validNumericPreference('cpuThreads', record.cpuThreads)) ||
     (record.contextTokens !== undefined &&
       !validNumericPreference('contextTokens', record.contextTokens)) ||
+    (record.imageMaxTokens !== undefined &&
+      !validNumericPreference('imageMaxTokens', record.imageMaxTokens)) ||
     (record.gpuOffloadLayers !== undefined &&
       !validNumericPreference('gpuOffloadLayers', record.gpuOffloadLayers)) ||
     (record.computeBackend !== undefined &&

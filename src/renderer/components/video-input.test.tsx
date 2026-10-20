@@ -102,11 +102,12 @@ describe('live video input', () => {
     });
     expect(submitVideoFrame).toHaveBeenCalledTimes(2);
     expect(submitVideoFrame.mock.calls[0][0]).toMatchObject({ width: 320, height: 180 });
-    rerender(<VideoInput captureIntervalMs={250} />);
+    rerender(<VideoInput captureIntervalMs={250} captureMaxWidth={640} captureMaxHeight={360} />);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1000);
     });
     expect(submitVideoFrame).toHaveBeenCalledTimes(6);
+    expect(submitVideoFrame.mock.calls.at(-1)?.[0]).toMatchObject({ width: 640, height: 360 });
     expect(getUserMedia).toHaveBeenCalledTimes(1);
     expect(track.stop).not.toHaveBeenCalled();
     await act(async () => {

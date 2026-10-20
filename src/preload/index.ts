@@ -19,6 +19,14 @@ const api: DesktopAPI = {
   chooseVideoToolsDirectory: () => invoke('video-tools:choose-directory'),
   resetVideoToolsDirectory: () => invoke('video-tools:reset'),
   configureNativeVideoPreferences: (preferences) => invoke('video-tools:preferences', preferences),
+  onVideoToolsChange: (listener) => {
+    const receive = (
+      _event: Electron.IpcRendererEvent,
+      status: import('../shared/video-tools-contract').VideoToolsStatus,
+    ) => listener(status);
+    ipcRenderer.on('video-tools:change', receive);
+    return () => ipcRenderer.removeListener('video-tools:change', receive);
+  },
   choosePlaygroundVideo: (preferences) => invoke('playground:video:choose', preferences),
   listPromptPresets: () => invoke('presets:list'),
   listPromptPresetRevisions: (id) => invoke('presets:revisions', id),

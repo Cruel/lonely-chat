@@ -89,6 +89,7 @@ export class PlaygroundService {
       modelId: string,
       needsVision: boolean,
       videoOptions?: NativeVideoPreferences,
+      imageMaxTokens?: number,
     ) => PlaygroundProvider,
     private readonly beforeRun: () => Promise<void> = async () => {},
     private readonly historyLimits: () => Pick<
@@ -152,6 +153,7 @@ export class PlaygroundService {
     operation: (provider: PlaygroundProvider, signal: AbortSignal) => Promise<T>,
     reusable: (result: T) => boolean = () => true,
     videoOptions?: NativeVideoPreferences,
+    imageMaxTokens?: number,
   ): Promise<T> {
     if (this.busy || this.shutdown) throw new Error('Another Playground inference is in progress.');
     if (!this.canRun())
@@ -178,6 +180,7 @@ export class PlaygroundService {
           modelId,
           needsVision,
           videoOptions ?? null,
+          imageMaxTokens ?? null,
           this.workerFingerprint(modelId, needsVision),
         ]);
         if (this.cached && this.cached.key !== key) await this.evictIdle();
@@ -187,9 +190,12 @@ export class PlaygroundService {
           provider = this.cached.provider;
           this.cached = null;
         } else {
-          provider = videoOptions
-            ? this.makeProvider(modelId, needsVision, videoOptions)
-            : this.makeProvider(modelId, needsVision);
+          provider =
+            imageMaxTokens !== undefined
+              ? this.makeProvider(modelId, needsVision, videoOptions, imageMaxTokens)
+              : videoOptions
+                ? this.makeProvider(modelId, needsVision, videoOptions)
+                : this.makeProvider(modelId, needsVision);
         }
         const result = await operation(provider, abort.signal);
         // Structured experiments report transport/cancellation errors in their result.
@@ -227,6 +233,7 @@ export class PlaygroundService {
       }),
       () => true,
       videoOptions,
+      request.imageMaxTokens,
     );
   }
 
@@ -281,6 +288,7 @@ export class PlaygroundService {
       request.values.playbackWindowMs,
       request.video?.token,
       request.video ? (request.videoOptions ?? this.videoDefaults()) : undefined,
+      request.imageMaxTokens,
     );
   }
 
@@ -310,6 +318,7 @@ export class PlaygroundService {
     playbackWindowMs: number,
     videoToken?: string,
     videoOptions?: NativeVideoPreferences,
+    imageMaxTokens?: number,
   ): Promise<SimulationExperimentResult> {
     return this.execute(
       modelId,
@@ -405,6 +414,7 @@ export class PlaygroundService {
       },
       (result) => result.errorStage !== 'transport',
       videoOptions,
+      imageMaxTokens,
     );
   }
 

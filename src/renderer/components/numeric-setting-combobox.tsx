@@ -64,6 +64,10 @@ export function NumericSettingCombobox({
   };
 
   const choices = options.map((option) => format(option));
+  const selected = format(value);
+  // Base UI must be able to resolve the committed custom value as a real item;
+  // otherwise closing/reopening the popup can clear the displayed input.
+  const items = choices.includes(selected) ? choices : [...choices, selected];
   const minLabel = format(min);
   const maxLabel = format(max);
 
@@ -73,8 +77,8 @@ export function NumericSettingCombobox({
         {title}
       </Label>
       <Combobox
-        items={choices}
-        value={choices.includes(format(value)) ? format(value) : null}
+        items={items}
+        value={selected}
         inputValue={draft}
         onInputValueChange={(next) => {
           setDraft(next);
@@ -94,13 +98,26 @@ export function NumericSettingCombobox({
           onBlur={() => {
             if (draft !== format(value)) commit(draft);
           }}
+          onKeyDownCapture={(event) => {
+            // A typed custom value is not a preset selection. Commit it before
+            // Base UI can treat Enter as a highlighted list-item selection.
+            if (
+              event.key === 'Enter' &&
+              !event.nativeEvent.isComposing &&
+              !choices.includes(draft.trim())
+            ) {
+              event.preventDefault();
+              event.stopPropagation();
+              commit(draft);
+            }
+          }}
           onKeyDown={(event) => {
             if (event.key === 'Enter' && !event.nativeEvent.isComposing) commit(draft);
           }}
         />
         <ComboboxContent>
           <ComboboxList>
-            {choices.map((choice) => (
+            {items.map((choice) => (
               <ComboboxItem key={choice} value={choice}>
                 {choice} {unit}
               </ComboboxItem>

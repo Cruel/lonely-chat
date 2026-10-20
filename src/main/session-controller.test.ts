@@ -12,6 +12,41 @@ import { FakeClock, flushMicrotasks as flush } from './test-support/fake-clock';
 import type { InferenceProvider } from './fake-inference';
 
 describe('session lifecycle with deterministic clock', () => {
+  it('freezes resolution and cadence per Run and applies edited bounds to the next Run', () => {
+    const session = new SessionController(new ChatService(), undefined, new FakeClock());
+    session.start('game', 'fake');
+    expect(session.snapshot()).toMatchObject({
+      effectiveVideoCaptureIntervalMs: 500,
+      effectiveVideoCaptureMaxWidth: 320,
+      effectiveVideoCaptureMaxHeight: 180,
+    });
+    const updated = {
+      ...session.getPreferences(),
+      videoCaptureIntervalMs: 250,
+      videoCaptureMaxWidth: 1280,
+      videoCaptureMaxHeight: 720,
+    };
+    session.setPreferences(updated);
+    expect(session.getPreferences()).toMatchObject(updated);
+    expect(session.getRunPreferences()).toMatchObject({
+      videoCaptureIntervalMs: 500,
+      videoCaptureMaxWidth: 320,
+      videoCaptureMaxHeight: 180,
+    });
+    expect(session.snapshot()).toMatchObject({
+      effectiveVideoCaptureMaxWidth: 320,
+      effectiveVideoCaptureMaxHeight: 180,
+    });
+    session.stop();
+    session.start('game', 'fake');
+    expect(session.snapshot()).toMatchObject({
+      effectiveVideoCaptureIntervalMs: 250,
+      effectiveVideoCaptureMaxWidth: 1280,
+      effectiveVideoCaptureMaxHeight: 720,
+    });
+    session.stop();
+  });
+
   it('permits Playground only while Recorded playback is paused and inference is idle', async () => {
     const clock = new FakeClock();
     const session = new SessionController(new ChatService(), undefined, clock, {

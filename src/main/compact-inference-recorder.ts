@@ -5,6 +5,7 @@ import path from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { nativeChatRequest, inferenceSchema, INFERENCE_SCHEMA } from './native-inference';
 import { inspectJpeg } from './jpeg-inspection';
+import { MAX_SIMULATION_FRAME_WIDTH, MAX_SIMULATION_FRAME_HEIGHT } from '../shared/video-contract';
 import type { InferenceInput } from './fake-inference';
 import type { TraceAttempt } from '../shared/inference-trace-contract';
 import type {
@@ -916,9 +917,9 @@ export class CompactInferenceRecorder {
             !Number.isInteger(item.data.width) ||
             !Number.isInteger(item.data.height) ||
             (item.data.width as number) < 1 ||
-            (item.data.width as number) > 640 ||
+            (item.data.width as number) > MAX_SIMULATION_FRAME_WIDTH ||
             (item.data.height as number) < 1 ||
-            (item.data.height as number) > 360
+            (item.data.height as number) > MAX_SIMULATION_FRAME_HEIGHT
           )
             throw new Error('Invalid recorded JPEG reference or dimensions.');
           frameNames.add(jpeg);
@@ -1039,9 +1040,9 @@ export class CompactInferenceRecorder {
                 !Number.isInteger(item.data.width) ||
                 !Number.isInteger(item.data.height) ||
                 (item.data.width as number) < 1 ||
-                (item.data.width as number) > 640 ||
+                (item.data.width as number) > MAX_SIMULATION_FRAME_WIDTH ||
                 (item.data.height as number) < 1 ||
-                (item.data.height as number) > 360
+                (item.data.height as number) > MAX_SIMULATION_FRAME_HEIGHT
               )
                 throw new Error('Invalid imported frame metadata.');
               const frameName = part.folder + '/frames/' + filename;

@@ -92,7 +92,7 @@ it('validates a local file, plays at 1× and sends decoded JPEGs through trusted
   Object.defineProperty(video, 'duration', { configurable: true, value: 10 });
   fireEvent.canPlay(video);
   await waitFor(() => expect(select).toHaveBeenCalledWith({ hasFile: true, ready: true }));
-  await ref.current!.begin(500);
+  await ref.current!.begin(500, undefined, undefined, { width: 640, height: 360 });
   await waitFor(() => expect(submit).toHaveBeenCalledOnce());
   const sent = submit.mock.calls[0][0] as unknown as {
     sourceId: string;
@@ -105,8 +105,8 @@ it('validates a local file, plays at 1× and sends decoded JPEGs through trusted
   expect(sent).toMatchObject({
     sourceId: 'recorded:video',
     mediaTimeMs: 0,
-    width: 320,
-    height: 180,
+    width: 640,
+    height: 360,
     dataUrl: 'data:image/jpeg;base64,/9j/',
   });
   expect(sent.observedAt).toBeGreaterThanOrEqual(now);

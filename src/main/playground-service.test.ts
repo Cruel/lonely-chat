@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { PlaygroundService, type PlaygroundProvider } from './playground-service';
 import { DEFAULT_FREEFORM_SAMPLING, validateFreeformRequest } from '../shared/playground-contract';
+import { DEFAULT_NATIVE_VIDEO_PREFERENCES } from '../shared/video-tools-contract';
 import { nativeFreeformRequest } from './native-inference';
 import { ChatService } from './chat-service';
 import { SessionController } from './session-controller';
@@ -16,6 +17,58 @@ const request = {
 };
 
 describe('Playground worker ownership and isolation', () => {
+  it('applies the same visual token cap to selected JPEG frames and native clips', async () => {
+    const image = {
+      sourceId: 'still',
+      width: 4,
+      height: 4,
+      dataUrl:
+        'data:image/jpeg;base64,' +
+        readFileSync(new URL('../../tests/fixtures/playground-red.jpg', import.meta.url)).toString(
+          'base64',
+        ),
+    };
+    const workers: Array<{ stop: ReturnType<typeof vi.fn> }> = [];
+    const makeProvider = vi.fn(() => {
+      const worker = {
+        completeFreeform: async () => ({
+          startedAt: '',
+          durationMs: 1,
+          effectiveSeed: 1,
+          content: 'ok',
+          finishReason: 'stop',
+          usage: null,
+        }),
+        stop: vi.fn(async () => {}),
+      };
+      workers.push(worker);
+      return worker;
+    });
+    const service = new PlaygroundService(() => true, makeProvider);
+    await service.run({ ...request, frames: [image], imageMaxTokens: 128 });
+    expect(makeProvider).toHaveBeenLastCalledWith(request.modelId, true, undefined, 128);
+    await service.run({ ...request, frames: [image], imageMaxTokens: 128 });
+    expect(makeProvider).toHaveBeenCalledTimes(1);
+    await service.run({ ...request, frames: [image], imageMaxTokens: 64 });
+    expect(makeProvider).toHaveBeenLastCalledWith(request.modelId, true, undefined, 64);
+    expect(workers[0].stop).toHaveBeenCalledOnce();
+    await service.run({
+      ...request,
+      videoMode: 'native-video',
+      video: { token: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' },
+      imageMaxTokens: 64,
+    });
+    expect(makeProvider).toHaveBeenCalledTimes(3);
+    expect(makeProvider).toHaveBeenLastCalledWith(
+      request.modelId,
+      true,
+      DEFAULT_NATIVE_VIDEO_PREFERENCES,
+      64,
+    );
+    expect(workers[1].stop).toHaveBeenCalledOnce();
+    await service.stop();
+  });
+
   it('uses stored video defaults and replaces the warm worker when sampling overrides change', async () => {
     const token = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
     const defaults = {
@@ -62,6 +115,75 @@ describe('Playground worker ownership and isolation', () => {
     await service.run({ ...native, videoOptions: { ...override, maxClipSizeMiB: 100 } });
     expect(factory).toHaveBeenCalledTimes(3);
     expect(workers[1].stop).toHaveBeenCalledOnce();
+    await service.stop();
+  });
+
+  it('uses updated global native-video settings on the next request without restarting the app', async () => {
+    const token = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+    let current = {
+      fps: 4,
+      timestampIntervalMs: 5000,
+      maxClipSizeMiB: 20,
+      maxClipDurationSeconds: 15,
+    };
+    const workers: Array<{ stop: ReturnType<typeof vi.fn> }> = [];
+    const factory = vi.fn((_id: string, _vision: boolean, _options?: typeof current) => {
+      const instance = {
+        completeFreeform: async () => ({
+          startedAt: '',
+          durationMs: 1,
+          effectiveSeed: 1,
+          content: 'ok',
+          finishReason: 'stop',
+          usage: null,
+        }),
+        stop: vi.fn(async () => {}),
+      };
+      workers.push(instance);
+      return instance;
+    });
+    const service = new PlaygroundService(
+      () => true,
+      factory,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      () => current,
+    );
+    const native = { ...request, videoMode: 'native-video' as const, video: { token } };
+    await service.run(native);
+    expect(factory).toHaveBeenLastCalledWith(request.modelId, true, current);
+    let creations = 1;
+    for (const [key, value] of [
+      ['fps', 10],
+      ['timestampIntervalMs', 2000],
+      ['maxClipSizeMiB', 100],
+      ['maxClipDurationSeconds', 30],
+    ] as const) {
+      current = { ...current, [key]: value };
+      const result = await service.run(native);
+      creations++;
+      expect(result.request.videoOptions).toEqual(current);
+      expect(factory).toHaveBeenCalledTimes(creations);
+      expect(factory).toHaveBeenLastCalledWith(request.modelId, true, current);
+      expect(workers.at(-2)?.stop).toHaveBeenCalledOnce();
+    }
+    // No change: the warm worker remains reusable.
+    await service.run(native);
+    expect(factory).toHaveBeenCalledTimes(creations);
+    // A specific Playground override is intentionally independent of later global edits.
+    const explicit = {
+      fps: 6,
+      timestampIntervalMs: 2500,
+      maxClipSizeMiB: 50,
+      maxClipDurationSeconds: 45,
+    };
+    await service.run({ ...native, videoOptions: explicit });
+    expect(factory).toHaveBeenCalledTimes(creations + 1);
+    current = { ...current, fps: 12 };
+    await service.run({ ...native, videoOptions: explicit });
+    expect(factory).toHaveBeenCalledTimes(creations + 1);
     await service.stop();
   });
 

@@ -45,6 +45,7 @@ export function FreeformPlayground({
   const [videoMode, setVideoMode] = useState<PlaygroundVideoMode>('frames');
   const [selectedVideo, setSelectedVideo] = useState<PlaygroundVideoSelection | null>(null);
   const [videoOptions, setVideoOptions] = useState<NativeVideoPreferences | null>(null);
+  const [imageMaxTokens, setImageMaxTokens] = useState<number | null>(null);
   const [userPrompt, setUserPrompt] = useState('');
   const [temperature, setTemperature] = useState(String(DEFAULT_FREEFORM_SAMPLING.temperature));
   const [topP, setTopP] = useState(String(DEFAULT_FREEFORM_SAMPLING.topP));
@@ -131,6 +132,7 @@ export function FreeformPlayground({
       topK: Number(topK),
       maxTokens: Number(maxTokens),
       seed,
+      ...(imageMaxTokens === null ? {} : { imageMaxTokens }),
       ...(videoMode === 'frames' && frames.length ? { frames } : {}),
       ...(videoMode === 'native-video'
         ? {
@@ -223,6 +225,8 @@ export function FreeformPlayground({
             onVideoChange={setSelectedVideo}
             videoOptions={videoOptions}
             onVideoOptionsChange={setVideoOptions}
+            imageMaxTokens={imageMaxTokens}
+            onImageMaxTokensChange={setImageMaxTokens}
           />
         </div>
         <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">

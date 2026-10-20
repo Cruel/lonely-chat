@@ -2,6 +2,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 're
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { RecordedVideoTimeline } from '../recorded-video-timeline';
+import { captureSimulationFrame } from '../video-frame-capture';
 import { reportRecordedIssue } from '../recorded-media-health-client';
 import type { RecordedSegment } from '../recorded-preview-timeline';
 import {
@@ -26,6 +27,7 @@ export interface RecordedVideoHandle {
     captureIntervalMs: number,
     origin?: { observedAt: number; monotonicMs: number },
     segment?: RecordedSegment,
+    captureBounds?: { width: number; height: number },
   ): Promise<void>;
   stop(): void;
   pause(): void;
@@ -89,7 +91,12 @@ export const RecordedVideoInput = forwardRef<
         suspendedAt.current = null;
         await resumePlayback.current?.(elapsed);
       },
-      async begin(captureIntervalMs: number, origin, segment = { startMs: 0, endMs: null }) {
+      async begin(
+        captureIntervalMs: number,
+        origin,
+        segment = { startMs: 0, endMs: null },
+        captureBounds = { width: 320, height: 180 },
+      ) {
         if (!url) return;
         const element = video.current;
         if (!element || !ready || element.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
@@ -257,14 +264,17 @@ export const RecordedVideoInput = forwardRef<
           }
           const timestamp = timeline.sample(element.currentTime, performance.now());
           if (!timestamp) return;
-          const scale = Math.min(1, 320 / element.videoWidth, 180 / element.videoHeight);
-          if (!Number.isFinite(scale) || scale <= 0) return;
-          canvas.width = Math.max(1, Math.round(element.videoWidth * scale));
-          canvas.height = Math.max(1, Math.round(element.videoHeight * scale));
-          let dataUrl: string;
+          let captured: { width: number; height: number; dataUrl: string };
           try {
-            context.drawImage(element, 0, 0, canvas.width, canvas.height);
-            dataUrl = canvas.toDataURL('image/jpeg', 0.65);
+            captured = captureSimulationFrame(
+              element,
+              element.videoWidth,
+              element.videoHeight,
+              captureBounds.width,
+              captureBounds.height,
+              canvas,
+              context,
+            );
           } catch (error) {
             failPlayback(error);
             return;
@@ -274,9 +284,7 @@ export const RecordedVideoInput = forwardRef<
             .submitVideoFrame({
               sourceId: 'recorded:video',
               ...timestamp,
-              width: canvas.width,
-              height: canvas.height,
-              dataUrl,
+              ...captured,
             })
             .catch((reason: unknown) => {
               if (generation === epoch.current) {

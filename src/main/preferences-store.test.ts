@@ -25,7 +25,7 @@ describe('versioned preferences', () => {
     expect(await settings.read()).toEqual(DEFAULT_PREFERENCES);
     expect(await settings.write(pace(1500))).toEqual(pace(1500));
     const data = JSON.parse(await readFile(path.join(directory, 'preferences.json'), 'utf8'));
-    expect(data).toEqual({ version: 7, simulation: pace(1500) });
+    expect(data).toEqual({ version: 9, simulation: pace(1500) });
     expect(await settings.read()).toEqual(pace(1500));
     expect(await readdir(directory)).toEqual(['preferences.json']);
     expect(JSON.stringify(data)).not.toContain('manual context');
@@ -63,7 +63,7 @@ describe('versioned preferences', () => {
     ).toMatchObject({ baselineMs: 1000, historyMaxCount: 16, historyMaxAgeMs: 30000 });
     expect(
       JSON.parse(await readFile(path.join(directory, 'preferences.json'), 'utf8')).version,
-    ).toBe(7);
+    ).toBe(9);
   });
 
   it('migrates existing version-two preferences with reasoning disabled by default', async () => {
@@ -75,6 +75,9 @@ describe('versioned preferences', () => {
       computeBackend: _backend,
       cpuThreads: _threads,
       contextTokens: _context,
+      imageMaxTokens: _imageTokens,
+      videoCaptureMaxWidth: _width,
+      videoCaptureMaxHeight: _height,
       gpuOffloadLayers: _layers,
       audienceCount: _audience,
       chatActivity: _activity,
@@ -107,6 +110,9 @@ describe('versioned preferences', () => {
       computeBackend: _backend,
       cpuThreads: _threads,
       contextTokens: _context,
+      imageMaxTokens: _imageTokens,
+      videoCaptureMaxWidth: _width,
+      videoCaptureMaxHeight: _height,
       gpuOffloadLayers: _layers,
       audienceCount: _audience,
       chatActivity: _activity,
@@ -150,6 +156,9 @@ describe('versioned preferences', () => {
       computeBackend: _backend,
       cpuThreads: _threads,
       contextTokens: _context,
+      imageMaxTokens: _imageTokens,
+      videoCaptureMaxWidth: _width,
+      videoCaptureMaxHeight: _height,
       gpuOffloadLayers: _layers,
       audienceCount: _audience,
       chatActivity: _activity,
@@ -191,6 +200,9 @@ describe('versioned preferences', () => {
       computeBackend: _backend,
       cpuThreads: _threads,
       contextTokens: _context,
+      imageMaxTokens: _imageTokens,
+      videoCaptureMaxWidth: _width,
+      videoCaptureMaxHeight: _height,
       gpuOffloadLayers: _layers,
       ...previous
     } = pace(3500);
@@ -210,6 +222,9 @@ describe('versioned preferences', () => {
       computeBackend: _backend,
       cpuThreads: _threads,
       contextTokens: _context,
+      imageMaxTokens: _imageTokens,
+      videoCaptureMaxWidth: _width,
+      videoCaptureMaxHeight: _height,
       gpuOffloadLayers: _layers,
       ...previous
     } = pace(4800);
@@ -232,6 +247,77 @@ describe('versioned preferences', () => {
     expect(await settings.read()).toEqual(customized);
   });
 
+  it('upgrades v7 settings without a visual budget to the safe model default', async () => {
+    const { store: settings, directory } = await store();
+    const {
+      imageMaxTokens: _newField,
+      videoCaptureMaxWidth: _width,
+      videoCaptureMaxHeight: _height,
+      ...prior
+    } = DEFAULT_PREFERENCES;
+    await writeFile(
+      path.join(directory, 'preferences.json'),
+      JSON.stringify({ version: 7, simulation: prior }),
+    );
+    expect(await settings.read()).toEqual(DEFAULT_PREFERENCES);
+    await settings.write({ ...DEFAULT_PREFERENCES, imageMaxTokens: 128 });
+    expect(await settings.read()).toMatchObject({ imageMaxTokens: 128 });
+  });
+
+  it('upgrades v8 preferences with 320×180 capture defaults and persists custom resolution', async () => {
+    const { store: settings, directory } = await store();
+    const {
+      videoCaptureMaxWidth: _width,
+      videoCaptureMaxHeight: _height,
+      ...prior
+    } = { ...DEFAULT_PREFERENCES, contextTokens: 42000, imageMaxTokens: 333 };
+    await writeFile(
+      path.join(directory, 'preferences.json'),
+      JSON.stringify({
+        version: 8,
+        simulation: prior,
+      }),
+    );
+    expect(await settings.read()).toMatchObject({
+      videoCaptureMaxWidth: 320,
+      videoCaptureMaxHeight: 180,
+      contextTokens: 42000,
+      imageMaxTokens: 333,
+    });
+    const customized = {
+      ...(await settings.read()),
+      videoCaptureMaxWidth: 1280,
+      videoCaptureMaxHeight: 720,
+    };
+    expect(await settings.write(customized)).toEqual(customized);
+    expect(await settings.read()).toEqual(customized);
+  });
+
+  it('persists the shared visual token budget and rejects invalid caps', async () => {
+    const { store: settings } = await store();
+    await settings.write({ ...DEFAULT_PREFERENCES, imageMaxTokens: 128 });
+    expect((await settings.read()).imageMaxTokens).toBe(128);
+    await settings.write({ ...DEFAULT_PREFERENCES, imageMaxTokens: 0 });
+    expect((await settings.read()).imageMaxTokens).toBe(0);
+    await settings.write({ ...DEFAULT_PREFERENCES, imageMaxTokens: 333 });
+    expect((await settings.read()).imageMaxTokens).toBe(333);
+    for (const imageMaxTokens of [-1, 8193, 32.5])
+      await expect(settings.write({ ...DEFAULT_PREFERENCES, imageMaxTokens })).rejects.toThrow();
+  });
+
+  it('persists long-context sizes for native multimodal models', async () => {
+    const { store: settings } = await store();
+    await settings.write({ ...DEFAULT_PREFERENCES, contextTokens: 42000 });
+    expect((await settings.read()).contextTokens).toBe(42000);
+    await settings.write({ ...DEFAULT_PREFERENCES, contextTokens: 65536 });
+    expect((await settings.read()).contextTokens).toBe(65536);
+    await settings.write({ ...DEFAULT_PREFERENCES, contextTokens: 262144 });
+    expect((await settings.read()).contextTokens).toBe(262144);
+    await expect(
+      settings.write({ ...DEFAULT_PREFERENCES, contextTokens: 262400 }),
+    ).rejects.toThrow();
+  });
+
   it('rejects out-of-range, fractional-count and malformed preferences', async () => {
     const { store: settings } = await store();
     for (const bad of [
@@ -248,7 +334,8 @@ describe('versioned preferences', () => {
       { gpuComputeTargetPercent: 40.5 },
       { computeBackend: 'directx' },
       { cpuThreads: 0 },
-      { contextTokens: 513 },
+      { contextTokens: 511 },
+      { contextTokens: 512.5 },
       { gpuOffloadLayers: -1 },
       { baselineMs: 61000 },
       { historyMaxCount: 1.5 },
@@ -259,6 +346,11 @@ describe('versioned preferences', () => {
       { inferenceTimeoutMs: 12345 },
       { inferenceTimeoutMs: Number.POSITIVE_INFINITY },
       { videoCaptureIntervalMs: 249 },
+      { videoCaptureMaxWidth: 63 },
+      { videoCaptureMaxWidth: 1921 },
+      { videoCaptureMaxHeight: 63 },
+      { videoCaptureMaxHeight: 1081 },
+      { videoCaptureMaxWidth: 640.5 },
       { videoCaptureIntervalMs: 525 },
       { videoCaptureIntervalMs: 5050 },
       { videoCoverageMs: 61000 },
@@ -281,7 +373,7 @@ describe('versioned preferences', () => {
     await writeFile(
       path.join(directory, 'preferences.json'),
       JSON.stringify({
-        version: 8,
+        version: 10,
         simulation: { cycleIntervalMs: 3000 },
       }),
     );

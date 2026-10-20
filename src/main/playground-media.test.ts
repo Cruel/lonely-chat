@@ -92,6 +92,42 @@ describe('Playground selected media contract and multimodal transport', () => {
     ).toThrow(/Raw JSON overrides/);
   });
 
+  it('validates the per-image cap for both multi-frame and native video experiments', () => {
+    const video = { token: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' };
+    expect(
+      validateFreeformRequest({ ...freeform, frames: [red], imageMaxTokens: 128 }).imageMaxTokens,
+    ).toBe(128);
+    expect(
+      validateFreeformRequest({
+        ...freeform,
+        videoMode: 'native-video',
+        video,
+        imageMaxTokens: 256,
+      }).imageMaxTokens,
+    ).toBe(256);
+    expect(
+      validateSimulationExperiment({ ...simulation, frames: [red], imageMaxTokens: 32 })
+        .imageMaxTokens,
+    ).toBe(32);
+    expect(
+      validateSimulationExperiment({
+        ...simulation,
+        videoMode: 'native-video',
+        video,
+        imageMaxTokens: 0,
+      }).imageMaxTokens,
+    ).toBe(0);
+    expect(() =>
+      validateFreeformRequest({ ...freeform, frames: [red], imageMaxTokens: 8193 }),
+    ).toThrow(/image token budget/);
+    expect(
+      validateFreeformRequest({ ...freeform, frames: [red], imageMaxTokens: 333 }).imageMaxTokens,
+    ).toBe(333);
+    expect(() =>
+      validateSimulationExperiment({ ...simulation, frames: [red], imageMaxTokens: 9000 }),
+    ).toThrow(/image token budget/);
+  });
+
   it('rejects oversized, unsupported and mismatched JPEGs before worker acquisition', () => {
     const valid = validatePlaygroundFrames([red, blue]);
     expect(valid).toEqual([red, blue]);

@@ -311,9 +311,16 @@ function requireRecordedAudio(): void {
 }
 
 function registerHandlers(): void {
+  const broadcastVideoTools = (
+    status: import('../shared/video-tools-contract').VideoToolsStatus,
+  ) => {
+    if (mainWindow && !mainWindow.isDestroyed())
+      mainWindow.webContents.send('video-tools:change', status);
+    return status;
+  };
   const actions = {
     'playground:status': () => playground.snapshot(),
-    'video-tools:status': () => videoTools.status(true),
+    'video-tools:status': async () => broadcastVideoTools(await videoTools.status(true)),
     'video-tools:choose-directory': async () => {
       const selection = await dialog.showOpenDialog({
         title: 'Select directory containing ffmpeg and ffprobe',
@@ -321,17 +328,17 @@ function registerHandlers(): void {
       });
       if (selection.canceled || !selection.filePaths[0]) return videoTools.status();
       await playground.stop();
-      return videoTools.configure(selection.filePaths[0]);
+      return broadcastVideoTools(await videoTools.configure(selection.filePaths[0]));
     },
     'video-tools:reset': async () => {
       await playground.stop();
-      return videoTools.configure(null);
+      return broadcastVideoTools(await videoTools.configure(null));
     },
     'video-tools:preferences': async (
       preferences: import('../shared/video-tools-contract').NativeVideoPreferences,
     ) => {
       await playground.stop();
-      return videoTools.configurePreferences(preferences);
+      return broadcastVideoTools(await videoTools.configurePreferences(preferences));
     },
     'playground:video:choose': async (
       preferences?: import('../shared/video-tools-contract').NativeVideoPreferences,
@@ -1366,7 +1373,7 @@ async function boot(): Promise<void> {
       (['stopped', 'error'].includes(session.snapshot().phase) ||
         session.canExecutePausedPlayground()) &&
       installs.snapshot().progress.phase === 'idle',
-    (id, needsVision, videoOptions) => {
+    (id, needsVision, videoOptions, imageMaxTokens) => {
       if (packageE2E) return certificationPlaygroundProvider();
       // Playground workers own a fresh immutable snapshot, never the previous Run's settings.
       const playgroundSettings = nativeWorkerSettings(session, 'playground');
@@ -1382,7 +1389,9 @@ async function boot(): Promise<void> {
             projectorPath: needsVision ? files.projectorPath : null,
           };
         },
-        playgroundSettings,
+        imageMaxTokens === undefined
+          ? playgroundSettings
+          : () => ({ ...playgroundSettings(), imageMaxTokens }),
         videoOptions,
       );
     },

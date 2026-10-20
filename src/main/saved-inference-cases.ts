@@ -12,6 +12,7 @@ import type {
 } from '../shared/saved-case-contract';
 import type { SimulationExperimentResult } from '../shared/playground-contract';
 import { validateRawSimulationRequest } from './simulation-experiment';
+import { MAX_SIMULATION_FRAME_DATA_URL } from '../shared/video-contract';
 import type { InferenceInput } from './fake-inference';
 
 const VERSION = 1;
@@ -160,6 +161,7 @@ function usableAttempt(value: TraceAttempt): {
   validateRawSimulationRequest(
     json(request),
     input.frames as unknown as import('../shared/playground-media-contract').PlaygroundFrame[],
+    MAX_SIMULATION_FRAME_DATA_URL,
   );
   return {
     request,
@@ -558,7 +560,7 @@ export class SavedInferenceCases {
       dataUrl: frame.dataUrl,
       ...(frame.mediaTimeMs === undefined ? {} : { mediaTimeMs: frame.mediaTimeMs }),
     }));
-    validateRawSimulationRequest(json(request), frames);
+    validateRawSimulationRequest(json(request), frames, MAX_SIMULATION_FRAME_DATA_URL);
     if (typeof body.seed !== 'number' || !Number.isSafeInteger(body.seed))
       throw new Error('Case experiments require a valid explicit seed.');
     return {
@@ -667,7 +669,7 @@ export class SavedInferenceCases {
       ...frame,
       dataUrl: 'data:image/jpeg;base64,' + blobs.get(frame.ref.slice(12))!.toString('base64'),
     }));
-    validateRawSimulationRequest(json(expanded), frames);
+    validateRawSimulationRequest(json(expanded), frames, MAX_SIMULATION_FRAME_DATA_URL);
     const original = manifest.summary;
     const nextId = randomUUID();
     const childrenRaw = archive.children ?? [];

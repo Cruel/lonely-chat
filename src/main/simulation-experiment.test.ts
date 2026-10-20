@@ -31,6 +31,61 @@ const reply = (body: unknown) => ({
 afterEach(() => vi.restoreAllMocks());
 
 describe('structured Playground and production Session seam', () => {
+  it('applies current global native-video settings to Simulation Playground without application restart', async () => {
+    const token = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+    let defaults = {
+      fps: 4,
+      timestampIntervalMs: 5000,
+      maxClipSizeMiB: 20,
+      maxClipDurationSeconds: 15,
+    };
+    const stop = vi.fn(async () => {});
+    const complete = vi.fn(async () => reply({ events: [], messages: [] }));
+    const factory = vi.fn(() => ({
+      completeFreeform: vi.fn(),
+      completeSimulationRequest: complete,
+      stop,
+    }));
+    const service = new PlaygroundService(
+      () => true,
+      factory,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      () => defaults,
+    );
+    const native = { ...input, videoMode: 'native-video' as const, video: { token } };
+    const result = await service.runSimulation(native);
+    expect(result.errorStage).toBeNull();
+    expect(complete).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.any(AbortSignal),
+      token,
+      defaults,
+    );
+    expect(factory).toHaveBeenLastCalledWith(input.modelId, true, defaults);
+    defaults = {
+      fps: 8,
+      timestampIntervalMs: 2000,
+      maxClipSizeMiB: 100,
+      maxClipDurationSeconds: 30,
+    };
+    const updated = await service.runSimulation(native);
+    expect(updated.errorStage).toBeNull();
+    expect(factory).toHaveBeenCalledTimes(2);
+    expect(stop).toHaveBeenCalledOnce();
+    expect(complete).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.any(AbortSignal),
+      token,
+      defaults,
+    );
+    await service.stop();
+  });
+
   it('generates a concrete seed for structured requests and preserves explicit seeds', async () => {
     const service = new PlaygroundService(
       () => true,

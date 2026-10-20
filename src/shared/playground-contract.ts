@@ -1,5 +1,5 @@
 import type { ChatActivity, ChatterIdentity } from './audience-contract';
-import type { InferredEvent } from './session-contract';
+import { validNumericPreference, type InferredEvent } from './session-contract';
 import type { PlaygroundFrame } from './playground-media-contract';
 import { validatePlaygroundFrames } from './playground-media-contract';
 import {
@@ -29,6 +29,8 @@ export interface FreeformRequest {
   readonly videoMode?: PlaygroundVideoMode;
   readonly video?: SelectedPlaygroundVideo;
   readonly videoOptions?: NativeVideoPreferences;
+  /** Optional per-Playground visual token cap; 0 explicitly uses the model default. */
+  readonly imageMaxTokens?: number;
 }
 export interface FreeformUsage {
   readonly promptTokens: number | null;
@@ -75,6 +77,8 @@ export interface SimulationExperimentRequest {
   readonly videoMode?: PlaygroundVideoMode;
   readonly video?: SelectedPlaygroundVideo;
   readonly videoOptions?: NativeVideoPreferences;
+  /** Optional per-Playground visual token cap; 0 explicitly uses the model default. */
+  readonly imageMaxTokens?: number;
   /** Advanced override, submitted without rewriting the production-constructed reference. */
   readonly rawRequestJson?: string;
 }
@@ -159,6 +163,13 @@ export function validateVideoOverrides(mode: unknown, options: unknown) {
   return { videoOptions: validateNativeVideoPreferences(options) };
 }
 
+export function validateImageTokenOverride(value: unknown) {
+  if (value === undefined) return {};
+  if (!validNumericPreference('imageMaxTokens', value))
+    throw new Error('Invalid image token budget (expected 0–8192 in increments of 16).');
+  return { imageMaxTokens: value };
+}
+
 export function validateFreeformRequest(value: unknown): FreeformRequest {
   if (!value || typeof value !== 'object' || Array.isArray(value))
     throw new Error('Invalid Playground request.');
@@ -167,6 +178,7 @@ export function validateFreeformRequest(value: unknown): FreeformRequest {
     Object.keys(v).sort().join(',') !==
     [
       'frames',
+      'imageMaxTokens',
       'maxTokens',
       'modelId',
       'responseSchema',
@@ -221,5 +233,6 @@ export function validateFreeformRequest(value: unknown): FreeformRequest {
     ...(v.frames === undefined ? {} : { frames: validatePlaygroundFrames(v.frames) }),
     ...validatePlaygroundVideo(v.videoMode, v.video, v.frames),
     ...validateVideoOverrides(v.videoMode, v.videoOptions),
+    ...validateImageTokenOverride(v.imageMaxTokens),
   };
 }

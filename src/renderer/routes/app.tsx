@@ -73,6 +73,7 @@ import {
   GPU_COMPUTE_OPTIONS,
   CPU_THREAD_OPTIONS,
   CONTEXT_TOKEN_OPTIONS,
+  IMAGE_MAX_TOKEN_OPTIONS,
   GPU_LAYER_OPTIONS,
   BASELINE_OPTIONS,
   CYCLE_INTERVAL_OPTIONS,
@@ -80,6 +81,8 @@ import {
   HISTORY_COUNT_OPTIONS,
   INFERENCE_TIMEOUT_OPTIONS,
   VIDEO_CAPTURE_INTERVAL_OPTIONS,
+  VIDEO_CAPTURE_WIDTH_OPTIONS,
+  VIDEO_CAPTURE_HEIGHT_OPTIONS,
   VIDEO_COVERAGE_OPTIONS,
   VIDEO_FRAME_COUNT_OPTIONS,
   type InferenceMode,
@@ -490,6 +493,13 @@ export function DesktopPage() {
               started.effectiveVideoCaptureIntervalMs ?? session.preferences.videoCaptureIntervalMs,
               origin,
               recordedSegmentState.segment,
+              {
+                width:
+                  started.effectiveVideoCaptureMaxWidth ?? session.preferences.videoCaptureMaxWidth,
+                height:
+                  started.effectiveVideoCaptureMaxHeight ??
+                  session.preferences.videoCaptureMaxHeight,
+              },
             )
           : undefined,
       ]);
@@ -1573,6 +1583,18 @@ export function DesktopPage() {
                           session.preferences.videoCaptureIntervalMs)
                         : session.preferences.videoCaptureIntervalMs
                     }
+                    captureMaxWidth={
+                      mediaActive
+                        ? (session.status.effectiveVideoCaptureMaxWidth ??
+                          session.preferences.videoCaptureMaxWidth)
+                        : session.preferences.videoCaptureMaxWidth
+                    }
+                    captureMaxHeight={
+                      mediaActive
+                        ? (session.status.effectiveVideoCaptureMaxHeight ??
+                          session.preferences.videoCaptureMaxHeight)
+                        : session.preferences.videoCaptureMaxHeight
+                    }
                   />
                 </Panel>
                 <Panel>
@@ -2046,6 +2068,16 @@ export function DesktopPage() {
                     onChange={(contextTokens) => update({ contextTokens })}
                   />
                   <NumericSettingCombobox
+                    id="image-max-tokens"
+                    title="Max visual tokens per image (0 = model default; at next load)"
+                    name="imageMaxTokens"
+                    value={session.preferences.imageMaxTokens}
+                    options={IMAGE_MAX_TOKEN_OPTIONS}
+                    unit="entries"
+                    disabled={!session.ready || session.busy || running}
+                    onChange={(imageMaxTokens) => update({ imageMaxTokens })}
+                  />
+                  <NumericSettingCombobox
                     id="gpu-layers"
                     title="GPU offload layers (at next load)"
                     name="gpuOffloadLayers"
@@ -2066,9 +2098,12 @@ export function DesktopPage() {
               <Panel className="mt-5">
                 <h3 className="font-medium">Temporal video sampling</h3>
                 <p className="mt-2 text-sm text-zinc-400">
-                  Frame count adapts to the elapsed inference interval. The coverage limit is a
-                  maximum look-back, not a fixed video clip duration. Missing footage cannot be
-                  synthesized to meet the minimum frame count.
+                  Capture interval controls maximum sampling FPS (500 ms = up to 2 FPS). Frame width
+                  and height form an aspect-preserving maximum bounding box for live and recorded
+                  Simulation, including 4K sources. Higher resolutions use more memory and visual
+                  tokens. Capture settings are frozen for each Run and apply to the next Run when
+                  changed while running. The coverage limit is a maximum look-back, not a fixed
+                  video clip duration.
                 </p>
                 <div className="mt-5 grid gap-5 sm:grid-cols-2">
                   <NumericSettingCombobox
@@ -2080,6 +2115,26 @@ export function DesktopPage() {
                     unit="seconds"
                     disabled={!session.ready || session.busy}
                     onChange={(videoCaptureIntervalMs) => update({ videoCaptureIntervalMs })}
+                  />
+                  <NumericSettingCombobox
+                    id="video-capture-width"
+                    title="Maximum captured frame width"
+                    name="videoCaptureMaxWidth"
+                    value={session.preferences.videoCaptureMaxWidth}
+                    options={VIDEO_CAPTURE_WIDTH_OPTIONS}
+                    unit="entries"
+                    disabled={!session.ready || session.busy}
+                    onChange={(videoCaptureMaxWidth) => update({ videoCaptureMaxWidth })}
+                  />
+                  <NumericSettingCombobox
+                    id="video-capture-height"
+                    title="Maximum captured frame height"
+                    name="videoCaptureMaxHeight"
+                    value={session.preferences.videoCaptureMaxHeight}
+                    options={VIDEO_CAPTURE_HEIGHT_OPTIONS}
+                    unit="entries"
+                    disabled={!session.ready || session.busy}
+                    onChange={(videoCaptureMaxHeight) => update({ videoCaptureMaxHeight })}
                   />
                   <NumericSettingCombobox
                     id="video-coverage"

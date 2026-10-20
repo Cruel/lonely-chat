@@ -9,6 +9,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import type { VideoSource } from '../../shared/video-contract';
+import { captureSimulationFrame } from '../video-frame-capture';
 
 type CaptureStatus = 'off' | 'starting' | 'live' | 'disconnected' | 'error';
 
@@ -41,9 +42,13 @@ function reconnectable(error: unknown): boolean {
 export function VideoInput({
   visible = true,
   captureIntervalMs = 500,
+  captureMaxWidth = 320,
+  captureMaxHeight = 180,
 }: {
   visible?: boolean;
   captureIntervalMs?: number;
+  captureMaxWidth?: number;
+  captureMaxHeight?: number;
 }) {
   const [sources, setSources] = useState<VideoSource[]>([]);
   const [selected, setSelected] = useState('none');
@@ -60,6 +65,9 @@ export function VideoInput({
   // A cadence change must not restart a screen share (which requires a fresh user gesture).
   const captureInterval = useRef(captureIntervalMs);
   captureInterval.current = captureIntervalMs;
+  // Settings changes do not reacquire a camera or invalidate a screen-share gesture.
+  const captureBounds = useRef({ width: captureMaxWidth, height: captureMaxHeight });
+  captureBounds.current = { width: captureMaxWidth, height: captureMaxHeight };
 
   useEffect(
     () =>
@@ -178,20 +186,22 @@ export function VideoInput({
             const width = video.current.videoWidth;
             const height = video.current.videoHeight;
             if (!width || !height) return;
-            const scale = Math.min(1, 320 / width, 180 / height);
-            canvas.width = Math.max(1, Math.round(width * scale));
-            canvas.height = Math.max(1, Math.round(height * scale));
-            context.drawImage(video.current, 0, 0, canvas.width, canvas.height);
-            const dataUrl = canvas.toDataURL('image/jpeg', 0.65);
+            const captured = captureSimulationFrame(
+              video.current,
+              width,
+              height,
+              captureBounds.current.width,
+              captureBounds.current.height,
+              canvas,
+              context,
+            );
             lastSampleAt = sampledAt;
             inFlight = true;
             void window
               .lonelyChat!.submitVideoFrame({
                 sourceId: selected,
                 observedAt: sampledAt,
-                width: canvas.width,
-                height: canvas.height,
-                dataUrl,
+                ...captured,
               })
               .catch((reason: unknown) => {
                 if (valid) setError(describeError(reason));
@@ -379,8 +389,10 @@ export function VideoInput({
         className="mt-4 aspect-video w-full rounded-lg border border-border bg-black object-contain"
       />
       <p className="mt-2 text-xs text-zinc-500">
-        Live capture every {captureIntervalMs / 1000} seconds at up to 320 × 180 pixels. Temporal
-        frame selection is configured in Settings. Stopping video does not stop the chat.
+        Live sampling every {captureIntervalMs / 1000} seconds (up to{' '}
+        {Math.round((1000 / captureIntervalMs) * 100) / 100} FPS) at up to {captureMaxWidth} ×{' '}
+        {captureMaxHeight} pixels, maintaining source aspect ratio. Configure cadence and capture
+        resolution in Settings. Stopping video does not stop the chat.
       </p>
     </div>
   );
