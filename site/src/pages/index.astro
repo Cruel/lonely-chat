@@ -1,0 +1,184 @@
+---
+import { GITHUB_URL, PLATFORMS, RELEASES_URL } from '../lib/downloads.mjs';
+import '../styles/global.css';
+
+const title = 'Lonely Chat — Give every moment an audience';
+const description = 'A simulated streamer chat that reacts to your video, audio, and on-screen moments using local AI. Bring an audience to your content, even when you are flying solo.';
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0c0c13" />
+    <meta name="description" content={description} />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>{title}</title>
+  </head>
+  <body>
+    <div class="site-shell">
+      <header class="site-header container">
+        <a class="brand" href="/" aria-label="Lonely Chat home">
+          <span class="brand-icon" aria-hidden="true">
+            <svg viewBox="0 0 36 36" fill="none">
+              <rect x="5" y="7" width="26" height="19" rx="7" stroke="currentColor" stroke-width="2.8"></rect>
+              <path d="M13 25v5l7-5" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"></path>
+              <circle cx="12.5" cy="16.5" r="1.7" fill="currentColor"></circle>
+              <circle cx="18" cy="16.5" r="1.7" fill="currentColor"></circle>
+              <circle cx="23.5" cy="16.5" r="1.7" fill="currentColor"></circle>
+            </svg>
+          </span>
+          <span>lonely<span class="brand-accent">chat</span></span>
+        </a>
+        <nav class="site-nav" aria-label="Main navigation">
+          <a class="nav-features" href="#features">Features</a>
+          <a class="nav-features" href="#download">Download</a>
+          <a class="nav-github" href={GITHUB_URL} target="_blank" rel="noopener noreferrer">
+            GitHub
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+          </a>
+        </nav>
+      </header>
+
+      <main>
+        <section class="hero container" aria-labelledby="hero-heading">
+          <div class="hero-copy">
+            <div class="eyebrow"><span class="eyebrow-dot"></span> LOCAL AI <span class="eyebrow-divider">/</span> SIMULATED CHAT</div>
+            <h1 id="hero-heading">Give every moment <span>an audience<span class="headline-period">.</span></span></h1>
+            <p class="hero-description">A streamer-style chat that watches, listens, and reacts alongside you. Real moments. Simulated viewers. Powered by AI running on your own computer.</p>
+            <div class="hero-actions">
+              <a class="button button-primary" href="#download">
+                Get Lonely Chat
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4v12m0 0 5-5m-5 5-5-5M5 20h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+              </a>
+              <a class="button button-secondary" href={GITHUB_URL} target="_blank" rel="noopener noreferrer">
+                Explore the code
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+              </a>
+            </div>
+            <div class="hero-footnote"><span class="status-pulse" aria-hidden="true"></span> In active development <span class="footnote-separator">·</span> Powered by local AI</div>
+          </div>
+
+          <div class="hero-art" aria-label="Illustration of a video feed beside an AI-generated chat conversation">
+            <div class="ambient-orb ambient-orb-one"></div>
+            <div class="ambient-orb ambient-orb-two"></div>
+            <div class="preview-window">
+              <div class="preview-toolbar">
+                <div class="window-dots" aria-hidden="true"><i></i><i></i><i></i></div>
+                <span class="preview-title">LONELY CHAT / LIVE PREVIEW</span>
+                <span class="preview-tag">CONCEPT</span>
+              </div>
+              <div class="preview-layout">
+                <div class="scene-window">
+                  <span class="scene-label"><span></span> VIDEO INPUT</span>
+                  <div class="scene-stage" aria-hidden="true">
+                    <div class="scene-halo"></div>
+                    <div class="scene-ring ring-outer"></div>
+                    <div class="scene-ring ring-inner"></div>
+                    <div class="scene-shape"><div class="scene-shape-inner"></div></div>
+                    <div class="scene-glimmer glimmer-one"></div>
+                    <div class="scene-glimmer glimmer-two"></div>
+                  </div>
+                  <div class="scene-caption"><span class="scene-indicator"></span> Watching the moment <span class="scene-caption-dots">···</span></div>
+                </div>
+                <div class="chat-window">
+                  <div class="chat-toolbar"><strong>chat</strong><span><i></i> SIMULATED</span></div>
+                  <div class="chat-messages">
+                    <div class="chat-message"><b class="chat-purple">pixelpotion</b> okay wait what was THAT</div>
+                    <div class="chat-message"><b class="chat-orange">toast.exe</b> no way that just happened</div>
+                    <div class="chat-message"><b class="chat-blue">cloudwatcher</b> I saw that coming lol</div>
+                    <div class="chat-message"><b class="chat-pink">mossbyte</b> the timing is actually perfect</div>
+                    <div class="chat-message"><b class="chat-green">orbitz</b> CLIP IT</div>
+                    <div class="chat-message latest-message"><b class="chat-yellow">starlit</b> we're so back ✨</div>
+                  </div>
+                  <div class="chat-bottom"><span class="chat-bottom-line"></span><span class="chat-bottom-dot"></span></div>
+                </div>
+              </div>
+              <div class="preview-status"><span>● &nbsp; LOCAL INFERENCE</span><span>JUST YOU AND YOUR CHAT</span></div>
+            </div>
+            <span class="preview-disclaimer">ILLUSTRATIVE PREVIEW · NOT AN APP SCREENSHOT</span>
+          </div>
+        </section>
+
+        <section id="features" class="features container" aria-labelledby="features-heading">
+          <div class="section-heading">
+            <span class="section-index">01 / THE IDEA</span>
+            <h2 id="features-heading">Your content. A little less quiet.</h2>
+            <p>Give your stream, recording, or experiment a reactive audience without needing a live one.</p>
+          </div>
+          <div class="feature-grid">
+            <article class="feature">
+              <span class="feature-icon" aria-hidden="true">
+                <svg viewBox="0 0 28 28" fill="none"><rect x="3" y="5" width="22" height="17" rx="4" stroke="currentColor" stroke-width="1.8"></rect><path d="m12 11 6 3-6 3v-6Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"></path><path d="M9 25h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path></svg>
+              </span>
+              <h3>Reacts to your world</h3>
+              <p>Use video, optional audio, or written context to give the simulated chat something to talk about.</p>
+            </article>
+            <article class="feature">
+              <span class="feature-icon" aria-hidden="true">
+                <svg viewBox="0 0 28 28" fill="none"><path d="M8 7h12a5 5 0 0 1 5 5v4a5 5 0 0 1-5 5h-6l-6 4v-4a5 5 0 0 1-5-5v-4a5 5 0 0 1 5-5Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"></path><path d="M9 14h10M9 17h6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path></svg>
+              </span>
+              <h3>Feels like a conversation</h3>
+              <p>Recurring simulated viewer identities and time-spaced messages turn reactions into a flowing chat.</p>
+            </article>
+            <article class="feature">
+              <span class="feature-icon" aria-hidden="true">
+                <svg viewBox="0 0 28 28" fill="none"><rect x="5" y="3" width="18" height="22" rx="4" stroke="currentColor" stroke-width="1.8"></rect><path d="M10 11V9a4 4 0 0 1 8 0v2M9 11h10v8H9z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"></path></svg>
+              </span>
+              <h3>Runs on your machine</h3>
+              <p>Use local language and vision models, with optional speech recognition. Bring chat into OBS with a browser overlay.</p>
+            </article>
+          </div>
+        </section>
+
+        <section id="download" class="download-section" aria-labelledby="download-heading">
+          <div class="container download-content">
+            <div class="download-intro">
+              <span class="section-index">02 / GET STARTED</span>
+              <h2 id="download-heading">Ready when <span>you are.</span></h2>
+              <p>Choose your platform. Find the latest public desktop release right here whenever it’s available.</p>
+            </div>
+            <div class="download-card">
+              <div class="download-card-header">
+                <div>
+                  <span class="download-card-kicker">LATEST RELEASE</span>
+                  <h3>Lonely Chat for desktop</h3>
+                  <p id="release-status" role="status" aria-live="polite">Checking published releases…</p>
+                </div>
+                <a id="primary-download" class="button button-primary download-cta" href={RELEASES_URL} target="_blank" rel="noopener noreferrer">
+                  View releases
+                  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+                </a>
+              </div>
+              <div id="download-platforms" class="download-platforms" aria-label="Platform downloads">
+                {PLATFORMS.map((platform) => (
+                  <a class="platform" href={RELEASES_URL} target="_blank" rel="noopener noreferrer" data-platform={platform.id}>
+                    <span class="platform-symbol" aria-hidden="true">
+                      {platform.id === 'windows' ? '⊞' : platform.id === 'linux' ? '◈' : '●'}
+                    </span>
+                    <span class="platform-details"><strong>{platform.name}</strong><small>{platform.detail}</small></span>
+                    <span class="platform-action" data-platform-action={platform.id}>Check releases ↗</span>
+                  </a>
+                ))}
+              </div>
+              <p class="download-note">Early releases are unsigned. Your operating system may display a security warning. <a href={GITHUB_URL} target="_blank" rel="noopener noreferrer">Source on GitHub ↗</a></p>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer class="site-footer container">
+        <span class="footer-brand">lonely<span>chat</span></span>
+        <span>Made for the moments worth reacting to.</span>
+        <a href={GITHUB_URL} target="_blank" rel="noopener noreferrer">GitHub ↗</a>
+      </footer>
+    </div>
+    <script>
+      import '../scripts/downloads.js';
+    </script>
+  </body>
+</html>
