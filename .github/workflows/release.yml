@@ -48,7 +48,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          version="$(cat VERSION)"
+          version="$(node -p "require('./package.json').version")"
           cd release-assets
           expected=(
             "lonely-chat-${version}-linux-x86_64.AppImage"

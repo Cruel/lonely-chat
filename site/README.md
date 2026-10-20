@@ -38,7 +38,7 @@ Use Node.js 24.18+ and pnpm 11.15.0 (the version in `site/package.json`). The `s
 
 ## Releases
 
-`.github/workflows/release.yml` publishes versioned installers from the `VERSION` file. The browser chooses the appropriate asset by its filename suffix:
+`.github/workflows/release.yml` publishes versioned installers using the version in the root `package.json`. The browser chooses the appropriate asset by its filename suffix:
 
 - Windows x64: `lonely-chat-<version>-windows-x64.exe`
 - Linux x64: `lonely-chat-<version>-linux-x86_64.AppImage`
