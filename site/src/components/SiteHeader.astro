@@ -1,0 +1,29 @@
+---
+import { GITHUB_URL } from '../lib/downloads.mjs';
+interface Props {
+  current?: 'home' | 'download';
+}
+const { current = 'home' } = Astro.props;
+---
+<header class="site-header container">
+  <a class="brand" href="/" aria-label="Lonely Chat home">
+    <span class="brand-icon" aria-hidden="true">
+      <svg viewBox="0 0 36 36" fill="none">
+        <rect x="5" y="7" width="26" height="19" rx="7" stroke="currentColor" stroke-width="2.8"></rect>
+        <path d="M13 25v5l7-5" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"></path>
+        <circle cx="12.5" cy="16.5" r="1.7" fill="currentColor"></circle>
+        <circle cx="18" cy="16.5" r="1.7" fill="currentColor"></circle>
+        <circle cx="23.5" cy="16.5" r="1.7" fill="currentColor"></circle>
+      </svg>
+    </span>
+    <span>lonely<span class="brand-accent">chat</span></span>
+  </a>
+  <nav class="site-nav" aria-label="Main navigation">
+    <a class="nav-features" href="/#features">Features</a>
+    <a href="/download" aria-current={current === 'download' ? 'page' : undefined}>Download</a>
+    <a class="nav-github" href={GITHUB_URL} target="_blank" rel="noopener noreferrer">
+      GitHub
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+    </a>
+  </nav>
+</header>

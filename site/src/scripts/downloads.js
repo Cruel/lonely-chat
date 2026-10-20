@@ -1,108 +1,116 @@
-import { detectPlatform, getInstaller, LATEST_RELEASE_API, PLATFORMS, RELEASES_URL } from '../lib/downloads.mjs';
+import {
+  detectPlatform,
+  formatDownloadSize,
+  getInstaller,
+  getPrimaryDownload,
+  RELEASES_URL,
+} from '../lib/downloads.mjs';
+import { fetchLatestRelease } from '../lib/release-cache.mjs';
 
-const releaseStatus = document.querySelector('#release-status');
-const primaryLink = document.querySelector('#primary-download');
-const platformElements = [...document.querySelectorAll('[data-platform]')];
+const automaticButtons = [...document.querySelectorAll('[data-auto-download]')];
+const platformLinks = [...document.querySelectorAll('[data-platform-download]')];
+const releaseStatuses = [...document.querySelectorAll('[data-release-status]')];
+const releaseLinks = [...document.querySelectorAll('[data-release-link]')];
 
-function setPlatformLinks(release) {
-  for (const element of platformElements) {
-    const platform = element.getAttribute('data-platform');
-    const installer = getInstaller(release, platform);
-    const action = element.querySelector('[data-platform-action]');
+function showStatus(message) {
+  for (const element of releaseStatuses) element.textContent = message;
+}
 
-    if (installer) {
-      element.setAttribute('href', installer.url);
-      element.removeAttribute('aria-disabled');
-      element.classList.remove('unavailable');
-      if (action) action.textContent = 'Download ↗';
-    } else {
-      element.removeAttribute('href');
-      element.setAttribute('aria-disabled', 'true');
-      element.classList.add('unavailable');
-      if (action) action.textContent = 'Not available';
+function updatePrimaryButtons(release, platform) {
+  const selected = getPrimaryDownload(release, platform);
+  for (const button of automaticButtons) {
+    button.href = selected.href;
+    button.querySelector('[data-download-label]').textContent = selected.label;
+    for (const icon of button.querySelectorAll('[data-download-icon]')) {
+      icon.hidden = icon.getAttribute('data-download-icon') !== (selected.platform ?? 'generic');
     }
   }
 }
 
-function showNoRelease() {
-  releaseStatus.textContent = 'First public release coming soon.';
-  primaryLink.textContent = 'Browse on GitHub ↗';
-  primaryLink.setAttribute('href', RELEASES_URL);
-  setPlatformLinks(null);
+function updatePlatformLinks(release, failed = false) {
+  for (const link of platformLinks) {
+    const platform = link.getAttribute('data-platform-download');
+    const installer = getInstaller(release, platform);
+    const label = link.querySelector('[data-platform-label]');
+    const size = link.querySelector('[data-platform-size]');
+
+    if (installer) {
+      link.href = installer.url;
+      link.removeAttribute('target');
+      link.removeAttribute('aria-disabled');
+      link.classList.remove('unavailable');
+      if (label) label.textContent = 'Download';
+      if (size) size.textContent = formatDownloadSize(installer.size);
+    } else if (failed) {
+      link.href = RELEASES_URL;
+      link.setAttribute('target', '_blank');
+      link.removeAttribute('aria-disabled');
+      link.classList.remove('unavailable');
+      if (label) label.textContent = 'Check GitHub ↗';
+      if (size) size.textContent = '';
+    } else {
+      link.removeAttribute('href');
+      link.removeAttribute('target');
+      link.setAttribute('aria-disabled', 'true');
+      link.classList.add('unavailable');
+      if (label) label.textContent = 'Not available';
+      if (size) size.textContent = '';
+    }
+  }
 }
 
-function showLookupError() {
-  releaseStatus.textContent = 'Could not check the latest release. Visit GitHub to see downloads.';
-  primaryLink.textContent = 'Browse releases ↗';
-  primaryLink.setAttribute('href', RELEASES_URL);
-  // A temporary API failure must not be mistaken for a missing installer.
-  for (const element of platformElements) {
-    element.setAttribute('href', RELEASES_URL);
-    const action = element.querySelector('[data-platform-action]');
-    if (action) action.textContent = 'Check GitHub ↗';
+async function identifyPlatform() {
+  const hints = navigator.userAgentData;
+  let architecture = '';
+  let bitness = '';
+  if (hints?.getHighEntropyValues) {
+    try {
+      const values = await hints.getHighEntropyValues(['architecture', 'bitness']);
+      architecture = values.architecture ?? '';
+      bitness = values.bitness ?? '';
+    } catch {
+      // Browsers may decline high-entropy hints; let visitors choose instead.
+    }
   }
+  return detectPlatform({
+    clientPlatform: hints?.platform,
+    userAgent: navigator.userAgent,
+    architecture,
+    bitness,
+  });
+}
+
+function setReleaseLink(url) {
+  for (const link of releaseLinks) link.href = url;
 }
 
 async function loadRelease() {
+  const platformPromise = identifyPlatform();
   try {
-    const response = await fetch(LATEST_RELEASE_API, {
-      headers: { Accept: 'application/vnd.github+json' },
-    });
-    if (response.status === 404) {
-      showNoRelease();
-      return;
-    }
-    if (!response.ok) throw new Error('Release lookup failed');
-
-    const release = await response.json();
-    if (!release || release.draft || release.prerelease || !Array.isArray(release.assets)) {
-      showNoRelease();
+    const { status, release } = await fetchLatestRelease();
+    if (status !== 'published') {
+      showStatus(status === 'not-found'
+        ? 'First public release coming soon.'
+        : 'No published desktop release available yet.');
+      updatePlatformLinks(null);
       return;
     }
 
-    const clientHints = navigator.userAgentData;
-    let architecture = '';
-    let bitness = '';
-    if (clientHints?.getHighEntropyValues) {
-      try {
-        const values = await clientHints.getHighEntropyValues(['architecture', 'bitness']);
-        architecture = values.architecture ?? '';
-        bitness = values.bitness ?? '';
-      } catch {
-        // Platform hints are optional; manual downloads remain available.
-      }
+    const platform = await platformPromise;
+    updatePrimaryButtons(release, platform);
+    updatePlatformLinks(release);
+    showStatus(release.tag_name ? `Latest release: ${release.tag_name}` : 'Latest public release');
+
+    if (typeof release.html_url === 'string' && release.html_url.startsWith(`${RELEASES_URL}/tag/`)) {
+      setReleaseLink(release.html_url);
     }
-    const platform = detectPlatform({
-      clientPlatform: clientHints?.platform,
-      userAgent: navigator.userAgent,
-      architecture,
-      bitness,
-    });
-    const recommended = platform && getInstaller(release, platform);
 
-    setPlatformLinks(release);
-    releaseStatus.textContent = release.tag_name
-      ? `Latest published release: ${release.tag_name}`
-      : 'Latest public release available';
-
-    if (recommended) {
-      const name = PLATFORMS.find((item) => item.id === platform)?.buttonLabel ?? 'desktop';
-      primaryLink.textContent = `Download for ${name} ↗`;
-      primaryLink.setAttribute('href', recommended.url);
-      const selected = platformElements.find((element) => element.getAttribute('data-platform') === platform);
-      selected?.classList.add('recommended');
-    } else {
-      primaryLink.textContent = 'Browse downloads ↗';
-      primaryLink.setAttribute('href', RELEASES_URL);
-      // Platforms not supported by the release still have the GitHub fallback.
-      if (!PLATFORMS.some((item) => getInstaller(release, item.id))) {
-        releaseStatus.textContent = 'No desktop installers found in the latest release.';
-        primaryLink.textContent = 'Browse releases ↗';
-        primaryLink.setAttribute('href', RELEASES_URL);
-      }
+    if (!['windows', 'linux', 'macos'].some((id) => getInstaller(release, id))) {
+      showStatus('No desktop installers found in the latest release.');
     }
   } catch {
-    showLookupError();
+    showStatus('Unable to check releases right now. Check GitHub for available downloads.');
+    updatePlatformLinks(null, true);
   }
 }
 

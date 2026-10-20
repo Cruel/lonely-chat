@@ -218,6 +218,53 @@ h1, h2, h3, p { margin-top: 0; }
   .chat-message, .chat-message b { font-size: 8px; }
   .chat-toolbar { padding-inline: 9px; }
 }
+[hidden] { display: none !important; }
+.site-nav a[aria-current="page"] { color: #dfcdff; }
+.hero-footnote a, .text-link { color: #cfb7ff; text-underline-offset: 4px; }
+.hero-footnote a:hover, .text-link:hover { text-decoration: underline; }
+.button-platform-icon { display: inline-flex; width: 19px; height: 19px; align-items: center; justify-content: center; }
+.button-platform-icon svg { width: 19px; height: 19px; }
+.platform-symbol svg { width: 23px; height: 23px; }
+.footer-links { display: flex; align-items: center; gap: 23px; }
+.download-page { padding-top: 94px; padding-bottom: 105px; max-width: 950px; }
+.download-page-heading { text-align: center; margin-bottom: 55px; }
+.download-page-heading h1 { font-size: clamp(46px, 6vw, 69px); font-weight: 780; letter-spacing: -.075em; margin: 18px 0 13px; }
+.download-page-heading .headline-period { color: #b89afb; }
+.download-page-heading > p { color: #a9a1b5; font-size: 16px; line-height: 1.7; margin-bottom: 26px; }
+.release-meta { display: inline-flex; gap: 11px; flex-wrap: wrap; justify-content: center; align-items: center; font-size: 12px; color: #b8acc7; padding: 12px 17px; border: 1px solid #373042; background: #181523; border-radius: 100px; }
+.release-meta a { color: #c7a4ff; margin-left: 10px; }
+.release-meta a:hover { text-decoration: underline; }
+.download-page-list { border: 1px solid #44384e; background: #1a1724; border-radius: 16px; box-shadow: 0 18px 70px rgba(0,0,0,.16); overflow: hidden; }
+.download-platform-row { display: flex; gap: 22px; align-items: center; padding: 31px 36px; }
+.download-platform-row:not(:first-child) { border-top: 1px solid #393042; }
+.download-page-platform-icon { display: grid; place-items: center; width: 56px; height: 56px; border-radius: 13px; background: #302342; border: 1px solid #503e67; color: #c4a6fd; flex-shrink: 0; }
+.download-page-platform-icon svg { width: 29px; height: 29px; }
+.download-platform-info { flex: 1; min-width: 0; }
+.download-platform-info h2 { font-size: 22px; letter-spacing: -.04em; margin: 0 0 5px; }
+.download-platform-info p { color: #d1c4e3; font-size: 13px; margin: 0 0 5px; }
+.download-platform-info small { color: #90879b; font-size: 12px; line-height: 1.55; }
+.download-platform-button { min-width: 154px; max-width: 190px; flex-shrink: 0; flex-direction: column; gap: 3px; }
+.download-platform-button:not(.unavailable) { background: #2d243b; border-color: #564166; color: #e0caff; }
+.download-platform-button:not(.unavailable):hover { background: #382a4b; border-color: #9675ba; }
+.download-platform-button.unavailable { opacity: .55; cursor: not-allowed; pointer-events: none; }
+.download-file-size { font-size: 11px; color: #b3a4c7; font-weight: 450; }
+.download-file-size:empty { display: none; }
+.download-page-help { display: grid; grid-template-columns: 1fr 1fr; gap: 47px; margin-top: 40px; padding: 0 9px; }
+.download-page-help h2 { font-size: 15px; letter-spacing: -.025em; margin-bottom: 10px; }
+.download-page-help p { color: #a29aaa; line-height: 1.75; font-size: 13px; }
+.download-page-help a { color: #c7a8f9; }
+.download-page-help a:hover { text-decoration: underline; }
+@media (max-width: 660px) {
+  .download-page { padding-top: 66px; padding-bottom: 82px; }
+  .download-page-heading { margin-bottom: 31px; }
+  .download-page-heading h1 { font-size: clamp(42px, 9vw, 57px); }
+  .release-meta { border-radius: 13px; line-height: 1.5; }
+  .download-platform-row { flex-wrap: wrap; gap: 15px; padding: 24px 20px; }
+  .download-page-platform-icon { width: 48px; height: 48px; }
+  .download-platform-button { max-width: none; flex: 1 0 100%; }
+  .download-page-help { grid-template-columns: 1fr; gap: 20px; }
+  .footer-links { gap: 15px; }
+}
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }

@@ -1,0 +1,24 @@
+---
+interface Props {
+  platform: 'windows' | 'linux' | 'macos';
+}
+const { platform } = Astro.props;
+---
+{platform === 'windows' ? (
+  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+    <path d="m2.5 5.3 8.6-1.2v7H2.5V5.3Zm10.5-1.5 8.5-1.3v8.6H13V3.8Zm-10.5 9h8.6v7l-8.6-1.2v-5.8Zm10.5 0h8.5v8.7L13 20.2v-7.4Z" />
+  </svg>
+) : platform === 'macos' ? (
+  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+    <path d="M16.1 2.1c-.3 1.4-1.4 2.5-2.7 2.7-.2-1.4 1-2.7 2.7-2.7ZM18.6 14.1c-.5 1.2-1.1 2.4-2 3.4-.8 1-1.6 2.1-2.8 2.1-1.1 0-1.5-.7-2.8-.7s-1.7.7-2.8.7c-1.2 0-2-1-2.8-2C3.7 15 2.9 13.2 2.9 11.3c0-3 1.9-4.7 4-4.7 1.1 0 2.1.7 2.8.7.8 0 2-.8 3.4-.7 1.4 0 2.7.6 3.5 1.7-3.2 1.9-2.8 4.8 2 5.8Z" transform="translate(1 1.2)" />
+    <path d="M13.5 5.1c.2-1.6 1.3-3 3-3.6.2 1.6-1.1 3.1-3 3.6Z" />
+  </svg>
+) : (
+  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path d="M8.5 8.5V6a3.5 3.5 0 0 1 7 0v2.5c1.2 1.2 2 3.6 2 6.2 0 3.5-2.2 5.3-5.5 5.3s-5.5-1.8-5.5-5.3c0-2.6.8-5 2-6.2Z" fill="currentColor" opacity=".9"/>
+    <path d="M9 14c0-2.9 1.1-4.6 3-4.6s3 1.7 3 4.6c0 2.8-1.2 4.5-3 4.5S9 16.8 9 14Z" fill="#1b1826"/>
+    <path d="M10.3 8.7 12 10l1.7-1.3-1.7-.9-1.7.9Z" fill="#e7bd81"/>
+    <path d="M8.2 19.1 5.7 21M15.8 19.1l2.5 1.9" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="10.5" cy="6.7" r=".7" fill="#1b1826"/><circle cx="13.5" cy="6.7" r=".7" fill="#1b1826"/>
+  </svg>
+)}

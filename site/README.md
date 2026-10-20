@@ -14,7 +14,7 @@ pnpm test
 pnpm build
 ```
 
-The site checks the latest *published* GitHub release in the visitor's browser. Until the first published release, download links show a coming-soon state. The site does not require Cloudflare credentials, GitHub API tokens, server-side rendering or a redeploy on each desktop release. GitHub API failures fall back to a link to the releases page.
+Both `/` and `/download` use the latest *published*, non-prerelease GitHub release, fetched in the visitor's browser and cached in `sessionStorage` for the tab's lifetime (no TTL). Refreshing or moving between pages in the same tab reuses the cached release; a new tab normally fetches it again. The homepage initially shows a **Download** button linking to `/download`, which becomes a direct installer link when the visitor's platform and architecture can be identified safely. Otherwise it keeps the `/download` fallback, where the available platform builds are listed individually. The download page shows the published version, available artifact sizes, and links to GitHub. Until a release is published, installers are unavailable. GitHub API failures fall back to GitHub Releases instead of guessing asset URLs. No Cloudflare credentials, GitHub API tokens, server-side rendering or redeploy per desktop release is needed.
 
 ## CI
 

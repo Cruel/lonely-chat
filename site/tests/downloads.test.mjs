@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { detectPlatform, getInstaller, PLATFORMS, RELEASES_URL } from '../src/lib/downloads.mjs';
+import { detectPlatform, formatDownloadSize, getInstaller, getPrimaryDownload, PLATFORMS, RELEASES_URL } from '../src/lib/downloads.mjs';
 
 const version = '0.1.0';
 const names = {
@@ -23,6 +23,32 @@ test('selects the released installer for every supported platform', () => {
     assert.equal(asset?.name, names[platform.id]);
     assert.match(asset?.url ?? '', /^https:\/\/github\.com\/Cruel\/lonely-chat\/releases\/download\//);
   }
+});
+
+test('the homepage button directly downloads the matching published asset', () => {
+  for (const platform of PLATFORMS) {
+    const primary = getPrimaryDownload(published, platform.id);
+    assert.equal(primary.href, getInstaller(published, platform.id)?.url);
+    assert.equal(primary.label, `Download for ${platform.name}`);
+    assert.equal(primary.platform, platform.id);
+  }
+});
+
+test('the homepage button routes unknown or unavailable platforms to /download', () => {
+  for (const candidate of [null, 'android', 'mac-intel']) {
+    assert.deepEqual(getPrimaryDownload(published, candidate), {
+      href: '/download', label: 'Download', platform: null,
+    });
+  }
+  assert.equal(getPrimaryDownload({ ...published, assets: [] }, 'windows').href, '/download');
+  assert.equal(getPrimaryDownload(null, 'windows').href, '/download');
+});
+
+test('format release sizes only when GitHub provides a positive byte count', () => {
+  assert.equal(formatDownloadSize(1048576), '1 MiB');
+  assert.equal(formatDownloadSize(135 * 1048576), '135 MiB');
+  assert.equal(formatDownloadSize(undefined), '');
+  assert.equal(formatDownloadSize(-4), '');
 });
 
 test('never guesses download URLs for missing or unsupported releases', () => {

@@ -40,6 +40,20 @@ export function detectPlatform({ clientPlatform = '', userAgent = '', architectu
   return null;
 }
 
+/** Resolve the homepage CTA without guessing a GitHub asset URL. */
+export function getPrimaryDownload(release, platform) {
+  const installer = getInstaller(release, platform);
+  if (!installer) {
+    return { href: '/download', label: 'Download', platform: null };
+  }
+  const label = PLATFORMS.find((candidate) => candidate.id === platform)?.buttonLabel;
+  return { href: installer.url, label: `Download for ${label}`, platform };
+}
+
+export function formatDownloadSize(bytes) {
+  return Number.isFinite(bytes) && bytes > 0 ? `${Math.round(bytes / 1024 / 1024)} MiB` : '';
+}
+
 /** Reject unexpected download URLs, even if the API supplies a matching filename. */
 export function getInstaller(release, platform) {
   const pattern = assetPatterns[platform];
@@ -54,5 +68,5 @@ export function getInstaller(release, platform) {
     typeof candidate.browser_download_url === 'string' &&
     candidate.browser_download_url.startsWith(`${RELEASES_URL}/download/`)
   );
-  return asset ? { name: asset.name, url: asset.browser_download_url } : null;
+  return asset ? { name: asset.name, url: asset.browser_download_url, size: asset.size } : null;
 }

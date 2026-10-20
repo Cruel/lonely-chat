@@ -1,0 +1,73 @@
+---
+import { GITHUB_URL, PLATFORMS, RELEASES_URL } from '../lib/downloads.mjs';
+import PlatformIcon from '../components/PlatformIcon.astro';
+import SiteHeader from '../components/SiteHeader.astro';
+import SiteFooter from '../components/SiteFooter.astro';
+import '../styles/global.css';
+
+const title = 'Download Lonely Chat — Windows, macOS & Linux';
+const description = 'Download the latest Lonely Chat desktop release for Windows, macOS Apple Silicon, or Linux. Local AI-powered simulated streamer chat.';
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0c0c13" />
+    <meta name="description" content={description} />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>{title}</title>
+  </head>
+  <body>
+    <div class="site-shell">
+      <SiteHeader current="download" />
+      <main class="download-page container">
+        <div class="download-page-heading">
+          <span class="section-index">LONELY CHAT / DESKTOP</span>
+          <h1>Download Lonely Chat<span class="headline-period">.</span></h1>
+          <p>Pick your platform to get the latest public release. No account required.</p>
+          <div class="release-meta" role="status" aria-live="polite">
+            <span class="status-pulse" aria-hidden="true"></span>
+            <span data-release-status>Checking the latest release…</span>
+            <a href={RELEASES_URL} data-release-link target="_blank" rel="noopener noreferrer">View releases ↗</a>
+          </div>
+        </div>
+
+        <div class="download-page-list" aria-label="Available desktop installers">
+          {PLATFORMS.map((platform) => (
+            <section class="download-platform-row" aria-labelledby={`download-title-${platform.id}`}>
+              <span class="download-page-platform-icon"><PlatformIcon platform={platform.id} /></span>
+              <div class="download-platform-info">
+                <h2 id={`download-title-${platform.id}`}>{platform.name}</h2>
+                <p>{platform.detail}</p>
+                {platform.id === 'macos' && <small>Apple Silicon only. Intel Macs are not supported by the current release.</small>}
+                {platform.id === 'windows' && <small>Windows x64 installer (.exe)</small>}
+                {platform.id === 'linux' && <small>Portable x86_64 AppImage</small>}
+              </div>
+              <a class="button button-secondary download-platform-button" href={RELEASES_URL} data-platform-download={platform.id} target="_blank" rel="noopener noreferrer">
+                <span data-platform-label>Check releases ↗</span>
+                <span class="download-file-size" data-platform-size></span>
+              </a>
+            </section>
+          ))}
+        </div>
+
+        <div class="download-page-help">
+          <div>
+            <h2>Good to know</h2>
+            <p>These are unsigned early builds. Your operating system may show a security warning. AI models are downloaded separately in the app.</p>
+          </div>
+          <div>
+            <h2>Looking for something else?</h2>
+            <p>See <a href={RELEASES_URL} target="_blank" rel="noopener noreferrer">all GitHub releases ↗</a>, <a href={GITHUB_URL} target="_blank" rel="noopener noreferrer">browse the source ↗</a>, or check the latest release for SHA-256 checksums.</p>
+          </div>
+        </div>
+      </main>
+      <SiteFooter />
+    </div>
+    <script>import '../scripts/downloads.js';</script>
+  </body>
+</html>
