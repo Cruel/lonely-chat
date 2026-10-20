@@ -1,2 +1,8 @@
 packages:
   - .
+
+# Astro's unifont allows Undici 8.x; use a release old enough to satisfy
+# pnpm's 24-hour minimum release age on Cloudflare's clean build workers.
+# Revisit this pin when updating Astro and the website lockfile.
+overrides:
+  'unifont@1.0.3>undici': 8.12.2
