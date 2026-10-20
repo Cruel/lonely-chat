@@ -5,6 +5,8 @@ export interface ChatGPTAccount {
   readonly email: string | null;
 }
 export interface ChatGPTStatus {
+  /** Whether the current OS backend can encrypt refresh tokens durably. */
+  readonly secureStorageAvailable: boolean;
   readonly activeAccountId: string | null;
   readonly accounts: readonly (ChatGPTAccount & {
     readonly authorized: boolean;

@@ -56,6 +56,24 @@ it('shows a reusable clickable sign-in URL and copy button during authorization,
   expect(screen.queryByRole('button', { name: 'Copy ChatGPT sign-in link' })).toBeNull();
 });
 
+it('warns before ChatGPT sign-in when refresh tokens cannot survive restart', async () => {
+  window.lonelyChat = {
+    getChatGPTStatus: async () => ({
+      secureStorageAvailable: false,
+      activeAccountId: null,
+      accounts: [],
+    }),
+    listRemoteConfigurations: async () => ({ connections: [], models: [] }),
+    getChatGPTAuthorizationUrl: async () => null,
+    onChatGPTAuthorizationChange: () => () => {},
+  } as unknown as DesktopAPI;
+
+  render(<RemoteConnectionsPanel />);
+  expect((await screen.findByRole('status')).textContent).toContain(
+    'authorization will be lost when the app closes',
+  );
+});
+
 it('recovers the pending authorization URL on remount and keeps failed manual opens actionable', async () => {
   const url = 'https://auth.openai.com/api/accounts/authorize?state=pending';
   const open = vi.fn().mockRejectedValue(new Error('xdg-open failed'));

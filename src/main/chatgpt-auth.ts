@@ -308,6 +308,7 @@ export class ChatGPTAuth {
   status(): ChatGPTStatus {
     if (!this.loaded) throw new Error('ChatGPT accounts have not loaded.');
     return {
+      secureStorageAvailable: this.protector.available(),
       activeAccountId: this.selectedId,
       accounts: this.accounts.map(({ id, label, email }) => ({
         id,

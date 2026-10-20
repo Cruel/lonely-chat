@@ -1,9 +1,40 @@
 import { spawn, execFileSync } from 'node:child_process';
 import { once } from 'node:events';
 import { createServer } from 'node:net';
+import { readFileSync, readdirSync } from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 import process from 'node:process';
 
 const onWindows = process.platform === 'win32';
+const onWSL =
+  process.platform === 'linux' &&
+  (Boolean(process.env.WSL_DISTRO_NAME) ||
+    (() => {
+      try {
+        return /microsoft|wsl/i.test(readFileSync('/proc/sys/kernel/osrelease', 'utf8'));
+      } catch {
+        return false;
+      }
+    })());
+// In headless WSL, Chromium cannot infer the Linux Secret Service backend.
+// Require an initialized keyring before forcing libsecret: without a default
+// collection, Electron can hang waiting for a graphical unlock prompt.
+const keyringDirectory = path.join(
+  process.env.XDG_DATA_HOME ?? path.join(os.homedir(), '.local', 'share'),
+  'keyrings',
+);
+let keyringInitialized = false;
+try {
+  keyringInitialized = readdirSync(keyringDirectory).some((name) => name.endsWith('.keyring'));
+} catch {
+  // GNOME Keyring hasn't been initialized yet.
+}
+const electronOptions = onWSL && keyringInitialized ? ['--password-store=gnome-libsecret'] : [];
+if (onWSL && !keyringInitialized)
+  console.warn(
+    'WSL: no initialized GNOME Keyring found; ChatGPT credentials will be session-only.',
+  );
 
 function build(args) {
   execFileSync('pnpm', args, { stdio: 'inherit', shell: onWindows });
@@ -89,7 +120,7 @@ try {
   }
   if (!ready && !stopping) throw new Error('Vite development renderer failed to start');
   if (!stopping) {
-    desktop = ownedPnpm(['exec', 'electron', '.'], {
+    desktop = ownedPnpm(['exec', 'electron', '.', ...electronOptions], {
       ...process.env,
       LONELY_CHAT_RENDERER_URL: devOrigin,
     });

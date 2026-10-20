@@ -337,6 +337,7 @@ describe('ChatGPT OAuth and subscription inference', () => {
     const f = fixture();
     const { auth, directory } = await service(f);
     const status = await auth.signIn();
+    expect(status.secureStorageAvailable).toBe(true);
     const account = status.accounts[0];
     expect(status.activeAccountId).toBe(account.id);
     expect(account).toMatchObject({
@@ -522,7 +523,9 @@ describe('ChatGPT OAuth and subscription inference', () => {
     const f = fixture();
     const insecure = { ...f.protector, available: () => false };
     const { auth, directory } = await service(f, insecure);
-    expect((await auth.signIn()).accounts[0].storage).toBe('session');
+    const status = await auth.signIn();
+    expect(status.secureStorageAvailable).toBe(false);
+    expect(status.accounts[0].storage).toBe('session');
     await expect(
       readFile(path.join(directory, 'chatgpt-credentials.enc.json'), 'utf8'),
     ).rejects.toMatchObject({ code: 'ENOENT' });

@@ -42,7 +42,11 @@ export function RemoteConnectionsPanel({
   onCatalog?: (value: RemoteCatalog) => void;
 }) {
   const [catalog, setCatalog] = useState<RemoteCatalog>(EMPTY);
-  const [chatGPT, setChatGPT] = useState<ChatGPTStatus>({ activeAccountId: null, accounts: [] });
+  const [chatGPT, setChatGPT] = useState<ChatGPTStatus>({
+    secureStorageAvailable: true,
+    activeAccountId: null,
+    accounts: [],
+  });
   const [chatGPTModels, setChatGPTModels] = useState<ChatGPTModel[]>([]);
   const [authorizationUrl, setAuthorizationUrl] = useState<string | null>(null);
   const [connection, setConnection] = useState<RemoteConnection>(freshConnection);
@@ -145,6 +149,13 @@ export function RemoteConnectionsPanel({
           Eligible accounts can authorize plan inference separately from paid API keys. OpenAI plan
           limits apply; Lonely Chat never falls back to API billing.
         </p>
+        {!chatGPT.secureStorageAvailable && (
+          <p role="status" className="text-xs text-amber-400">
+            Secure credential storage is unavailable. ChatGPT authorization will be lost when the
+            app closes. On headless WSL, create and unlock a GNOME Keyring collection and start
+            Electron with the gnome-libsecret password-store backend.
+          </p>
+        )}
         <select
           className={field}
           aria-label="ChatGPT account"
