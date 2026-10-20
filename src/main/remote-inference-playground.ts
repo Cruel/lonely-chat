@@ -1,4 +1,4 @@
-import { InferenceCoordinator } from './inference-coordinator';
+import { InferenceCoordinator, type UnifiedInferenceAdapter } from './inference-coordinator';
 import { SimulationExecutionError } from './simulation-execution';
 import {
   buildSimulationExperimentInput,
@@ -30,6 +30,9 @@ export class RemoteInferencePlayground {
       SessionPreferences,
       'historyMaxAgeMs' | 'historyMaxCount' | 'inferenceTimeoutMs'
     > = DEFAULT_PREFERENCES,
+    adapterFactory?: (
+      roster: readonly import('../shared/audience-contract').ChatterIdentity[],
+    ) => UnifiedInferenceAdapter,
   ): Promise<SimulationExperimentResult> {
     if (this.abort) throw new Error('Another remote Playground inference is in progress.');
     const request = validateSimulationExperiment(value);
@@ -75,10 +78,11 @@ export class RemoteInferencePlayground {
     try {
       const execution = await this.coordinator.execute(
         input,
-        remoteUnifiedAdapter(selection, {
-          timeoutMs: preferences.inferenceTimeoutMs,
-          roster: input.roster,
-        }),
+        adapterFactory?.(input.roster ?? []) ??
+          remoteUnifiedAdapter(selection, {
+            timeoutMs: preferences.inferenceTimeoutMs,
+            roster: input.roster,
+          }),
         {
           signal: abort.signal,
           enforceAudience: true,

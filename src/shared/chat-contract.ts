@@ -90,6 +90,11 @@ import type {
 } from './remote-inference-contract';
 
 export interface DesktopInvocations {
+  'chatgpt:status': import('./chatgpt-contract').ChatGPTStatus;
+  'chatgpt:signin': import('./chatgpt-contract').ChatGPTStatus;
+  'chatgpt:select': import('./chatgpt-contract').ChatGPTStatus;
+  'chatgpt:signout': { status: import('./chatgpt-contract').ChatGPTStatus; revoked: boolean };
+  'chatgpt:models': import('./chatgpt-contract').ChatGPTModel[];
   'remote:list': RemoteCatalog;
   'remote:connection:save': RemoteConnection;
   'remote:connection:delete': void;
@@ -222,6 +227,11 @@ export interface DesktopInvocations {
 
 /** Method arguments are also a shared contract, not renderer-defined strings. */
 export interface DesktopArguments {
+  'chatgpt:status': [];
+  'chatgpt:signin': [accountId?: string];
+  'chatgpt:select': [accountId: string];
+  'chatgpt:signout': [accountId: string];
+  'chatgpt:models': [accountId: string];
   'remote:list': [];
   'remote:connection:save': [connection: RemoteConnection];
   'remote:connection:delete': [id: string];
@@ -358,6 +368,11 @@ export interface DesktopArguments {
 }
 
 export interface DesktopAPI {
+  getChatGPTStatus?(): Promise<import('./chatgpt-contract').ChatGPTStatus>;
+  signInChatGPT?(accountId?: string): Promise<import('./chatgpt-contract').ChatGPTStatus>;
+  selectChatGPTAccount?(accountId: string): Promise<import('./chatgpt-contract').ChatGPTStatus>;
+  signOutChatGPT?(accountId: string): Promise<DesktopInvocations['chatgpt:signout']>;
+  listChatGPTModels?(accountId: string): Promise<import('./chatgpt-contract').ChatGPTModel[]>;
   listRemoteConfigurations?(): Promise<RemoteCatalog>;
   saveRemoteConnection?(connection: RemoteConnection): Promise<RemoteConnection>;
   deleteRemoteConnection?(id: string): Promise<void>;

@@ -194,8 +194,10 @@ export class RemoteInferenceStore {
   async putModel(value: unknown): Promise<RemoteModelConfiguration> {
     return this.mutate(async () => {
       const model = validateRemoteModel(value);
-      if (!this.catalog.connections.some((item) => item.id === model.connectionId))
-        throw new Error('Remote model refers to a missing Connection.');
+      const connection = this.catalog.connections.find((item) => item.id === model.connectionId);
+      if (!connection) throw new Error('Remote model refers to a missing Connection.');
+      if (connection.credentialMode === 'chatgpt' && model.outputFormat !== 'prompt-json')
+        throw new Error('ChatGPT plan inference currently requires prompt-guided JSON output.');
       this.catalog.models = [...this.catalog.models.filter((item) => item.id !== model.id), model];
       await this.persist();
       return model;
@@ -237,12 +239,16 @@ export class RemoteInferenceStore {
     const connection = this.catalog.connections.find((item) => item.id === id);
     if (!connection) throw new Error('Selected remote Connection no longer exists.');
     const credential =
-      connection.credentialMode === 'none'
+      connection.credentialMode === 'none' || connection.credentialMode === 'chatgpt'
         ? null
         : connection.credentialMode === 'environment'
           ? (this.environment[connection.environmentVariable!] ?? null)
           : (this.protectedSecrets.get(id) ?? this.sessionSecrets.get(id) ?? null);
-    if (connection.credentialMode !== 'none' && !credential)
+    if (
+      connection.credentialMode !== 'none' &&
+      connection.credentialMode !== 'chatgpt' &&
+      !credential
+    )
       throw new Error('Selected remote Connection requires a configured credential.');
     return { connection, credential };
   }

@@ -14,6 +14,11 @@ function invoke<K extends keyof DesktopInvocations>(
 }
 
 const api: DesktopAPI = {
+  getChatGPTStatus: () => invoke('chatgpt:status'),
+  signInChatGPT: (id) => invoke('chatgpt:signin', id),
+  selectChatGPTAccount: (id) => invoke('chatgpt:select', id),
+  signOutChatGPT: (id) => invoke('chatgpt:signout', id),
+  listChatGPTModels: (id) => invoke('chatgpt:models', id),
   getPlaygroundStatus: () => invoke('playground:status'),
   getVideoTools: () => invoke('video-tools:status'),
   chooseVideoToolsDirectory: () => invoke('video-tools:choose-directory'),

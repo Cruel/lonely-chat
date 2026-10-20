@@ -17,7 +17,7 @@ export interface RemoteSelection {
   readonly credential: string | null;
 }
 
-function usage(
+export function usage(
   value:
     | {
         input_tokens?: number | null;
@@ -56,6 +56,8 @@ export function makeRemoteClient(
   selection: RemoteSelection,
   fetcher: typeof fetch = fetch,
 ): OpenAI {
+  if (selection.connection.credentialMode === 'chatgpt')
+    throw new Error('ChatGPT plan usage requires its separate OAuth transport.');
   const baseURL = validateRemoteEndpoint(
     selection.connection.baseUrl,
     selection.connection.allowInsecureLan,
@@ -72,7 +74,7 @@ export function makeRemoteClient(
   });
 }
 
-function boundedJson(text: string): unknown {
+export function boundedJson(text: string): unknown {
   if (!text || text.length > 2_000_000)
     throw new Error('Remote inference returned empty or oversized JSON.');
   try {
@@ -113,7 +115,10 @@ export function strictProviderSchema(value: Record<string, unknown>): Record<str
 }
 
 /** Resolve author colors after decoding JSON; external models never control audience colors. */
-function normalizeRemoteResult(parsed: unknown, roster: readonly ChatterIdentity[]): unknown {
+export function normalizeRemoteResult(
+  parsed: unknown,
+  roster: readonly ChatterIdentity[],
+): unknown {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
     throw new Error('Remote inference returned an invalid result object.');
   const record = parsed as Record<string, unknown>;

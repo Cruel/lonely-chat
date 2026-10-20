@@ -50,6 +50,8 @@ import { SessionController } from './session-controller';
 import { SessionMedia } from './session-media';
 import { PreferencesStore } from './preferences-store';
 import { RemoteInferenceStore } from './remote-inference-store';
+import { ChatGPTAuth } from './chatgpt-auth';
+import { chatGPTUnifiedAdapter, probeChatGPTModel } from './chatgpt-inference';
 import {
   remoteUnifiedAdapter,
   probeRemoteModel,
@@ -181,12 +183,16 @@ const floating = new FloatingChatWindowController(
   reportError,
 );
 const preferenceStore = new PreferencesStore(app.getPath('userData'));
-const remoteStore = new RemoteInferenceStore(app.getPath('userData'), {
+const credentialProtector = {
   available: () =>
     safeStorage.isEncryptionAvailable() &&
     (process.platform !== 'linux' || safeStorage.getSelectedStorageBackend() !== 'basic_text'),
-  encrypt: (secret) => safeStorage.encryptString(secret),
-  decrypt: (encrypted) => safeStorage.decryptString(encrypted),
+  encrypt: (secret: string) => safeStorage.encryptString(secret),
+  decrypt: (encrypted: Buffer) => safeStorage.decryptString(encrypted),
+};
+const remoteStore = new RemoteInferenceStore(app.getPath('userData'), credentialProtector);
+const chatGPTAuth = new ChatGPTAuth(app.getPath('userData'), credentialProtector, {
+  openBrowser: (url) => shell.openExternal(url),
 });
 const remotePlayground = new RemoteInferencePlayground();
 const promptPresets = new PromptPresetStore(app.getPath('userData'));
@@ -335,6 +341,11 @@ function registerHandlers(): void {
     return status;
   };
   const actions = {
+    'chatgpt:status': () => chatGPTAuth.status(),
+    'chatgpt:signin': (id?: string) => chatGPTAuth.signIn(id),
+    'chatgpt:select': (id: string) => chatGPTAuth.select(id),
+    'chatgpt:signout': (id: string) => chatGPTAuth.signOut(id),
+    'chatgpt:models': (id: string) => chatGPTAuth.models(id),
     'remote:list': () => remoteStore.list(),
     'remote:connection:save': (
       connection: import('../shared/remote-inference-contract').RemoteConnection,
@@ -347,6 +358,8 @@ function registerHandlers(): void {
     'remote:credential:set': (id: string, secret: string) => remoteStore.setCredential(id, secret),
     'remote:models:list': async (connectionId: string) => {
       const { connection, credential } = remoteStore.resolve(connectionId);
+      if (connection.credentialMode === 'chatgpt')
+        return (await chatGPTAuth.models(connection.chatgptAccountId!)).map((model) => model.id);
       return listRemoteModels(
         {
           connection,
@@ -364,8 +377,12 @@ function registerHandlers(): void {
         AbortSignal.timeout(20_000),
       );
     },
-    'remote:model:probe': (modelId: string) =>
-      probeRemoteModel(remoteStore.selected(modelId), AbortSignal.timeout(25_000)),
+    'remote:model:probe': (modelId: string) => {
+      const selection = remoteStore.selected(modelId);
+      return selection.connection.credentialMode === 'chatgpt'
+        ? probeChatGPTModel(selection, chatGPTAuth, AbortSignal.timeout(25_000))
+        : probeRemoteModel(selection, AbortSignal.timeout(25_000));
+    },
     'remote:playground:unified': async (
       request: import('../shared/playground-contract').SimulationExperimentRequest,
       modelId: string,
@@ -375,7 +392,20 @@ function registerHandlers(): void {
         sessionStarting
       )
         throw new Error('Stop Simulation before running remote Playground.');
-      return remotePlayground.run(request, remoteStore.selected(modelId), session.getPreferences());
+      const selection = remoteStore.selected(modelId);
+      const settings = session.getPreferences();
+      return remotePlayground.run(
+        request,
+        selection,
+        settings,
+        selection.connection.credentialMode === 'chatgpt'
+          ? (roster) =>
+              chatGPTUnifiedAdapter(selection, chatGPTAuth, {
+                roster,
+                timeoutMs: settings.inferenceTimeoutMs,
+              })
+          : undefined,
+      );
     },
     'playground:status': () => playground.snapshot(),
     'video-tools:status': async () => broadcastVideoTools(await videoTools.status(true)),
@@ -851,10 +881,15 @@ function registerHandlers(): void {
           if (!activeModel) throw new Error('Select a remote Model Configuration.');
           const selected = remoteStore.selected(activeModel);
           session.configureRemote((input) =>
-            remoteUnifiedAdapter(selected, {
-              timeoutMs: effectiveSettings.inferenceTimeoutMs,
-              roster: input.roster,
-            }),
+            selected.connection.credentialMode === 'chatgpt'
+              ? chatGPTUnifiedAdapter(selected, chatGPTAuth, {
+                  timeoutMs: effectiveSettings.inferenceTimeoutMs,
+                  roster: input.roster ?? [],
+                })
+              : remoteUnifiedAdapter(selected, {
+                  timeoutMs: effectiveSettings.inferenceTimeoutMs,
+                  roster: input.roster,
+                }),
           );
         }
         const started = session.start(
@@ -1388,6 +1423,7 @@ async function boot(): Promise<void> {
     logger.error('preferences', 'Invalid local preferences; using safe defaults', error);
   }
   await remoteStore.load();
+  await chatGPTAuth.load();
   await installs.open();
   audience = new AudienceService(app.getPath('userData'), preferences.audienceCount);
   await audience.open();
@@ -1731,6 +1767,11 @@ app.on('before-quit', (event) => {
 });
 app.on('will-quit', () => {
   for (const channel of [
+    'chatgpt:status',
+    'chatgpt:signin',
+    'chatgpt:select',
+    'chatgpt:signout',
+    'chatgpt:models',
     'remote:list',
     'remote:connection:save',
     'remote:connection:delete',

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
+import type { ChatGPTStatus, ChatGPTModel } from '../../shared/chatgpt-contract';
 import type {
   RemoteCatalog,
   RemoteConnection,
@@ -40,6 +41,8 @@ export function RemoteConnectionsPanel({
   onCatalog?: (value: RemoteCatalog) => void;
 }) {
   const [catalog, setCatalog] = useState<RemoteCatalog>(EMPTY);
+  const [chatGPT, setChatGPT] = useState<ChatGPTStatus>({ activeAccountId: null, accounts: [] });
+  const [chatGPTModels, setChatGPTModels] = useState<ChatGPTModel[]>([]);
   const [connection, setConnection] = useState<RemoteConnection>(freshConnection);
   const [model, setModel] = useState<RemoteModelConfiguration | null>(null);
   const [secret, setSecret] = useState('');
@@ -49,6 +52,8 @@ export function RemoteConnectionsPanel({
   const [error, setError] = useState('');
 
   const refresh = async () => {
+    const status = await window.lonelyChat?.getChatGPTStatus?.();
+    if (status) setChatGPT(status);
     const result = await window.lonelyChat?.listRemoteConfigurations?.();
     if (result) {
       setCatalog(result);
@@ -58,6 +63,26 @@ export function RemoteConnectionsPanel({
   useEffect(() => {
     void refresh().catch(() => {});
   }, []);
+  useEffect(() => {
+    const selected = catalog.connections.find((entry) => entry.id === model?.connectionId);
+    if (selected?.credentialMode === 'chatgpt' && selected.chatgptAccountId) {
+      let active = true;
+      void window.lonelyChat
+        ?.listChatGPTModels?.(selected.chatgptAccountId)
+        .then((entries) => {
+          if (active) {
+            setChatGPTModels(entries);
+            setDiscovered(entries.map((entry) => entry.id));
+          }
+        })
+        .catch(() => {});
+      return () => {
+        active = false;
+      };
+    }
+    setChatGPTModels([]);
+    return;
+  }, [model?.connectionId, catalog.connections]);
 
   const perform = async (action: () => Promise<void>) => {
     setWorking(true);
@@ -94,6 +119,88 @@ export function RemoteConnectionsPanel({
           available, otherwise they last for this app session only.
         </p>
       </div>
+      <div className="space-y-3 border-b border-zinc-700 pb-5">
+        <h4 className="text-sm font-medium">ChatGPT plan accounts</h4>
+        <p className="text-xs text-zinc-400">
+          Eligible accounts can authorize plan inference separately from paid API keys. OpenAI plan
+          limits apply; Lonely Chat never falls back to API billing.
+        </p>
+        <select
+          className={field}
+          aria-label="ChatGPT account"
+          value={chatGPT.activeAccountId ?? ''}
+          onChange={(event) =>
+            void perform(async () => {
+              await window.lonelyChat!.selectChatGPTAccount?.(event.target.value);
+            })
+          }
+        >
+          <option value="">Select ChatGPT account</option>
+          {chatGPT.accounts.map((account) => (
+            <option key={account.id} value={account.id}>
+              {account.label} ({account.authorized ? account.storage : 'authorization needed'})
+            </option>
+          ))}
+        </select>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            disabled={working}
+            onClick={() =>
+              void perform(async () => {
+                const status = await window.lonelyChat!.signInChatGPT?.();
+                if (status?.activeAccountId && connection.credentialMode === 'chatgpt')
+                  setConnection({ ...connection, chatgptAccountId: status.activeAccountId });
+                setNotice('ChatGPT sign-in completed. Select the account in a Connection.');
+              })
+            }
+          >
+            Continue with ChatGPT
+          </Button>
+          {chatGPT.activeAccountId && (
+            <>
+              <Button
+                variant="secondary"
+                disabled={working}
+                onClick={() =>
+                  void perform(async () => {
+                    await window.lonelyChat!.signInChatGPT?.(chatGPT.activeAccountId!);
+                    setNotice('ChatGPT account reauthorized.');
+                  })
+                }
+              >
+                Reauthorize
+              </Button>
+              <Button
+                variant="secondary"
+                disabled={working}
+                onClick={() =>
+                  void perform(async () => {
+                    const result = await window.lonelyChat!.signOutChatGPT?.(
+                      chatGPT.activeAccountId!,
+                    );
+                    setNotice(
+                      result?.revoked
+                        ? 'ChatGPT session revoked.'
+                        : 'Signed out locally. Remote revocation could not be confirmed; disconnect in ChatGPT Settings.',
+                    );
+                  })
+                }
+              >
+                Sign out
+              </Button>
+            </>
+          )}
+        </div>
+        {chatGPT.activeAccountId && (
+          <p className="text-xs text-zinc-400">
+            {chatGPT.accounts.find((a) => a.id === chatGPT.activeAccountId)?.email ?? 'Account'}
+            {' · '}Plan usage:{' '}
+            {chatGPT.accounts.find((a) => a.id === chatGPT.activeAccountId)?.authorized
+              ? 'authorized'
+              : 'needs authorization'}
+          </p>
+        )}
+      </div>
       <div className="space-y-3">
         <label className={smallLabel} htmlFor="remote-connection">
           Connection
@@ -104,12 +211,10 @@ export function RemoteConnectionsPanel({
           value={catalog.connections.some((v) => v.id === connection.id) ? connection.id : ''}
           onChange={(event) => {
             const next = catalog.connections.find((v) => v.id === event.target.value);
-            if (next) {
-              setConnection(next);
-              setModel(null);
-              setSecret('');
-              setDiscovered([]);
-            }
+            setConnection(next ?? freshConnection());
+            setModel(null);
+            setSecret('');
+            setDiscovered([]);
           }}
         >
           <option value="">New Connection</option>
@@ -132,6 +237,7 @@ export function RemoteConnectionsPanel({
           <Input
             className="mt-1"
             value={connection.baseUrl}
+            disabled={connection.credentialMode === 'chatgpt'}
             onChange={(e) => setConnection({ ...connection, baseUrl: e.target.value })}
           />
         </label>
@@ -141,6 +247,7 @@ export function RemoteConnectionsPanel({
             <select
               className={field}
               value={connection.protocol}
+              disabled={connection.credentialMode === 'chatgpt'}
               onChange={(e) =>
                 setConnection({
                   ...connection,
@@ -157,14 +264,24 @@ export function RemoteConnectionsPanel({
             <select
               className={field}
               value={connection.credentialMode}
-              onChange={(e) =>
+              onChange={(e) => {
+                const chatgpt = e.target.value === 'chatgpt';
                 setConnection({
                   ...connection,
                   credentialMode: e.target.value as RemoteConnection['credentialMode'],
                   environmentVariable: undefined,
-                })
-              }
+                  chatgptAccountId: chatgpt ? (chatGPT.activeAccountId ?? undefined) : undefined,
+                  ...(chatgpt
+                    ? {
+                        baseUrl: 'https://api.openai.com/v1',
+                        protocol: 'responses' as const,
+                        allowInsecureLan: false,
+                      }
+                    : {}),
+                });
+              }}
             >
+              <option value="chatgpt">ChatGPT subscription (OAuth; no API billing)</option>
               <option value="managed">Managed key (protected or session)</option>
               <option value="environment">Environment variable</option>
               <option value="none">No key (local servers)</option>
@@ -183,15 +300,36 @@ export function RemoteConnectionsPanel({
             />
           </label>
         )}
-        <label className="flex items-start gap-2 text-xs text-zinc-300">
-          <input
-            type="checkbox"
-            checked={connection.allowInsecureLan}
-            onChange={(e) => setConnection({ ...connection, allowInsecureLan: e.target.checked })}
-          />
-          I acknowledge that HTTP on a private LAN sends prompts and any API credentials without
-          transport encryption. TLS verification remains enabled for HTTPS.
-        </label>
+        {connection.credentialMode === 'chatgpt' && (
+          <label className={smallLabel}>
+            ChatGPT account for this Connection
+            <select
+              className={field}
+              value={connection.chatgptAccountId ?? ''}
+              onChange={(e) => setConnection({ ...connection, chatgptAccountId: e.target.value })}
+            >
+              <option value="">Select an authorized account</option>
+              {chatGPT.accounts
+                .filter((a) => a.authorized)
+                .map((account) => (
+                  <option key={account.id} value={account.id}>
+                    {account.label}
+                  </option>
+                ))}
+            </select>
+          </label>
+        )}
+        {connection.credentialMode !== 'chatgpt' && (
+          <label className="flex items-start gap-2 text-xs text-zinc-300">
+            <input
+              type="checkbox"
+              checked={connection.allowInsecureLan}
+              onChange={(e) => setConnection({ ...connection, allowInsecureLan: e.target.checked })}
+            />
+            I acknowledge that HTTP on a private LAN sends prompts and any API credentials without
+            transport encryption. TLS verification remains enabled for HTTPS.
+          </label>
+        )}
         <div className="flex flex-wrap gap-2">
           <Button disabled={working} onClick={() => void persistConnection()}>
             Save Connection
@@ -275,7 +413,19 @@ export function RemoteConnectionsPanel({
             value={model?.id ?? ''}
             onChange={(e) => {
               const next = catalog.models.find((v) => v.id === e.target.value);
-              setModel(next ?? null);
+              setModel(
+                next
+                  ? {
+                      ...next,
+                      ...(catalog.connections.some(
+                        (entry) =>
+                          entry.id === next.connectionId && entry.credentialMode === 'chatgpt',
+                      )
+                        ? { outputFormat: 'prompt-json' as const }
+                        : {}),
+                    }
+                  : null,
+              );
             }}
           >
             <option value="">New Model Configuration</option>
@@ -288,7 +438,14 @@ export function RemoteConnectionsPanel({
           <Button
             variant="secondary"
             disabled={working}
-            onClick={() => setModel(freshModel(connection.id))}
+            onClick={() =>
+              setModel({
+                ...freshModel(connection.id),
+                ...(connection.credentialMode === 'chatgpt'
+                  ? { outputFormat: 'prompt-json' as const }
+                  : {}),
+              })
+            }
           >
             New model
           </Button>
@@ -307,7 +464,20 @@ export function RemoteConnectionsPanel({
                 <select
                   className={field}
                   value={model.connectionId}
-                  onChange={(e) => setModel({ ...model, connectionId: e.target.value })}
+                  onChange={(e) => {
+                    const selected = catalog.connections.find(
+                      (entry) => entry.id === e.target.value,
+                    );
+                    setModel({
+                      ...model,
+                      connectionId: e.target.value,
+                      model: '',
+                      ...(selected?.credentialMode === 'chatgpt'
+                        ? { outputFormat: 'prompt-json' as const }
+                        : {}),
+                    });
+                    setDiscovered([]);
+                  }}
                 >
                   {catalog.connections.map((v) => (
                     <option key={v.id} value={v.id}>
@@ -322,6 +492,9 @@ export function RemoteConnectionsPanel({
                   list="remote-model-identifiers"
                   className="mt-1"
                   value={model.model}
+                  readOnly={catalog.connections.some(
+                    (c) => c.id === model.connectionId && c.credentialMode === 'chatgpt',
+                  )}
                   onChange={(e) => setModel({ ...model, model: e.target.value })}
                 />
                 <datalist id="remote-model-identifiers">
@@ -330,14 +503,45 @@ export function RemoteConnectionsPanel({
                   ))}
                 </datalist>
               </label>
+              {catalog.connections.some(
+                (c) => c.id === model.connectionId && c.credentialMode === 'chatgpt',
+              ) && (
+                <select
+                  className={field}
+                  aria-label="Available ChatGPT plan model"
+                  value={model.model}
+                  onChange={(e) => setModel({ ...model, model: e.target.value })}
+                >
+                  <option value="">Choose from account catalog</option>
+                  {chatGPTModels.map((entry) => (
+                    <option key={entry.id} value={entry.id}>
+                      {entry.name}
+                    </option>
+                  ))}
+                </select>
+              )}
               <Button
                 variant="secondary"
                 disabled={working}
                 onClick={() =>
                   void perform(async () => {
-                    setDiscovered(
-                      (await window.lonelyChat!.listRemoteModels?.(model.connectionId)) ?? [],
+                    const selectedConnection = catalog.connections.find(
+                      (c) => c.id === model.connectionId,
                     );
+                    if (
+                      selectedConnection?.credentialMode === 'chatgpt' &&
+                      selectedConnection.chatgptAccountId
+                    ) {
+                      const models =
+                        (await window.lonelyChat!.listChatGPTModels?.(
+                          selectedConnection.chatgptAccountId,
+                        )) ?? [];
+                      setChatGPTModels(models);
+                      setDiscovered(models.map((entry) => entry.id));
+                    } else
+                      setDiscovered(
+                        (await window.lonelyChat!.listRemoteModels?.(model.connectionId)) ?? [],
+                      );
                     setNotice(
                       'Available model IDs retrieved from the endpoint (may be incomplete).',
                     );
@@ -351,6 +555,10 @@ export function RemoteConnectionsPanel({
                 <select
                   className={field}
                   value={model.outputFormat}
+                  disabled={catalog.connections.some(
+                    (entry) =>
+                      entry.id === model.connectionId && entry.credentialMode === 'chatgpt',
+                  )}
                   onChange={(e) =>
                     setModel({
                       ...model,
@@ -363,6 +571,14 @@ export function RemoteConnectionsPanel({
                   <option value="prompt-json">Prompt-guided JSON</option>
                 </select>
               </label>
+              {catalog.connections.some(
+                (entry) => entry.id === model.connectionId && entry.credentialMode === 'chatgpt',
+              ) && (
+                <p className="text-xs text-zinc-400">
+                  ChatGPT plan inference uses prompt-guided JSON and validates all output locally.
+                  Unsupported sampling and structured-output parameters are omitted.
+                </p>
+              )}
               <label className="flex items-center gap-2 text-sm">
                 <input
                   type="checkbox"

@@ -1,7 +1,7 @@
 /** Public configuration contains references only. Secrets are never returned by IPC. */
 export type RemoteProtocol = 'responses' | 'chat-completions';
 export type RemoteOutputFormat = 'json-schema' | 'json-object' | 'prompt-json';
-export type RemoteCredentialMode = 'none' | 'environment' | 'managed';
+export type RemoteCredentialMode = 'none' | 'environment' | 'managed' | 'chatgpt';
 
 export interface RemoteConnection {
   readonly id: string;
@@ -10,6 +10,8 @@ export interface RemoteConnection {
   readonly protocol: RemoteProtocol;
   readonly credentialMode: RemoteCredentialMode;
   readonly environmentVariable?: string;
+  /** Exact ChatGPT registration, never an API key or implicit paid fallback. */
+  readonly chatgptAccountId?: string;
   /** A deliberate, connection-specific approval, never a global TLS bypass. */
   readonly allowInsecureLan: boolean;
   readonly credentialStatus?: 'missing' | 'session' | 'protected';
@@ -98,6 +100,7 @@ export function validateRemoteConnection(value: unknown): RemoteConnection {
     'protocol',
     'credentialMode',
     'environmentVariable',
+    'chatgptAccountId',
     'allowInsecureLan',
     'credentialStatus',
   ]);
@@ -105,7 +108,7 @@ export function validateRemoteConnection(value: unknown): RemoteConnection {
   const label = name(v.name, 'connection name', 100);
   if (v.protocol !== 'responses' && v.protocol !== 'chat-completions')
     throw new Error('Invalid API protocol.');
-  if (!['none', 'environment', 'managed'].includes(v.credentialMode as string))
+  if (!['none', 'environment', 'managed', 'chatgpt'].includes(v.credentialMode as string))
     throw new Error('Invalid credential mode.');
   if (typeof v.allowInsecureLan !== 'boolean') throw new Error('Invalid LAN approval.');
   const env =
@@ -116,6 +119,14 @@ export function validateRemoteConnection(value: unknown): RemoteConnection {
     throw new Error('Invalid environment variable name.');
   if (v.credentialMode !== 'environment' && v.environmentVariable !== undefined)
     throw new Error('Unexpected environment credential reference.');
+  const accountId = v.credentialMode === 'chatgpt' ? remoteId(v.chatgptAccountId) : undefined;
+  if (v.credentialMode !== 'chatgpt' && v.chatgptAccountId !== undefined)
+    throw new Error('Unexpected ChatGPT account reference.');
+  if (
+    accountId &&
+    (v.protocol !== 'responses' || v.baseUrl !== 'https://api.openai.com/v1' || v.allowInsecureLan)
+  )
+    throw new Error('ChatGPT plan Connections require the official HTTPS Responses endpoint.');
   return {
     id,
     name: label,
@@ -126,6 +137,7 @@ export function validateRemoteConnection(value: unknown): RemoteConnection {
     protocol: v.protocol,
     credentialMode: v.credentialMode as RemoteCredentialMode,
     ...(env ? { environmentVariable: env } : {}),
+    ...(accountId ? { chatgptAccountId: accountId } : {}),
     allowInsecureLan: v.allowInsecureLan as boolean,
   };
 }
