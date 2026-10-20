@@ -1,6 +1,7 @@
 import { describe, expect, it, afterEach, vi } from 'vitest';
 import { createSign, generateKeyPairSync } from 'node:crypto';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { CredentialPolicy } from './credential-persistence';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { ChatGPTAuth, verifyChatGPTIdentity } from './chatgpt-auth';
@@ -519,19 +520,105 @@ describe('ChatGPT OAuth and subscription inference', () => {
     await expect(auth.accessToken(account)).rejects.toThrow(/needs sign-in/);
   });
 
-  it('does not persist any tokens when secure OS credential storage is unavailable', async () => {
+  it('persists ChatGPT refresh tokens in a user-only file when the keyring is absent', async () => {
     const f = fixture();
     const insecure = { ...f.protector, available: () => false };
     const { auth, directory } = await service(f, insecure);
     const status = await auth.signIn();
     expect(status.secureStorageAvailable).toBe(false);
-    expect(status.accounts[0].storage).toBe('session');
+    expect(status.accounts[0].storage).toBe('file');
     await expect(
       readFile(path.join(directory, 'chatgpt-credentials.enc.json'), 'utf8'),
     ).rejects.toMatchObject({ code: 'ENOENT' });
+    const localPath = path.join(directory, 'private-credentials', 'chatgpt.json');
+    expect(await readFile(localPath, 'utf8')).toContain(secret);
+    if (process.platform !== 'win32') expect((await stat(localPath)).mode & 0o777).toBe(0o600);
     const restarted = new ChatGPTAuth(directory, insecure, { fetcher: f.fetcher, now: () => now });
     await restarted.load();
-    expect(restarted.status().accounts[0].storage).toBe('missing');
+    expect(restarted.status().accounts[0].storage).toBe('file');
+    expect(await restarted.accessToken(status.activeAccountId!)).toContain(secret);
+  });
+
+  it('supports session-only ChatGPT OAuth without retaining tokens on disk after restart', async () => {
+    const f = fixture();
+    const directory = await mkdtemp(path.join(tmpdir(), 'lonely-chat-session-only-'));
+    privateDirs.push(directory);
+    const policy = new CredentialPolicy(directory);
+    const insecure = { ...f.protector, available: () => false };
+    const auth = new ChatGPTAuth(
+      directory,
+      insecure,
+      {
+        fetcher: f.fetcher,
+        openBrowser: f.browser,
+        now: () => now,
+        issuer,
+      },
+      policy,
+    );
+    await auth.load();
+    const signed = await auth.signIn();
+    const id = signed.activeAccountId!;
+    const localFile = path.join(directory, 'private-credentials', 'chatgpt.json');
+    expect(await readFile(localFile, 'utf8')).toContain(secret);
+    await policy.setPersist(false);
+    await auth.applyCredentialPolicy();
+    expect(auth.status().accounts[0].storage).toBe('session');
+    expect(auth.status().persistCredentials).toBe(false);
+    expect(await auth.accessToken(id)).toContain(secret);
+    await expect(readFile(localFile)).rejects.toMatchObject({ code: 'ENOENT' });
+    const reopenedPolicy = new CredentialPolicy(directory);
+    await reopenedPolicy.load();
+    expect(reopenedPolicy.persist).toBe(false);
+    const reopened = new ChatGPTAuth(
+      directory,
+      insecure,
+      {
+        fetcher: f.fetcher,
+        now: () => now,
+      },
+      reopenedPolicy,
+    );
+    await reopened.load();
+    expect(reopened.status().accounts[0].storage).toBe('missing');
+    await reopenedPolicy.setPersist(true);
+    await reopened.applyCredentialPolicy();
+    expect(reopened.status().accounts[0].storage).toBe('missing');
+    expect(reopened.status().persistCredentials).toBe(true);
+  });
+
+  it('clears a fallback OAuth credential after sign-out', async () => {
+    const f = fixture();
+    const insecure = { ...f.protector, available: () => false };
+    const { auth, directory } = await service(f, insecure);
+    const id = (await auth.signIn()).activeAccountId!;
+    const localFile = path.join(directory, 'private-credentials', 'chatgpt.json');
+    expect(await readFile(localFile, 'utf8')).toContain(secret);
+    await auth.signOut(id);
+    expect(await readFile(localFile, 'utf8')).not.toContain(secret);
+    const reopened = new ChatGPTAuth(directory, insecure, { fetcher: f.fetcher, now: () => now });
+    await reopened.load();
+    expect(reopened.status().accounts[0].storage).toBe('missing');
+  });
+
+  it('does not restore a signed-out ChatGPT account after the keyring returns', async () => {
+    const f = fixture();
+    let available = true;
+    const protector = { ...f.protector, available: () => available };
+    const { auth, directory } = await service(f, protector);
+    const id = (await auth.signIn()).activeAccountId!;
+    available = false;
+    await auth.signOut(id);
+    const fallback = await readFile(
+      path.join(directory, 'private-credentials', 'chatgpt.json'),
+      'utf8',
+    );
+    expect(fallback).toContain('$deleted');
+    available = true;
+    const reopened = new ChatGPTAuth(directory, protector, { fetcher: f.fetcher, now: () => now });
+    await reopened.load();
+    expect(reopened.status().accounts[0].authorized).toBe(false);
+    await expect(reopened.accessToken(id)).rejects.toThrow(/needs sign-in/);
   });
 
   it('lists account-visible models and streams timestamped images to a complete validated batch', async () => {

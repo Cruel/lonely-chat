@@ -52,6 +52,7 @@ import { SessionMedia } from './session-media';
 import { PreferencesStore } from './preferences-store';
 import { RemoteInferenceStore } from './remote-inference-store';
 import { ChatGPTAuth } from './chatgpt-auth';
+import { CredentialPolicy } from './credential-persistence';
 import { chatGPTUnifiedAdapter, probeChatGPTModel } from './chatgpt-inference';
 import {
   remoteUnifiedAdapter,
@@ -191,14 +192,25 @@ const credentialProtector = {
   encrypt: (secret: string) => safeStorage.encryptString(secret),
   decrypt: (encrypted: Buffer) => safeStorage.decryptString(encrypted),
 };
-const remoteStore = new RemoteInferenceStore(app.getPath('userData'), credentialProtector);
-const chatGPTAuth = new ChatGPTAuth(app.getPath('userData'), credentialProtector, {
-  openBrowser: (url) => shell.openExternal(url),
-  onAuthorizationLink: (url) => {
-    if (mainWindow && !mainWindow.isDestroyed())
-      mainWindow.webContents.send('chatgpt:authorization:change', url);
+const credentialPolicy = new CredentialPolicy(app.getPath('userData'));
+const remoteStore = new RemoteInferenceStore(
+  app.getPath('userData'),
+  credentialProtector,
+  process.env,
+  credentialPolicy,
+);
+const chatGPTAuth = new ChatGPTAuth(
+  app.getPath('userData'),
+  credentialProtector,
+  {
+    openBrowser: (url) => shell.openExternal(url),
+    onAuthorizationLink: (url) => {
+      if (mainWindow && !mainWindow.isDestroyed())
+        mainWindow.webContents.send('chatgpt:authorization:change', url);
+    },
   },
-});
+  credentialPolicy,
+);
 const remotePlayground = new RemoteInferencePlayground();
 const promptPresets = new PromptPresetStore(app.getPath('userData'));
 const audioConfig = new AudioConfigStore(app.getPath('userData'));
@@ -347,6 +359,13 @@ function registerHandlers(): void {
   };
   const actions = {
     'chatgpt:status': () => chatGPTAuth.status(),
+    'chatgpt:persistence:set': async (persist: boolean) => {
+      if (typeof persist !== 'boolean') throw new Error('Invalid credential persistence mode.');
+      await credentialPolicy.setPersist(persist);
+      await chatGPTAuth.applyCredentialPolicy();
+      await remoteStore.applyCredentialPolicy();
+      return chatGPTAuth.status();
+    },
     'chatgpt:signin': (id?: string) => chatGPTAuth.signIn(id),
     'chatgpt:authorization:get': () => chatGPTAuth.authorizationUrl(),
     'chatgpt:authorization:open': () => chatGPTAuth.openAuthorizationLink(),
@@ -1434,6 +1453,7 @@ async function boot(): Promise<void> {
   } catch (error) {
     logger.error('preferences', 'Invalid local preferences; using safe defaults', error);
   }
+  await credentialPolicy.load();
   await remoteStore.load();
   await chatGPTAuth.load();
   await installs.open();
@@ -1780,6 +1800,7 @@ app.on('before-quit', (event) => {
 app.on('will-quit', () => {
   for (const channel of [
     'chatgpt:status',
+    'chatgpt:persistence:set',
     'chatgpt:signin',
     'chatgpt:authorization:get',
     'chatgpt:authorization:open',

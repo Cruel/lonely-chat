@@ -91,6 +91,7 @@ import type {
 
 export interface DesktopInvocations {
   'chatgpt:status': import('./chatgpt-contract').ChatGPTStatus;
+  'chatgpt:persistence:set': import('./chatgpt-contract').ChatGPTStatus;
   'chatgpt:signin': import('./chatgpt-contract').ChatGPTStatus;
   'chatgpt:authorization:get': string | null;
   'chatgpt:authorization:open': void;
@@ -103,7 +104,7 @@ export interface DesktopInvocations {
   'remote:connection:delete': void;
   'remote:model:save': RemoteModelConfiguration;
   'remote:model:delete': void;
-  'remote:credential:set': 'session' | 'protected';
+  'remote:credential:set': 'session' | 'protected' | 'file';
   'remote:models:list': string[];
   'remote:model:probe': {
     compatible: true;
@@ -231,6 +232,7 @@ export interface DesktopInvocations {
 /** Method arguments are also a shared contract, not renderer-defined strings. */
 export interface DesktopArguments {
   'chatgpt:status': [];
+  'chatgpt:persistence:set': [persist: boolean];
   'chatgpt:signin': [accountId?: string];
   'chatgpt:authorization:get': [];
   'chatgpt:authorization:open': [];
@@ -375,6 +377,7 @@ export interface DesktopArguments {
 
 export interface DesktopAPI {
   getChatGPTStatus?(): Promise<import('./chatgpt-contract').ChatGPTStatus>;
+  setCredentialPersistence?(persist: boolean): Promise<import('./chatgpt-contract').ChatGPTStatus>;
   signInChatGPT?(accountId?: string): Promise<import('./chatgpt-contract').ChatGPTStatus>;
   getChatGPTAuthorizationUrl?(): Promise<string | null>;
   openChatGPTAuthorizationUrl?(): Promise<void>;
@@ -388,7 +391,7 @@ export interface DesktopAPI {
   deleteRemoteConnection?(id: string): Promise<void>;
   saveRemoteModel?(configuration: RemoteModelConfiguration): Promise<RemoteModelConfiguration>;
   deleteRemoteModel?(id: string): Promise<void>;
-  setRemoteCredential?(id: string, secret: string): Promise<'session' | 'protected'>;
+  setRemoteCredential?(id: string, secret: string): Promise<'session' | 'protected' | 'file'>;
   listRemoteModels?(connectionId: string): Promise<string[]>;
   probeRemoteModel?(modelId: string): Promise<DesktopInvocations['remote:model:probe']>;
   runRemoteUnifiedPlayground?(

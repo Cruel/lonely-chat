@@ -3,6 +3,11 @@ import { createServer } from 'node:http';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { SecretProtector } from './remote-inference-store';
+import {
+  CredentialFiles,
+  CredentialPolicy,
+  type CredentialStorage,
+} from './credential-persistence';
 import type { ChatGPTAccount, ChatGPTStatus, ChatGPTModel } from '../shared/chatgpt-contract';
 
 const RESOURCE = 'https://api.openai.com/v1';
@@ -192,12 +197,22 @@ export class ChatGPTAuth {
   private readonly now: () => number;
   private readonly issuer: string;
   private readonly resource: string;
+  private readonly credentials: CredentialFiles;
+  private storage: CredentialStorage = 'session';
 
   constructor(
     private readonly directory: string,
     private readonly protector: SecretProtector,
     private readonly options: ChatGPTAuthOptions = {},
+    private readonly policy: CredentialPolicy = new CredentialPolicy(directory),
   ) {
+    this.credentials = new CredentialFiles(
+      directory,
+      this.privateFile(),
+      'chatgpt',
+      protector,
+      policy,
+    );
     this.fetcher = options.fetcher ?? fetch;
     this.now = options.now ?? Date.now;
     this.issuer = options.issuer ?? ISSUER;
@@ -257,32 +272,24 @@ export class ChatGPTAuth {
       this.hostId = `urn:uuid:${randomUUID()}`;
       await this.savePublic();
     }
-    if (this.protector.available()) {
+    const loaded = await this.credentials.load();
+    this.storage = loaded.storage ?? 'session';
+    for (const account of this.accounts) {
+      const raw = loaded.secrets[account.id];
+      if (!raw) continue;
       try {
-        const stored = record(JSON.parse(await readFile(this.privateFile(), 'utf8')));
-        for (const account of this.accounts) {
-          if (typeof stored[account.id] !== 'string') continue;
-          try {
-            const data = record(
-              JSON.parse(
-                this.protector.decrypt(Buffer.from(stored[account.id] as string, 'base64')),
-              ),
-            );
-            if (
-              typeof data.accessToken !== 'string' ||
-              typeof data.refreshToken !== 'string' ||
-              typeof data.idToken !== 'string' ||
-              !Array.isArray(data.scopes) ||
-              !Number.isFinite(data.expiresAt)
-            )
-              continue;
-            this.tokens.set(account.id, data as unknown as Tokens);
-          } catch {
-            /* keyring changed: reauthorization is required */
-          }
-        }
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        const data = record(JSON.parse(raw));
+        if (
+          typeof data.accessToken !== 'string' ||
+          typeof data.refreshToken !== 'string' ||
+          typeof data.idToken !== 'string' ||
+          !Array.isArray(data.scopes) ||
+          !Number.isFinite(data.expiresAt)
+        )
+          continue;
+        this.tokens.set(account.id, data as unknown as Tokens);
+      } catch {
+        // A corrupt single account does not invalidate other saved accounts.
       }
     }
     this.loaded = true;
@@ -296,30 +303,28 @@ export class ChatGPTAuth {
       selectedId: this.selectedId,
     });
   }
-  private async saveCredentials(): Promise<void> {
-    if (!this.protector.available()) return;
-    const data: Record<string, string> = {};
-    for (const [id, tokens] of this.tokens) {
-      data[id] = this.protector.encrypt(JSON.stringify(tokens)).toString('base64');
-    }
-    await this.atomic(this.privateFile(), data);
+  private async saveCredentials(removedIds: readonly string[] = []): Promise<void> {
+    const records: Record<string, string> = {};
+    for (const [id, tokens] of this.tokens) records[id] = JSON.stringify(tokens);
+    this.storage = await this.credentials.save(records, removedIds);
+  }
+
+  async applyCredentialPolicy(): Promise<void> {
+    await this.saveCredentials();
   }
 
   status(): ChatGPTStatus {
     if (!this.loaded) throw new Error('ChatGPT accounts have not loaded.');
     return {
       secureStorageAvailable: this.protector.available(),
+      persistCredentials: this.policy.persist,
       activeAccountId: this.selectedId,
       accounts: this.accounts.map(({ id, label, email }) => ({
         id,
         label,
         email,
         authorized: REQUIRED.every((scope) => this.tokens.get(id)?.scopes.includes(scope) ?? false),
-        storage: this.tokens.has(id)
-          ? this.protector.available()
-            ? 'protected'
-            : 'session'
-          : 'missing',
+        storage: this.tokens.has(id) ? this.storage : 'missing',
       })),
     };
   }
@@ -638,7 +643,7 @@ export class ChatGPTAuth {
         /* user must be told revocation was not confirmed */
       }
     }
-    await this.saveCredentials();
+    await this.saveCredentials([id]);
     return { status: this.status(), revoked };
   }
 }

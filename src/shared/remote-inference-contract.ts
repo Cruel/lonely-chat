@@ -14,7 +14,7 @@ export interface RemoteConnection {
   readonly chatgptAccountId?: string;
   /** A deliberate, connection-specific approval, never a global TLS bypass. */
   readonly allowInsecureLan: boolean;
-  readonly credentialStatus?: 'missing' | 'session' | 'protected';
+  readonly credentialStatus?: 'missing' | 'session' | 'protected' | 'file';
 }
 
 export interface RemoteModelConfiguration {

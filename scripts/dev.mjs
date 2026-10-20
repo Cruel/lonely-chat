@@ -33,7 +33,7 @@ try {
 const electronOptions = onWSL && keyringInitialized ? ['--password-store=gnome-libsecret'] : [];
 if (onWSL && !keyringInitialized)
   console.warn(
-    'WSL: no initialized GNOME Keyring found; ChatGPT credentials will be session-only.',
+    'WSL: GNOME Keyring not initialized; local private-file credential storage will be used.',
   );
 
 function build(args) {

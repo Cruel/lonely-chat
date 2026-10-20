@@ -44,6 +44,7 @@ export function RemoteConnectionsPanel({
   const [catalog, setCatalog] = useState<RemoteCatalog>(EMPTY);
   const [chatGPT, setChatGPT] = useState<ChatGPTStatus>({
     secureStorageAvailable: true,
+    persistCredentials: true,
     activeAccountId: null,
     accounts: [],
   });
@@ -138,9 +139,9 @@ export function RemoteConnectionsPanel({
       <div>
         <h3 className="font-medium">Remote Connections</h3>
         <p className="mt-2 text-sm text-zinc-400">
-          Configure OpenAI API and OpenAI-compatible endpoints. Only references and model settings
-          are saved in ordinary configuration files; managed keys use protected OS storage when
-          available, otherwise they last for this app session only.
+          Configure OpenAI API and OpenAI-compatible endpoints. Credentials are never included in
+          ordinary configuration files or exports. They use secure OS storage when available, or a
+          private local file otherwise.
         </p>
       </div>
       <div className="space-y-3 border-b border-zinc-700 pb-5">
@@ -149,11 +150,35 @@ export function RemoteConnectionsPanel({
           Eligible accounts can authorize plan inference separately from paid API keys. OpenAI plan
           limits apply; Lonely Chat never falls back to API billing.
         </p>
-        {!chatGPT.secureStorageAvailable && (
+        <label className="flex items-center gap-2 text-xs text-zinc-300">
+          <input
+            type="checkbox"
+            checked={chatGPT.persistCredentials}
+            disabled={working}
+            onChange={(event) => {
+              const persist = event.currentTarget.checked;
+              void perform(async () => {
+                await window.lonelyChat!.setCredentialPersistence?.(persist);
+                setNotice(
+                  persist
+                    ? 'Credential persistence enabled for ChatGPT and managed API keys.'
+                    : 'Session-only: saved ChatGPT tokens and managed API keys were deleted.',
+                );
+              });
+            }}
+          />
+          Remember ChatGPT authorization and managed API keys between restarts
+        </label>
+        {chatGPT.persistCredentials && !chatGPT.secureStorageAvailable && (
           <p role="status" className="text-xs text-amber-400">
-            Secure credential storage is unavailable. ChatGPT authorization will be lost when the
-            app closes. On headless WSL, create and unlock a GNOME Keyring collection and start
-            Electron with the gnome-libsecret password-store backend.
+            OS-protected storage is unavailable. Credentials will be saved in an application-private
+            file (not encrypted at rest), readable by your OS user. Turn off Remember to keep them
+            in memory only.
+          </p>
+        )}
+        {!chatGPT.persistCredentials && (
+          <p role="status" className="text-xs text-zinc-400">
+            Session-only: credentials will be forgotten when Lonely Chat closes.
           </p>
         )}
         <select
@@ -345,7 +370,7 @@ export function RemoteConnectionsPanel({
               }}
             >
               <option value="chatgpt">ChatGPT subscription (OAuth; no API billing)</option>
-              <option value="managed">Managed key (protected or session)</option>
+              <option value="managed">Managed key (protected, private file, or session)</option>
               <option value="environment">Environment variable</option>
               <option value="none">No key (local servers)</option>
             </select>
@@ -450,8 +475,10 @@ export function RemoteConnectionsPanel({
                       setSecret('');
                       setNotice(
                         storage === 'protected'
-                          ? 'Key saved in protected OS storage.'
-                          : 'Key is session-only; secure OS storage is unavailable.',
+                          ? 'Key saved with OS credential protection.'
+                          : storage === 'file'
+                            ? 'Key saved in an application-private file (not encrypted at rest).'
+                            : 'Key is session-only and will not survive restart.',
                       );
                     })
                   }

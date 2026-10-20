@@ -7,10 +7,11 @@ export interface ChatGPTAccount {
 export interface ChatGPTStatus {
   /** Whether the current OS backend can encrypt refresh tokens durably. */
   readonly secureStorageAvailable: boolean;
+  readonly persistCredentials: boolean;
   readonly activeAccountId: string | null;
   readonly accounts: readonly (ChatGPTAccount & {
     readonly authorized: boolean;
-    readonly storage: 'session' | 'protected' | 'missing';
+    readonly storage: 'session' | 'protected' | 'file' | 'missing';
   })[];
 }
 export interface ChatGPTModel {

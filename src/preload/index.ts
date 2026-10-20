@@ -15,6 +15,7 @@ function invoke<K extends keyof DesktopInvocations>(
 
 const api: DesktopAPI = {
   getChatGPTStatus: () => invoke('chatgpt:status'),
+  setCredentialPersistence: (persist) => invoke('chatgpt:persistence:set', persist),
   signInChatGPT: (id) => invoke('chatgpt:signin', id),
   getChatGPTAuthorizationUrl: () => invoke('chatgpt:authorization:get'),
   openChatGPTAuthorizationUrl: () => invoke('chatgpt:authorization:open'),

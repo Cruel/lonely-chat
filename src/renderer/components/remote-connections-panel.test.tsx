@@ -56,10 +56,11 @@ it('shows a reusable clickable sign-in URL and copy button during authorization,
   expect(screen.queryByRole('button', { name: 'Copy ChatGPT sign-in link' })).toBeNull();
 });
 
-it('warns before ChatGPT sign-in when refresh tokens cannot survive restart', async () => {
+it('explains unencrypted private-file fallback and allows switching to session-only', async () => {
   window.lonelyChat = {
     getChatGPTStatus: async () => ({
       secureStorageAvailable: false,
+      persistCredentials: true,
       activeAccountId: null,
       accounts: [],
     }),
@@ -69,9 +70,49 @@ it('warns before ChatGPT sign-in when refresh tokens cannot survive restart', as
   } as unknown as DesktopAPI;
 
   render(<RemoteConnectionsPanel />);
-  expect((await screen.findByRole('status')).textContent).toContain(
-    'authorization will be lost when the app closes',
-  );
+  expect((await screen.findByRole('status')).textContent).toContain('not encrypted at rest');
+  expect(
+    (screen.getByRole('checkbox', { name: /Remember ChatGPT/ }) as HTMLInputElement).checked,
+  ).toBe(true);
+});
+
+it('switches persistence for both credential types without starting another authorization', async () => {
+  let persistCredentials = true;
+  const set = vi.fn(async (persist: boolean) => {
+    persistCredentials = persist;
+    return {
+      secureStorageAvailable: false,
+      persistCredentials,
+      activeAccountId: null,
+      accounts: [],
+    };
+  });
+  window.lonelyChat = {
+    getChatGPTStatus: async () => ({
+      secureStorageAvailable: false,
+      persistCredentials,
+      activeAccountId: null,
+      accounts: [],
+    }),
+    setCredentialPersistence: set,
+    listRemoteConfigurations: async () => ({ connections: [], models: [] }),
+    getChatGPTAuthorizationUrl: async () => null,
+    onChatGPTAuthorizationChange: () => () => {},
+  } as unknown as DesktopAPI;
+  render(<RemoteConnectionsPanel />);
+  const remember = screen.getByRole('checkbox', { name: /Remember ChatGPT/ });
+  await waitFor(() => expect((remember as HTMLInputElement).checked).toBe(true));
+  fireEvent.click(remember);
+  await waitFor(() => expect(set).toHaveBeenCalledWith(false));
+  expect(
+    await screen.findByText('Session-only: credentials will be forgotten when Lonely Chat closes.'),
+  ).toBeTruthy();
+  expect(
+    await screen.findByText(
+      'Session-only: saved ChatGPT tokens and managed API keys were deleted.',
+    ),
+  ).toBeTruthy();
+  await waitFor(() => expect((remember as HTMLInputElement).checked).toBe(false));
 });
 
 it('recovers the pending authorization URL on remount and keeps failed manual opens actionable', async () => {

@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import { readFileSync } from 'node:fs';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, symlink, chmod } from 'node:fs/promises';
+import { CredentialPolicy } from './credential-persistence';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { InferenceCoordinator } from './inference-coordinator';
@@ -141,7 +142,7 @@ describe('remote Connection security and persistence', () => {
     expect(() => validateRemoteEndpoint('file:///tmp/model', false)).toThrow(/HTTPS/);
   });
 
-  it('keeps managed credentials session-only when OS key protection is unavailable', async () => {
+  it('persists managed keys in a restricted private file when OS protection is unavailable', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'lc-remote-'));
     directories.push(dir);
     const protector = { available: () => false, encrypt: () => Buffer.from(''), decrypt: () => '' };
@@ -149,7 +150,7 @@ describe('remote Connection security and persistence', () => {
     await store.load();
     await store.putConnection(connection('https://example.test/v1'));
     await store.putModel(model);
-    expect(await store.setCredential('home', 'shhh-secret')).toBe('session');
+    expect(await store.setCredential('home', 'shhh-secret')).toBe('file');
     expect(store.selected('chat').credential).toBe('shhh-secret');
     await store.putConnection({ ...connection('https://different.example.test/v1') });
     expect(() => store.selected('chat')).toThrow(/requires a configured credential/);
@@ -158,16 +159,146 @@ describe('remote Connection security and persistence', () => {
     const exposed = JSON.stringify(store.list());
     const serialized = await readFile(path.join(dir, 'remote-inference.json'), 'utf8');
     expect(exposed + serialized).not.toContain('shhh-secret');
-    expect(exposed).toContain('"session"');
+    expect(exposed).toContain('"file"');
     await expect(readFile(path.join(dir, 'remote-secrets.bin.json'), 'utf8')).rejects.toMatchObject(
       { code: 'ENOENT' },
     );
+    const localPath = path.join(dir, 'private-credentials', 'remote.json');
+    expect(await readFile(localPath, 'utf8')).toContain('shhh-secret');
+    if (process.platform !== 'win32') {
+      expect((await stat(localPath)).mode & 0o777).toBe(0o600);
+      expect((await stat(path.dirname(localPath))).mode & 0o777).toBe(0o700);
+    }
     const restarted = new RemoteInferenceStore(dir, protector);
     await restarted.load();
-    expect(restarted.list().connections[0].credentialStatus).toBe('missing');
-    expect(() => restarted.selected('chat')).toThrow(/requires a configured credential/);
+    expect(restarted.list().connections[0].credentialStatus).toBe('file');
+    expect(restarted.selected('chat').credential).toBe('shhh-secret');
     await restarted.removeConnection('home');
     expect(restarted.list().models).toEqual([]);
+    expect(await readFile(localPath, 'utf8')).not.toContain('shhh-secret');
+  });
+
+  it('moves private credentials to protected storage when a secure keyring becomes available', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'lc-upgrade-'));
+    directories.push(dir);
+    let available = false;
+    const protector = {
+      available: () => available,
+      encrypt: (text: string) => Buffer.from('encrypted:' + text),
+      decrypt: (data: Buffer) => data.toString().replace(/^encrypted:/, ''),
+    };
+    const first = new RemoteInferenceStore(dir, protector);
+    await first.load();
+    await first.putConnection(connection('https://example.test/v1'));
+    expect(await first.setCredential('home', 'private-key')).toBe('file');
+    const localFile = path.join(dir, 'private-credentials', 'remote.json');
+    expect(await readFile(localFile, 'utf8')).toContain('private-key');
+
+    available = true;
+    const upgraded = new RemoteInferenceStore(dir, protector);
+    await upgraded.load();
+    expect(upgraded.list().connections[0].credentialStatus).toBe('protected');
+    expect(upgraded.resolve('home').credential).toBe('private-key');
+    expect(await readFile(path.join(dir, 'remote-secrets.bin.json'), 'utf8')).not.toContain(
+      'private-key',
+    );
+    await expect(readFile(localFile)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('retains encrypted records during a temporary keyring outage', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'lc-keyring-outage-'));
+    directories.push(dir);
+    let available = true;
+    const protector = {
+      available: () => available,
+      encrypt: (text: string) => Buffer.from('encrypted:' + text),
+      decrypt: (data: Buffer) => data.toString().replace(/^encrypted:/, ''),
+    };
+    const first = new RemoteInferenceStore(dir, protector);
+    await first.load();
+    await first.putConnection(connection('https://example.test/v1'));
+    await first.setCredential('home', 'original-token');
+    const previous = await readFile(path.join(dir, 'remote-secrets.bin.json'), 'utf8');
+
+    available = false;
+    const fallback = new RemoteInferenceStore(dir, protector);
+    await fallback.load();
+    await fallback.setCredential('home', 'replacement-token');
+    expect(await readFile(path.join(dir, 'remote-secrets.bin.json'), 'utf8')).toBe(previous);
+    available = true;
+    const reopened = new RemoteInferenceStore(dir, protector);
+    await reopened.load();
+    expect(reopened.resolve('home').credential).toBe('replacement-token');
+    expect(reopened.list().connections[0].credentialStatus).toBe('protected');
+  });
+
+  it('does not resurrect a credential redirected to a new endpoint during a keyring outage', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'lc-rebinding-'));
+    directories.push(dir);
+    let available = true;
+    const protector = {
+      available: () => available,
+      encrypt: (text: string) => Buffer.from('encrypted:' + text),
+      decrypt: (data: Buffer) => data.toString().replace(/^encrypted:/, ''),
+    };
+    const original = new RemoteInferenceStore(dir, protector);
+    await original.load();
+    await original.putConnection(connection('https://original.example.test/v1'));
+    await original.setCredential('home', 'first-key');
+    available = false;
+    const offline = new RemoteInferenceStore(dir, protector);
+    await offline.load();
+    await offline.putConnection(connection('https://new.example.test/v1'));
+    available = true;
+    const restored = new RemoteInferenceStore(dir, protector);
+    await restored.load();
+    expect(restored.list().connections[0].credentialStatus).toBe('missing');
+    expect(() => restored.resolve('home')).toThrow(/requires a configured credential/);
+  });
+
+  it('honors a persistent session-only preference and deletes saved managed credentials', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'lc-session-'));
+    directories.push(dir);
+    const policy = new CredentialPolicy(dir);
+    const protector = { available: () => false, encrypt: () => Buffer.alloc(0), decrypt: () => '' };
+    const store = new RemoteInferenceStore(dir, protector, {}, policy);
+    await store.load();
+    await store.putConnection(connection('https://example.test/v1'));
+    await store.setCredential('home', 'unprotected-token');
+    const localFile = path.join(dir, 'private-credentials', 'remote.json');
+    expect(await readFile(localFile, 'utf8')).toContain('unprotected-token');
+    await policy.setPersist(false);
+    await store.applyCredentialPolicy();
+    expect(store.resolve('home').credential).toBe('unprotected-token');
+    expect(store.list().connections[0].credentialStatus).toBe('session');
+    await expect(readFile(localFile)).rejects.toMatchObject({ code: 'ENOENT' });
+    const restoredPolicy = new CredentialPolicy(dir);
+    await restoredPolicy.load();
+    expect(restoredPolicy.persist).toBe(false);
+    const reopened = new RemoteInferenceStore(dir, protector, {}, restoredPolicy);
+    await reopened.load();
+    expect(reopened.list().connections[0].credentialStatus).toBe('missing');
+    await restoredPolicy.setPersist(true);
+    await reopened.applyCredentialPolicy();
+    expect(reopened.list().connections[0].credentialStatus).toBe('missing');
+  });
+
+  it('rejects weak private credential file permissions and symlinked directories', async () => {
+    if (process.platform === 'win32') return;
+    const dir = await mkdtemp(path.join(tmpdir(), 'lc-perms-'));
+    directories.push(dir);
+    const protector = { available: () => false, encrypt: () => Buffer.alloc(0), decrypt: () => '' };
+    const first = new RemoteInferenceStore(dir, protector);
+    await first.load();
+    await first.putConnection(connection('https://example.test/v1'));
+    await first.setCredential('home', 'private-key');
+    const localFile = path.join(dir, 'private-credentials', 'remote.json');
+    await chmod(localFile, 0o644);
+    await expect(new RemoteInferenceStore(dir, protector).load()).rejects.toThrow(/inaccessible/);
+    await chmod(localFile, 0o600);
+    await rm(path.join(dir, 'private-credentials'), { recursive: true });
+    await symlink(dir, path.join(dir, 'private-credentials'));
+    await expect(new RemoteInferenceStore(dir, protector).load()).rejects.toThrow(/directory/);
   });
 
   it('uses protected storage when the OS protector is reliable and exposes only status', async () => {

@@ -2,6 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import {
+  CredentialFiles,
+  CredentialPolicy,
+  type CredentialStorage,
+} from './credential-persistence';
+import {
   validateRemoteConnection,
   validateRemoteModel,
   validRemoteId,
@@ -29,7 +34,10 @@ function requireId(id: string): void {
 export class RemoteInferenceStore {
   private catalog: CatalogFile = { version: 1, connections: [], models: [] };
   private sessionSecrets = new Map<string, string>();
-  private protectedSecrets = new Map<string, string>();
+  private persistentSecrets = new Map<string, string>();
+  private storage: CredentialStorage = 'session';
+  private readonly credentials: CredentialFiles;
+  private readonly removedCredentials = new Set<string>();
   private queue: Promise<unknown> = Promise.resolve();
   private loaded = false;
 
@@ -37,7 +45,16 @@ export class RemoteInferenceStore {
     private readonly directory: string,
     private readonly protector: SecretProtector,
     private readonly environment: NodeJS.ProcessEnv = process.env,
-  ) {}
+    private readonly policy: CredentialPolicy = new CredentialPolicy(directory),
+  ) {
+    this.credentials = new CredentialFiles(
+      directory,
+      this.secretFile(),
+      'remote',
+      protector,
+      policy,
+    );
+  }
 
   private file(): string {
     return path.join(this.directory, 'remote-inference.json');
@@ -74,30 +91,14 @@ export class RemoteInferenceStore {
     )
       throw new Error('Invalid remote configuration references.');
     this.catalog = { version: 1, connections, models };
-    if (this.protector.available()) {
-      try {
-        const secrets: unknown = JSON.parse(await readFile(this.secretFile(), 'utf8'));
-        if (!secrets || typeof secrets !== 'object' || Array.isArray(secrets))
-          throw new Error('Invalid protected credential file.');
-        for (const [id, encrypted] of Object.entries(secrets)) {
-          if (
-            validRemoteId(id) &&
-            typeof encrypted === 'string' &&
-            connections.some((item) => item.id === id && item.credentialMode === 'managed')
-          ) {
-            try {
-              this.protectedSecrets.set(
-                id,
-                this.protector.decrypt(Buffer.from(encrypted, 'base64')),
-              );
-            } catch {
-              // An unavailable/changed OS key must not expose plaintext or crash startup.
-            }
-          }
-        }
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      }
+    const loaded = await this.credentials.load();
+    this.storage = loaded.storage ?? 'session';
+    for (const [id, value] of Object.entries(loaded.secrets)) {
+      if (
+        validRemoteId(id) &&
+        connections.some((item) => item.id === id && item.credentialMode === 'managed')
+      )
+        this.persistentSecrets.set(id, value);
     }
     this.loaded = true;
   }
@@ -123,15 +124,28 @@ export class RemoteInferenceStore {
     await this.atomic(this.file(), JSON.stringify(this.catalog, null, 2) + '\n');
   }
   private async persistSecrets(): Promise<void> {
-    if (!this.protector.available()) return;
-    const secretData: Record<string, string> = {};
-    for (const [id, secret] of this.protectedSecrets) {
+    const records: Record<string, string> = {};
+    for (const [id, secret] of this.persistentSecrets) {
       if (
         this.catalog.connections.some((item) => item.id === id && item.credentialMode === 'managed')
       )
-        secretData[id] = this.protector.encrypt(secret).toString('base64');
+        records[id] = secret;
     }
-    await this.atomic(this.secretFile(), JSON.stringify(secretData) + '\n');
+    this.storage = await this.credentials.save(records, [...this.removedCredentials]);
+    this.removedCredentials.clear();
+  }
+
+  async applyCredentialPolicy(): Promise<void> {
+    await this.mutate(async () => {
+      if (this.policy.persist) {
+        for (const [id, secret] of this.sessionSecrets) this.persistentSecrets.set(id, secret);
+        this.sessionSecrets.clear();
+      } else {
+        for (const [id, secret] of this.persistentSecrets) this.sessionSecrets.set(id, secret);
+        this.persistentSecrets.clear();
+      }
+      await this.persistSecrets();
+    });
   }
 
   list(): RemoteCatalog {
@@ -141,8 +155,8 @@ export class RemoteInferenceStore {
         ...connection,
         credentialStatus:
           connection.credentialMode === 'managed'
-            ? this.protectedSecrets.has(connection.id)
-              ? ('protected' as const)
+            ? this.persistentSecrets.has(connection.id)
+              ? this.storage
               : this.sessionSecrets.has(connection.id)
                 ? ('session' as const)
                 : ('missing' as const)
@@ -167,7 +181,8 @@ export class RemoteInferenceStore {
         (old.credentialMode !== connection.credentialMode || old.baseUrl !== connection.baseUrl)
       ) {
         this.sessionSecrets.delete(connection.id);
-        this.protectedSecrets.delete(connection.id);
+        this.persistentSecrets.delete(connection.id);
+        this.removedCredentials.add(connection.id);
       }
       this.catalog.connections = [
         ...this.catalog.connections.filter((item) => item.id !== connection.id),
@@ -185,7 +200,8 @@ export class RemoteInferenceStore {
       this.catalog.connections = this.catalog.connections.filter((item) => item.id !== id);
       this.catalog.models = this.catalog.models.filter((item) => item.connectionId !== id);
       this.sessionSecrets.delete(id);
-      this.protectedSecrets.delete(id);
+      this.persistentSecrets.delete(id);
+      this.removedCredentials.add(id);
       await this.persist();
       await this.persistSecrets();
     });
@@ -213,7 +229,7 @@ export class RemoteInferenceStore {
   }
 
   /** A credential travels over one trusted renderer-to-main IPC call, never back. */
-  async setCredential(id: string, secret: string): Promise<'protected' | 'session'> {
+  async setCredential(id: string, secret: string): Promise<CredentialStorage> {
     return this.mutate(async () => {
       requireId(id);
       const connection = this.catalog.connections.find((item) => item.id === id);
@@ -221,14 +237,15 @@ export class RemoteInferenceStore {
         throw new Error('This Connection does not accept managed credentials.');
       if (typeof secret !== 'string' || !secret.trim() || secret.length > 8192)
         throw new Error('Invalid API credential.');
-      if (this.protector.available()) {
-        this.protectedSecrets.set(id, secret);
+      if (this.policy.persist) {
+        this.persistentSecrets.set(id, secret);
         this.sessionSecrets.delete(id);
         await this.persistSecrets();
-        return 'protected';
+        return this.storage;
       }
-      this.protectedSecrets.delete(id);
+      this.persistentSecrets.delete(id);
       this.sessionSecrets.set(id, secret);
+      await this.persistSecrets();
       return 'session';
     });
   }
@@ -243,7 +260,7 @@ export class RemoteInferenceStore {
         ? null
         : connection.credentialMode === 'environment'
           ? (this.environment[connection.environmentVariable!] ?? null)
-          : (this.protectedSecrets.get(id) ?? this.sessionSecrets.get(id) ?? null);
+          : (this.persistentSecrets.get(id) ?? this.sessionSecrets.get(id) ?? null);
     if (
       connection.credentialMode !== 'none' &&
       connection.credentialMode !== 'chatgpt' &&
