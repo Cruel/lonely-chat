@@ -144,6 +144,31 @@ export function splitRequests(
   };
 }
 
+/** Never let a stalled stage exceed its sequential wait budget. Cancellation
+ * also releases the waiter without cancelling independently admitted Vision. */
+async function waitForVisionWithin(
+  task: Promise<void>,
+  maximumWaitMs: number,
+  signal: AbortSignal,
+): Promise<void> {
+  if (maximumWaitMs <= 0 || signal.aborted) return;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let onAbort: (() => void) | null = null;
+  try {
+    await Promise.race([
+      task,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, maximumWaitMs);
+        onAbort = resolve;
+        signal.addEventListener('abort', onAbort, { once: true });
+      }),
+    ]);
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+    if (onAbort) signal.removeEventListener('abort', onAbort);
+  }
+}
+
 export interface SplitScheduling {
   readonly execution: 'sequential' | 'asynchronous';
   readonly visionIntervalMs: number;
@@ -270,6 +295,13 @@ export class ScheduledSplitInference {
     const mediaIdentity = [...new Set(snapshot.frames?.map((frame) => frame.sourceId) ?? [])]
       .sort()
       .join(',');
+    if (mediaIdentity && this.mediaIdentity && mediaIdentity !== this.mediaIdentity) {
+      // Source clocks are independent. Prior scene state and freshness proofs
+      // must not prevent a newly selected media source from establishing its scene.
+      this.latest.clear();
+      this.narrative.clearVisualSource();
+      this.chatVisionRevision = this.visionRevision;
+    }
     if (mediaIdentity) this.mediaIdentity = mediaIdentity;
     const identity = `${generation}:${this.mediaIdentity}`;
     const priorScene = this.narrative.sceneObservation(now(), policy.maximumAgeMs);
@@ -314,7 +346,8 @@ export class ScheduledSplitInference {
             enforceAudience: false,
             beforeAccept,
           });
-          if (signal.aborted || generation !== this.generation) {
+          if (signal.aborted || generation !== this.generation ||
+              identity !== `${this.generation}:${this.mediaIdentity}`) {
             evidence?.update({ stage: 'cancelled', errorStage: failureStage });
             return;
           }
@@ -359,16 +392,8 @@ export class ScheduledSplitInference {
 
     if (work === 'vision' || !this.chatCadence.start(now())) return null;
     try {
-      if (policy.execution === 'sequential' && this.visionTask) {
-        if (policy.strictWait) {
-          await this.visionTask;
-        } else if (policy.maximumWaitMs > 0) {
-          await Promise.race([
-            this.visionTask,
-            new Promise<void>((resolve) => setTimeout(resolve, policy.maximumWaitMs)),
-          ]);
-        }
-      }
+      if (policy.execution === 'sequential' && this.visionTask)
+        await waitForVisionWithin(this.visionTask, policy.maximumWaitMs, signal);
       if (signal.aborted || generation !== this.generation) return null;
       const selected = this.latest.eligible(now(), policy.maximumAgeMs, identity);
       const admittedVisionRevision = this.retryPayload?.visionRevision ?? this.visionRevision;

@@ -47,6 +47,7 @@ export class LatestStageResult<T> {
   publish(result: T, completedAt: number, observedAt: number, identity: string): void {
     if (
       !this.value ||
+      this.value.identity !== identity ||
       (observedAt >= this.value.observedAt && completedAt >= this.value.completedAt)
     )
       this.value = { result, completedAt, observedAt, identity };

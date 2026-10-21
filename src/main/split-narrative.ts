@@ -33,6 +33,14 @@ export class SplitNarrative {
     this.lastVisionAt = -Infinity;
   }
 
+  /** Changing input sources invalidates the current visual interpretation, not
+   * the Run's Event history or Chat's already frozen retry context. */
+  clearVisualSource(): void {
+    this.scene = null;
+    this.interpretations = [];
+    this.lastVisionAt = -Infinity;
+  }
+
   private key(event: InferredEvent): string {
     return `${event.kind}:${event.summary.trim().toLocaleLowerCase().replace(/\s+/g, ' ')}`;
   }

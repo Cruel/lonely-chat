@@ -124,7 +124,7 @@ it('retries unacknowledged Vision events after Chat fails without creating dupli
       new AbortController().signal,
       undefined,
       {},
-      { ...policy, execution: 'sequential', strictWait: true },
+      { ...policy, execution: 'sequential', strictWait: true, maximumWaitMs: 500 },
       () => time,
     );
   await expect(execute(1)).rejects.toThrow('Chat connection failed');
@@ -258,6 +258,80 @@ it('uses a bounded sequential wait before Chat proceeds without stale observatio
   }
 });
 
+it('bounds strict sequential waiting without publishing Chat or cancelling unfinished Vision', async () => {
+  vi.useFakeTimers();
+  try {
+    let finishVision!: (value: typeof scene) => void;
+    const pendingVision = new Promise<typeof scene>((resolve) => { finishVision = resolve; });
+    const vision = adapter(async () => {
+      const result = await pendingVision;
+      return { raw: result, normalized: result };
+    });
+    const chatter = adapter(async () => ({ raw: chat, normalized: chat }));
+    const scheduled = new ScheduledSplitInference();
+    let time = 0;
+    const bounded: SplitScheduling = {
+      ...policy, execution: 'sequential', maximumWaitMs: 40,
+      strictWait: true, chatIntervalMs: 100,
+    };
+    const waiting = scheduled.execute(input, { vision, chat: chatter },
+      new AbortController().signal, undefined, {}, bounded, () => time);
+    await settle();
+    await vi.advanceTimersByTimeAsync(39);
+    expect(chatter.complete).not.toHaveBeenCalled();
+    time = 40;
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await waiting).toBeNull();
+    expect(chatter.complete).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+
+    // A slow but successful Vision result can still feed a later eligible Chat.
+    finishVision(scene);
+    await settle();
+    time = 100;
+    const next = await scheduled.execute({ ...input, cycle: 2 },
+      { vision, chat: chatter }, new AbortController().signal,
+      undefined, {}, bounded, () => time);
+    expect(next?.observations[0].description).toBe(scene.sceneState);
+    expect(chatter.complete).toHaveBeenCalledTimes(1);
+    expect(vision.complete).toHaveBeenCalledTimes(1);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('releases the sequential wait deadline on Stop without publishing cancelled work', async () => {
+  vi.useFakeTimers();
+  try {
+    let finishVision!: (result: typeof scene) => void;
+    const pending = new Promise<typeof scene>((resolve) => { finishVision = resolve; });
+    const vision = adapter(async () => {
+      const result = await pending;
+      return { raw: result, normalized: result };
+    });
+    const chatter = adapter(async () => ({ raw: chat, normalized: chat }));
+    const scheduled = new ScheduledSplitInference();
+    const abort = new AbortController();
+    const waiting = scheduled.execute(input, { vision, chat: chatter },
+      abort.signal, undefined, {}, {
+        ...policy, execution: 'sequential', strictWait: true,
+        maximumWaitMs: 10_000,
+      }, () => 0);
+    await settle();
+    expect(vi.getTimerCount()).toBe(1);
+    abort.abort();
+    scheduled.cancelActive();
+    expect(await waiting).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+    finishVision(scene);
+    await settle();
+    expect(chatter.complete).not.toHaveBeenCalled();
+    expect(scheduled.hasUnconsumedVision()).toBe(false);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it('requires an eligible observation when strict wait is configured', async () => {
   let resolveVision!: (value: typeof scene) => void;
   const waiting = new Promise<typeof scene>((resolve) => {
@@ -275,7 +349,7 @@ it('requires an eligible observation when strict wait is configured', async () =
     new AbortController().signal,
     undefined,
     {},
-    { ...policy, execution: 'sequential', maximumWaitMs: 0, strictWait: true },
+    { ...policy, execution: 'sequential', maximumWaitMs: 500, strictWait: true },
     () => 0,
   );
   await settle();
@@ -283,6 +357,79 @@ it('requires an eligible observation when strict wait is configured', async () =
   resolveVision(scene);
   expect((await running)?.observations[0].description).toBe(scene.sceneState);
   expect(chatter.complete).toHaveBeenCalledTimes(1);
+});
+
+it('replaces a completed old-source scene when the new source has an earlier observation clock', async () => {
+  const otherScene = {
+    sceneState: 'Different camera angle',
+    events: [{ kind: 'reaction', summary: 'Now on camera B', ageMs: 0 }],
+    messages: [],
+  };
+  let count = 0;
+  const vision = adapter(async () => {
+    const result = ++count === 1 ? scene : otherScene;
+    return { raw: result, normalized: result };
+  });
+  const chatter = adapter(async () => ({ raw: chat, normalized: chat }));
+  const scheduled = new ScheduledSplitInference();
+  const signal = new AbortController().signal;
+  const scheduling = { ...policy, visionIntervalMs: 100, chatIntervalMs: 100 };
+  let time = 0;
+  const source = (sourceId: string, observedAt: number, cycle: number) => ({
+    ...input, cycle, frames: input.frames!.map((frame) => ({ ...frame, sourceId, observedAt })),
+  });
+  await scheduled.execute(source('A', 2000, 1), { vision, chat: chatter }, signal,
+    undefined, {}, scheduling, () => time, 'vision');
+  await settle();
+  time = 100;
+  await scheduled.execute(source('B', 1000, 2), { vision, chat: chatter }, signal,
+    undefined, {}, scheduling, () => time, 'vision');
+  await settle();
+  time = 200;
+  const output = await scheduled.execute(source('B', 1000, 3), { vision, chat: chatter },
+    signal, undefined, {}, scheduling, () => time, 'chat');
+  expect(output?.observations.map((item) => item.description)).toEqual([otherScene.sceneState]);
+});
+
+it('rejects old-source Vision completing after an input-source change', async () => {
+  let finishOld!: (result: typeof scene) => void;
+  const waiting = new Promise<typeof scene>((resolve) => { finishOld = resolve; });
+  const newScene = {
+    sceneState: 'A new scene from camera B',
+    events: [{ kind: 'reaction', summary: 'Camera B wins', ageMs: 0 }],
+    messages: [],
+  };
+  let count = 0;
+  const vision = adapter(async () => {
+    const result = ++count === 1 ? await waiting : newScene;
+    return { raw: result, normalized: result };
+  });
+  const chatter = adapter(async () => ({ raw: chat, normalized: chat }));
+  const scheduled = new ScheduledSplitInference();
+  const signal = new AbortController().signal;
+  const stagePolicy = { ...policy, visionIntervalMs: 100, chatIntervalMs: 100 };
+  const byCamera = (sourceId: string, cycle: number) => ({
+    ...input, cycle, frames: input.frames!.map((frame) => ({ ...frame, sourceId })),
+  });
+  let time = 0;
+  await scheduled.execute(byCamera('A', 1), { vision, chat: chatter }, signal,
+    undefined, {}, stagePolicy, () => time, 'vision');
+  time = 100;
+  await scheduled.execute(byCamera('B', 2), { vision, chat: chatter }, signal,
+    undefined, {}, stagePolicy, () => time, 'vision');
+  expect(vision.complete).toHaveBeenCalledTimes(1); // old Vision is still running
+  finishOld(scene);
+  await settle();
+  time = 200;
+  await scheduled.execute(byCamera('B', 3), { vision, chat: chatter }, signal,
+    undefined, {}, stagePolicy, () => time, 'vision');
+  await settle();
+  time = 300;
+  const output = await scheduled.execute(byCamera('B', 4), { vision, chat: chatter },
+    signal, undefined, {}, stagePolicy, () => time, 'chat');
+  expect(output?.observations.map((item) => item.description)).toEqual([newScene.sceneState]);
+  expect(output?.visionEvents.map((item) => item.summary)).toEqual(['Camera B wins']);
+  expect(JSON.stringify(vi.mocked(chatter.complete).mock.lastCall?.[0])).not.toContain(scene.sceneState);
 });
 
 it('discards completion after Run cancellation and does not accept it in the next Run', async () => {
