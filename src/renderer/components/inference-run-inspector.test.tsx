@@ -275,44 +275,94 @@ it('shows exact selected frame evidence, pending versus published chat, and cros
 
 it('joins Vision and Chat on one Run timeline and opens the correct stage without fetching private data early', async () => {
   const base: TraceList['attempts'][number] = {
-    id: 'attempt-vision', runId: 12, cycle: 1, attempt: 1,
-    seed: 7, rosterSeed: 8, mode: 'remote', modelId: 'scene',
-    role: 'vision', profileRevision: 4, startedAt: 1700000000100,
-    observedAt: 1700000000000, availableAt: 1700000000300,
-    durationMs: 200, stage: 'accepted', errorStage: null, error: null,
-    usage: null, sourceFrameIds: ['camera:1700000000000:0'],
+    id: 'attempt-vision',
+    runId: 12,
+    cycle: 1,
+    attempt: 1,
+    seed: 7,
+    rosterSeed: 8,
+    mode: 'remote',
+    modelId: 'scene',
+    role: 'vision',
+    profileRevision: 4,
+    startedAt: 1700000000100,
+    observedAt: 1700000000000,
+    availableAt: 1700000000300,
+    durationMs: 200,
+    stage: 'accepted',
+    errorStage: null,
+    error: null,
+    usage: null,
+    sourceFrameIds: ['camera:1700000000000:0'],
   };
   const chatSummary: TraceList['attempts'][number] = {
-    ...base, id: 'attempt-chat', role: 'chat', modelId: 'chatter',
-    startedAt: 1700000000400, availableAt: 1700000000500,
-    stage: 'scheduled', dependsOn: [base.id],
+    ...base,
+    id: 'attempt-chat',
+    role: 'chat',
+    modelId: 'chatter',
+    startedAt: 1700000000400,
+    availableAt: 1700000000500,
+    stage: 'scheduled',
+    dependsOn: [base.id],
   };
   const details: Record<string, TraceAttempt> = {
     [base.id]: {
-      ...base, input: {}, settings: {}, promptPreset: null, adaptation: {},
-      request: { role: 'vision' }, rawResponse: {}, normalized: {}, parsed: {},
-      accepted: { events: [{ kind: 'reaction', summary: 'door opens', observedAt: 1700000000000 }] },
-      sceneState: 'door is open', scheduled: null, transportError: null,
+      ...base,
+      input: {},
+      settings: {},
+      promptPreset: null,
+      adaptation: {},
+      request: { role: 'vision' },
+      rawResponse: {},
+      normalized: {},
+      parsed: {},
+      accepted: {
+        events: [{ kind: 'reaction', summary: 'door opens', observedAt: 1700000000000 }],
+      },
+      sceneState: 'door is open',
+      scheduled: null,
+      transportError: null,
     },
     [chatSummary.id]: {
-      ...chatSummary, input: {}, settings: {}, promptPreset: null, adaptation: {},
-      request: { role: 'chat' }, rawResponse: {}, normalized: {}, parsed: {},
+      ...chatSummary,
+      input: {},
+      settings: {},
+      promptPreset: null,
+      adaptation: {},
+      request: { role: 'chat' },
+      rawResponse: {},
+      normalized: {},
+      parsed: {},
       accepted: { messages: [{ author: 'viewer', text: 'Whoa!' }] },
-      scheduled: { enqueuedAt: 1700000000500, events: [], windowMs: 1000,
-        messages: [{ author: 'viewer', text: 'Whoa!', offsetMs: 0 }] },
-      presented: [{ id: 'chat-1', author: 'viewer', text: 'Whoa!', scheduledIndex: 0,
-        presentedAt: 1700000000550 }],
+      scheduled: {
+        enqueuedAt: 1700000000500,
+        events: [],
+        windowMs: 1000,
+        messages: [{ author: 'viewer', text: 'Whoa!', offsetMs: 0 }],
+      },
+      presented: [
+        {
+          id: 'chat-1',
+          author: 'viewer',
+          text: 'Whoa!',
+          scheduledIndex: 0,
+          presentedAt: 1700000000550,
+        },
+      ],
       transportError: null,
     },
   };
   const get = vi.fn(async (id: string) => details[id] ?? null);
   window.lonelyChat = {
     listInferenceTraces: async () => ({ attempts: [base, chatSummary], dropped: 0, bytes: 100 }),
-    onInferenceTraces: () => () => {}, getInferenceTrace: get,
+    onInferenceTraces: () => () => {},
+    getInferenceTrace: get,
   } as unknown as typeof window.lonelyChat;
   render(<InferenceRunInspector />);
   expect(get).not.toHaveBeenCalled();
-  fireEvent.click(await screen.findByRole('button', { name: /Run 12 · cycle 1 · attempt 1.*CHAT/i }));
+  fireEvent.click(
+    await screen.findByRole('button', { name: /Run 12 · cycle 1 · attempt 1.*CHAT/i }),
+  );
   expect(await screen.findByRole('region', { name: 'Multi-stage Run timeline' })).toBeTruthy();
   expect(screen.getByText('Scene state updated')).toBeTruthy();
   expect(screen.getByText('Vision Event · reaction')).toBeTruthy();

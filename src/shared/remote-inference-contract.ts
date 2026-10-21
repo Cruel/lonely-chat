@@ -314,12 +314,21 @@ export function validateRemoteModel(value: unknown): RemoteModelConfiguration {
     throw new Error('Image permission requires an image-capable model.');
   for (const field of ['maxRequestsPerMinute', 'maxRequestsPerRun', 'maxTokensPerRun'] as const) {
     const entry = v[field];
-    if (entry !== undefined && (typeof entry !== 'number' || !Number.isSafeInteger(entry) || entry < 1 || entry > 1_000_000_000))
+    if (
+      entry !== undefined &&
+      (typeof entry !== 'number' ||
+        !Number.isSafeInteger(entry) ||
+        entry < 1 ||
+        entry > 1_000_000_000)
+    )
       throw new Error(`Invalid remote ${field} limit.`);
   }
   for (const field of ['inputUsdPerMillion', 'outputUsdPerMillion'] as const) {
     const entry = v[field];
-    if (entry !== undefined && (typeof entry !== 'number' || !Number.isFinite(entry) || entry < 0 || entry > 1_000_000))
+    if (
+      entry !== undefined &&
+      (typeof entry !== 'number' || !Number.isFinite(entry) || entry < 0 || entry > 1_000_000)
+    )
       throw new Error(`Invalid remote ${field} price estimate.`);
   }
   let evidence: RemoteCapabilityEvidence | undefined;
@@ -365,7 +374,17 @@ export function validateRemoteModel(value: unknown): RemoteModelConfiguration {
     images: v.images,
     outputFormat: v.outputFormat as RemoteOutputFormat,
     allowRemoteImages: v.allowRemoteImages,
-    ...Object.fromEntries(['maxRequestsPerMinute', 'maxRequestsPerRun', 'maxTokensPerRun', 'inputUsdPerMillion', 'outputUsdPerMillion'].filter((field) => v[field] !== undefined).map((field) => [field, v[field]])),
+    ...Object.fromEntries(
+      [
+        'maxRequestsPerMinute',
+        'maxRequestsPerRun',
+        'maxTokensPerRun',
+        'inputUsdPerMillion',
+        'outputUsdPerMillion',
+      ]
+        .filter((field) => v[field] !== undefined)
+        .map((field) => [field, v[field]]),
+    ),
     ...(v.capabilityOverrides === undefined
       ? {}
       : { capabilityOverrides: validateCapabilityFlags(v.capabilityOverrides) }),

@@ -43,7 +43,26 @@ export function InferenceProfileControls({
   const [roles, setRoles] = useState<InferenceProfileValues['roles']>({});
   const [defaults, setDefaults] = useState('{}');
   const [showStagePreview, setShowStagePreview] = useState(false);
-  const [previewInput, setPreviewInput] = useState(JSON.stringify({ context: 'Example stream narrative', cycle: 1, boundary: { fromSequence: 0, throughSequence: 1, fromMs: 0, throughMs: 1000 }, frames: [{ sourceId: 'example-camera', observedAt: 1000, width: 320, height: 180, dataUrl: 'data:image/jpeg;base64,' }] }, null, 2));
+  const [previewInput, setPreviewInput] = useState(
+    JSON.stringify(
+      {
+        context: 'Example stream narrative',
+        cycle: 1,
+        boundary: { fromSequence: 0, throughSequence: 1, fromMs: 0, throughMs: 1000 },
+        frames: [
+          {
+            sourceId: 'example-camera',
+            observedAt: 1000,
+            width: 320,
+            height: 180,
+            dataUrl: 'data:image/jpeg;base64,',
+          },
+        ],
+      },
+      null,
+      2,
+    ),
+  );
   const [previewEvents, setPreviewEvents] = useState('[]');
   const [previewObservations, setPreviewObservations] = useState('[]');
   const [actualRequestPreview, setActualRequestPreview] = useState<string | null>(null);
@@ -53,14 +72,23 @@ export function InferenceProfileControls({
       const parsed = JSON.parse(defaults) as InferenceProfileValues['stageDefaults'];
       const input = JSON.parse(previewInput) as InferenceInput;
       const events = JSON.parse(previewEvents) as NonNullable<InferenceInput['recentEvents']>;
-      const observations = JSON.parse(previewObservations) as NonNullable<InferenceInput['observations']>;
-      setStagePreview(await window.lonelyChat!.previewStages(input, parsed, [...events], [...observations]));
+      const observations = JSON.parse(previewObservations) as NonNullable<
+        InferenceInput['observations']
+      >;
+      setStagePreview(
+        await window.lonelyChat!.previewStages(input, parsed, [...events], [...observations]),
+      );
     } catch (reason) {
       setStagePreview({ error: reason instanceof Error ? reason.message : String(reason) });
     }
   };
   const [contextDefaults, setContextDefaults] = useState('{}');
-  const [memory, setMemory] = useState<NonNullable<InferenceProfileValues['memory']>>({ enabled: false, intervalMs: 30000, maxCharacters: 2000, expireAfterMs: 0 });
+  const [memory, setMemory] = useState<NonNullable<InferenceProfileValues['memory']>>({
+    enabled: false,
+    intervalMs: 30000,
+    maxCharacters: 2000,
+    expireAfterMs: 0,
+  });
   const [execution, setExecution] = useState<'sequential' | 'asynchronous'>('sequential');
   const [hybridMaxImages, setHybridMaxImages] = useState(0);
   const [remoteChatImagesConsent, setRemoteChatImagesConsent] = useState(false);
@@ -121,7 +149,14 @@ export function InferenceProfileControls({
     setRoles(selected.values.roles);
     setDefaults(JSON.stringify(selected.values.stageDefaults, null, 2));
     setContextDefaults(JSON.stringify(selected.values.contextDefaults ?? {}, null, 2));
-    setMemory(selected.values.memory ?? { enabled: false, intervalMs: 30000, maxCharacters: 2000, expireAfterMs: 0 });
+    setMemory(
+      selected.values.memory ?? {
+        enabled: false,
+        intervalMs: 30000,
+        maxCharacters: 2000,
+        expireAfterMs: 0,
+      },
+    );
     setExecution(selected.values.architecture?.execution ?? 'sequential');
     setHybridMaxImages(selected.values.architecture?.hybridMaxImages ?? 0);
     setRemoteChatImagesConsent(selected.values.architecture?.remoteChatImagesConsent === true);
@@ -136,7 +171,14 @@ export function InferenceProfileControls({
       setRoles(profile.values.roles);
       setDefaults(JSON.stringify(profile.values.stageDefaults, null, 2));
       setContextDefaults(JSON.stringify(profile.values.contextDefaults ?? {}, null, 2));
-      setMemory(profile.values.memory ?? { enabled: false, intervalMs: 30000, maxCharacters: 2000, expireAfterMs: 0 });
+      setMemory(
+        profile.values.memory ?? {
+          enabled: false,
+          intervalMs: 30000,
+          maxCharacters: 2000,
+          expireAfterMs: 0,
+        },
+      );
       setExecution(profile.values.architecture?.execution ?? 'sequential');
       setHybridMaxImages(profile.values.architecture?.hybridMaxImages ?? 0);
       setRemoteChatImagesConsent(profile.values.architecture?.remoteChatImagesConsent === true);
@@ -149,7 +191,12 @@ export function InferenceProfileControls({
       const api = window.lonelyChat!;
       const values: InferenceProfileValues = {
         topology,
-        roles: Object.fromEntries([...required[topology], ...(memory.enabled && roles.memory ? ['memory' as const] : [])].map((role) => [role, roles[role]])),
+        roles: Object.fromEntries(
+          [
+            ...required[topology],
+            ...(memory.enabled && roles.memory ? ['memory' as const] : []),
+          ].map((role) => [role, roles[role]]),
+        ),
         stageDefaults: JSON.parse(defaults) as InferenceProfileValues['stageDefaults'],
         ...(topology !== 'unified' ? { memory } : {}),
         architecture: {
@@ -223,19 +270,28 @@ export function InferenceProfileControls({
       )}
       {runningProfile && selectedId && (
         <div className="rounded border border-zinc-700 p-2 text-xs text-zinc-300">
-          Editing or saving a profile never changes an active Run automatically. Only a compatible newer revision can be explicitly queued; model/provider changes require a new Run.
-          <button type="button" className="ml-2 underline" onClick={async () => {
-            try {
-              const status = await window.lonelyChat!.getSessionSnapshot();
-              const latest = profiles.find((p) => p.id === selectedId);
-              if (!latest || status.inferenceProfile?.id !== selectedId)
-                throw new Error('Only the running profile can be updated. Stop to change models or providers.');
-              await window.lonelyChat!.queueSessionProfileUpdate?.(selectedId, latest.revision);
-              setError(null);
-            } catch (reason) {
-              setError(reason instanceof Error ? reason.message : String(reason));
-            }
-          }}>Apply latest saved revision at next admission</button>
+          Editing or saving a profile never changes an active Run automatically. Only a compatible
+          newer revision can be explicitly queued; model/provider changes require a new Run.
+          <button
+            type="button"
+            className="ml-2 underline"
+            onClick={async () => {
+              try {
+                const status = await window.lonelyChat!.getSessionSnapshot();
+                const latest = profiles.find((p) => p.id === selectedId);
+                if (!latest || status.inferenceProfile?.id !== selectedId)
+                  throw new Error(
+                    'Only the running profile can be updated. Stop to change models or providers.',
+                  );
+                await window.lonelyChat!.queueSessionProfileUpdate?.(selectedId, latest.revision);
+                setError(null);
+              } catch (reason) {
+                setError(reason instanceof Error ? reason.message : String(reason));
+              }
+            }}
+          >
+            Apply latest saved revision at next admission
+          </button>
         </div>
       )}
       {selectedId && (
@@ -410,8 +466,15 @@ export function InferenceProfileControls({
           )}
           {topology === 'hybrid' && (
             <label className="flex gap-2 items-center">
-              <input type="checkbox" aria-label="Allow remote Chat image uploads" disabled={disabled} checked={remoteChatImagesConsent} onChange={(e) => setRemoteChatImagesConsent(e.target.checked)} />
-              Explicitly allow selected images to be uploaded to remote Chat providers during this Hybrid profile's Runs
+              <input
+                type="checkbox"
+                aria-label="Allow remote Chat image uploads"
+                disabled={disabled}
+                checked={remoteChatImagesConsent}
+                onChange={(e) => setRemoteChatImagesConsent(e.target.checked)}
+              />
+              Explicitly allow selected images to be uploaded to remote Chat providers during this
+              Hybrid profile's Runs
             </label>
           )}
           {required[topology].map((role) => (
@@ -440,20 +503,66 @@ export function InferenceProfileControls({
           ))}
           {topology !== 'unified' && (
             <div className="space-y-2 rounded border border-zinc-700 p-2">
-              <label className="flex items-center gap-2"><input type="checkbox" disabled={disabled} checked={memory.enabled} onChange={(e) => setMemory((m) => ({ ...m, enabled: e.target.checked }))} />Enable shared Run narrative memory</label>
-              {memory.enabled && <>
-                {(['intervalMs', 'maxCharacters', 'expireAfterMs'] as const).map((field) => (
-                  <label className="block" key={field}>{field === 'intervalMs' ? 'Update cadence (ms)' : field === 'maxCharacters' ? 'Summary character budget' : 'Expire after (ms; 0 = never)'}
-                    <input className="mt-1 w-full rounded border border-zinc-600 bg-zinc-900 p-2" type="number" min={field === 'intervalMs' ? 1000 : field === 'maxCharacters' ? 256 : 0} max={field === 'intervalMs' ? 3600000 : field === 'maxCharacters' ? 12000 : 86400000} disabled={disabled} value={memory[field]} onChange={(e) => setMemory((m) => ({ ...m, [field]: Number(e.target.value) }))} />
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  disabled={disabled}
+                  checked={memory.enabled}
+                  onChange={(e) => setMemory((m) => ({ ...m, enabled: e.target.checked }))}
+                />
+                Enable shared Run narrative memory
+              </label>
+              {memory.enabled && (
+                <>
+                  {(['intervalMs', 'maxCharacters', 'expireAfterMs'] as const).map((field) => (
+                    <label className="block" key={field}>
+                      {field === 'intervalMs'
+                        ? 'Update cadence (ms)'
+                        : field === 'maxCharacters'
+                          ? 'Summary character budget'
+                          : 'Expire after (ms; 0 = never)'}
+                      <input
+                        className="mt-1 w-full rounded border border-zinc-600 bg-zinc-900 p-2"
+                        type="number"
+                        min={field === 'intervalMs' ? 1000 : field === 'maxCharacters' ? 256 : 0}
+                        max={
+                          field === 'intervalMs'
+                            ? 3600000
+                            : field === 'maxCharacters'
+                              ? 12000
+                              : 86400000
+                        }
+                        disabled={disabled}
+                        value={memory[field]}
+                        onChange={(e) =>
+                          setMemory((m) => ({ ...m, [field]: Number(e.target.value) }))
+                        }
+                      />
+                    </label>
+                  ))}
+                  <label className="block">
+                    Memory model (optional; defaults to Chat)
+                    <select
+                      className="mt-1 w-full rounded border border-zinc-600 bg-zinc-900 p-2"
+                      disabled={disabled}
+                      value={roles.memory ? `${roles.memory.kind}:${roles.memory.modelId}` : ''}
+                      onChange={(e) =>
+                        setRoles((current) => ({
+                          ...current,
+                          memory: models.find((m) => m.key === e.target.value)?.ref,
+                        }))
+                      }
+                    >
+                      <option value="">Use Chat model</option>
+                      {models.map((item) => (
+                        <option key={item.key} value={item.key}>
+                          {item.label}
+                        </option>
+                      ))}
+                    </select>
                   </label>
-                ))}
-                <label className="block">Memory model (optional; defaults to Chat)
-                  <select className="mt-1 w-full rounded border border-zinc-600 bg-zinc-900 p-2" disabled={disabled} value={roles.memory ? `${roles.memory.kind}:${roles.memory.modelId}` : ''} onChange={(e) => setRoles((current) => ({ ...current, memory: models.find((m) => m.key === e.target.value)?.ref }))}>
-                    <option value="">Use Chat model</option>
-                    {models.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}
-                  </select>
-                </label>
-              </>}
+                </>
+              )}
             </div>
           )}
           <label className="block">
@@ -468,7 +577,8 @@ export function InferenceProfileControls({
             />
           </label>
           <label className="block">
-            Stage defaults by role (JSON: settings, systemPrompt, userPrompt, contextPolicy, maxResponseTokens, visionOutput, visionOptionalFields, videoInput; no credentials)
+            Stage defaults by role (JSON: settings, systemPrompt, userPrompt, contextPolicy,
+            maxResponseTokens, visionOutput, visionOptionalFields, videoInput; no credentials)
             <textarea
               aria-label="Profile stage defaults"
               disabled={disabled}
@@ -481,81 +591,148 @@ export function InferenceProfileControls({
           {topology !== 'unified' && (
             <div className="space-y-2 rounded border border-zinc-700 p-2">
               <p className="text-xs text-zinc-400">
-                Per-stage frameSampling in stage defaults: maxFrames (1–32), windowMs (250–60000), strategy (uniform/latest), maxWidth and maxHeight. Frame target dimensions must be supported by the original capture; thumbnails are never upscaled. Set videoInput to 'native' on a local Vision stage to opt into a bounded encoded clip only when the loaded model explicitly reports video support; otherwise timestamped JPEG frames remain the default.
+                Per-stage frameSampling in stage defaults: maxFrames (1–32), windowMs (250–60000),
+                strategy (uniform/latest), maxWidth and maxHeight. Frame target dimensions must be
+                supported by the original capture; thumbnails are never upscaled. Set videoInput to
+                'native' on a local Vision stage to opt into a bounded encoded clip only when the
+                loaded model explicitly reports video support; otherwise timestamped JPEG frames
+                remain the default.
               </p>
               <p className="text-xs text-zinc-400">
                 Prompt variables: {'{{context}}'}, {'{{cycle}}'}, {'{{events}}'},
-                {' {{transcripts}}'}, {' {{chat}}'}, {' {{scene}}'},
-                {' {{observations}}'}, {' {{narrative}}'}, {' {{interpretations}}'},
-                {' {{significantEvents}}'}. Unknown variables are rejected.
-                Context policy: maxAgeMs, maxCount, maxCharacters and sources (events, transcripts,
-                chat, scene, observations, narrative, interpretations, significantEvents).
-                maxResponseTokens: 128–8192. Vision output:
-                scene, events or both; optional fields: confidence, notes. Previous model interpretations are context,
-                not direct captured evidence. Required instructions and structured response schema
-                remain separate from the bounded context. Oldest history is omitted first.
+                {' {{transcripts}}'}, {' {{chat}}'}, {' {{scene}}'},{' {{observations}}'},{' '}
+                {' {{narrative}}'}, {' {{interpretations}}'},{' {{significantEvents}}'}. Unknown
+                variables are rejected. Context policy: maxAgeMs, maxCount, maxCharacters and
+                sources (events, transcripts, chat, scene, observations, narrative, interpretations,
+                significantEvents). maxResponseTokens: 128–8192. Vision output: scene, events or
+                both; optional fields: confidence, notes. Previous model interpretations are
+                context, not direct captured evidence. Required instructions and structured response
+                schema remain separate from the bounded context. Oldest history is omitted first.
               </p>
               <div className="flex gap-2">
-                <button type="button" disabled={disabled} className="rounded border border-zinc-600 px-2 py-1"
+                <button
+                  type="button"
+                  disabled={disabled}
+                  className="rounded border border-zinc-600 px-2 py-1"
                   onClick={() => {
                     try {
-                      const stages = JSON.parse(defaults) as InferenceProfileValues['stageDefaults'];
+                      const stages = JSON.parse(
+                        defaults,
+                      ) as InferenceProfileValues['stageDefaults'];
                       for (const role of required[topology]) {
-                        stages[role] = { ...stages[role], systemPrompt: undefined, userPrompt: undefined };
+                        stages[role] = {
+                          ...stages[role],
+                          systemPrompt: undefined,
+                          userPrompt: undefined,
+                        };
                       }
                       setDefaults(JSON.stringify(stages, null, 2));
-                    } catch { setError('Invalid stage JSON.'); }
-                  }}>
+                    } catch {
+                      setError('Invalid stage JSON.');
+                    }
+                  }}
+                >
                   Restore default prompts
                 </button>
-                <button type="button" onClick={() => {
-                  void (async () => {
-                    try {
-                      const listing = await window.lonelyChat!.listInferenceTraces();
-                      const recent = listing.attempts.at(-1);
-                      const attempt = recent && await window.lonelyChat!.getInferenceTrace(recent.id);
-                      setActualRequestPreview(attempt?.request
-                        ? JSON.stringify(attempt.request, (_key, value: unknown) =>
-                            typeof value === 'string' && value.startsWith('data:image/')
-                              ? '[image bytes omitted; see request media reference]' : value, 2)
-                        : 'No retained submitted request is available. Start a Run and inspect its trace.');
-                    } catch (reason) {
-                      setActualRequestPreview(String(reason));
-                    }
-                  })();
-                }} className="rounded border border-zinc-600 px-2 py-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    void (async () => {
+                      try {
+                        const listing = await window.lonelyChat!.listInferenceTraces();
+                        const recent = listing.attempts.at(-1);
+                        const attempt =
+                          recent && (await window.lonelyChat!.getInferenceTrace(recent.id));
+                        setActualRequestPreview(
+                          attempt?.request
+                            ? JSON.stringify(
+                                attempt.request,
+                                (_key, value: unknown) =>
+                                  typeof value === 'string' && value.startsWith('data:image/')
+                                    ? '[image bytes omitted; see request media reference]'
+                                    : value,
+                                2,
+                              )
+                            : 'No retained submitted request is available. Start a Run and inspect its trace.',
+                        );
+                      } catch (reason) {
+                        setActualRequestPreview(String(reason));
+                      }
+                    })();
+                  }}
+                  className="rounded border border-zinc-600 px-2 py-1"
+                >
                   Last actual Run request
                 </button>
-                <button type="button" onClick={() => setShowStagePreview((value) => !value)}
-                  className="rounded border border-zinc-600 px-2 py-1">
+                <button
+                  type="button"
+                  onClick={() => setShowStagePreview((value) => !value)}
+                  className="rounded border border-zinc-600 px-2 py-1"
+                >
                   {showStagePreview ? 'Hide stage preview' : 'Preview stage configuration'}
                 </button>
               </div>
-              {actualRequestPreview && <pre aria-label="Actual submitted request" className="max-h-64 overflow-auto whitespace-pre-wrap text-xs">
-                {actualRequestPreview}
-              </pre>}
-              {showStagePreview && <div className="space-y-2">
-                <p className="text-xs text-zinc-400">Exact production request construction with your unsaved stage settings and selected input snapshot. Edit the input JSON or paste a captured input. Chat uses the supplied intermediate Vision Events and Observations. Image bytes are redacted in the display, never sent.</p>
-                <label className="block">Input snapshot (JSON)
-                  <textarea aria-label="Stage preview input" rows={5} value={previewInput}
-                    onChange={(e) => setPreviewInput(e.target.value)}
-                    className="mt-1 w-full rounded border border-zinc-600 bg-zinc-900 p-2 font-mono" />
-                </label>
-                <label className="block">Chat Vision Events (JSON array)
-                  <textarea aria-label="Stage preview events" rows={2} value={previewEvents}
-                    onChange={(e) => setPreviewEvents(e.target.value)}
-                    className="mt-1 w-full rounded border border-zinc-600 bg-zinc-900 p-2 font-mono" />
-                </label>
-                <label className="block">Chat Vision Observations (JSON array)
-                  <textarea aria-label="Stage preview observations" rows={2} value={previewObservations}
-                    onChange={(e) => setPreviewObservations(e.target.value)}
-                    className="mt-1 w-full rounded border border-zinc-600 bg-zinc-900 p-2 font-mono" />
-                </label>
-                <button type="button" className="rounded border border-zinc-600 px-2 py-1" onClick={() => void resolvePreview()}>Resolve current request</button>
-                <pre aria-label="Stage request preview" className="max-h-64 overflow-auto whitespace-pre-wrap text-xs">
-                  {JSON.stringify(stagePreview, null, 2)}
+              {actualRequestPreview && (
+                <pre
+                  aria-label="Actual submitted request"
+                  className="max-h-64 overflow-auto whitespace-pre-wrap text-xs"
+                >
+                  {actualRequestPreview}
                 </pre>
-              </div>}
+              )}
+              {showStagePreview && (
+                <div className="space-y-2">
+                  <p className="text-xs text-zinc-400">
+                    Exact production request construction with your unsaved stage settings and
+                    selected input snapshot. Edit the input JSON or paste a captured input. Chat
+                    uses the supplied intermediate Vision Events and Observations. Image bytes are
+                    redacted in the display, never sent.
+                  </p>
+                  <label className="block">
+                    Input snapshot (JSON)
+                    <textarea
+                      aria-label="Stage preview input"
+                      rows={5}
+                      value={previewInput}
+                      onChange={(e) => setPreviewInput(e.target.value)}
+                      className="mt-1 w-full rounded border border-zinc-600 bg-zinc-900 p-2 font-mono"
+                    />
+                  </label>
+                  <label className="block">
+                    Chat Vision Events (JSON array)
+                    <textarea
+                      aria-label="Stage preview events"
+                      rows={2}
+                      value={previewEvents}
+                      onChange={(e) => setPreviewEvents(e.target.value)}
+                      className="mt-1 w-full rounded border border-zinc-600 bg-zinc-900 p-2 font-mono"
+                    />
+                  </label>
+                  <label className="block">
+                    Chat Vision Observations (JSON array)
+                    <textarea
+                      aria-label="Stage preview observations"
+                      rows={2}
+                      value={previewObservations}
+                      onChange={(e) => setPreviewObservations(e.target.value)}
+                      className="mt-1 w-full rounded border border-zinc-600 bg-zinc-900 p-2 font-mono"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="rounded border border-zinc-600 px-2 py-1"
+                    onClick={() => void resolvePreview()}
+                  >
+                    Resolve current request
+                  </button>
+                  <pre
+                    aria-label="Stage request preview"
+                    className="max-h-64 overflow-auto whitespace-pre-wrap text-xs"
+                  >
+                    {JSON.stringify(stagePreview, null, 2)}
+                  </pre>
+                </div>
+              )}
             </div>
           )}
           <div className="flex gap-2">

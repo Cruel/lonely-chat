@@ -67,8 +67,10 @@ export class LocalGpuQueue {
     // A sustained Chat backlog cannot permanently exclude Vision. Deadline
     // ordering applies within each role, and Chat wins an otherwise tied slot.
     this.waiting.sort(
-      (a, b) => (a.role === 'memory' ? 1 : 0) - (b.role === 'memory' ? 1 : 0) ||
-        a.deadline - b.deadline || (a.role === b.role ? 0 : a.role === 'chat' ? -1 : 1),
+      (a, b) =>
+        (a.role === 'memory' ? 1 : 0) - (b.role === 'memory' ? 1 : 0) ||
+        a.deadline - b.deadline ||
+        (a.role === b.role ? 0 : a.role === 'chat' ? -1 : 1),
     );
     const visionIndex =
       this.consecutiveChats >= 2 ? this.waiting.findIndex((job) => job.role === 'observer') : -1;
@@ -152,12 +154,17 @@ export class LocalModelPool {
     }
   }
 
-  adapter(id: string, role: Role, input: InferenceInput, nativeVideo = false): UnifiedInferenceAdapter {
+  adapter(
+    id: string,
+    role: Role,
+    input: InferenceInput,
+    nativeVideo = false,
+  ): UnifiedInferenceAdapter {
     const worker = this.workers.get(id);
     if (!worker || !this.pinned.has(id)) throw new Error('Local Split model is not resident.');
     const frames = llamaCppAdapter(worker, input);
-    const base = nativeVideo && role === 'observer'
-      ? nativeVideoStageAdapter(frames, worker, input) : frames;
+    const base =
+      nativeVideo && role === 'observer' ? nativeVideoStageAdapter(frames, worker, input) : frames;
     return {
       capabilities: base.capabilities,
       complete: (request, signal, observer) =>

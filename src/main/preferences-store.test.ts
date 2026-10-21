@@ -13,7 +13,9 @@ async function store(): Promise<{ store: PreferencesStore; directory: string }> 
   return { store: new PreferencesStore(directory), directory };
 }
 afterEach(async () => {
-  await Promise.all(dirs.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+  await Promise.all(
+    dirs.splice(0).map((directory) => rm(directory, { recursive: true, force: true })),
+  );
 });
 
 describe('current-only simulation preferences', () => {
@@ -31,9 +33,13 @@ describe('current-only simulation preferences', () => {
 
   it('serializes simultaneous saves without losing the last value', async () => {
     const { store: settings, directory } = await store();
-    expect(await Promise.all([
-      settings.write(pace(1500)), settings.write(pace(3000)), settings.write(pace(5000)),
-    ])).toEqual([pace(1500), pace(3000), pace(5000)]);
+    expect(
+      await Promise.all([
+        settings.write(pace(1500)),
+        settings.write(pace(3000)),
+        settings.write(pace(5000)),
+      ]),
+    ).toEqual([pace(1500), pace(3000), pace(5000)]);
     expect(await settings.read()).toEqual(pace(5000));
     expect(await readdir(directory)).toEqual(['preferences.json']);
   });
@@ -58,18 +64,35 @@ describe('current-only simulation preferences', () => {
   it('rejects invalid numeric caps, modes and unapproved private fields', async () => {
     const { store: settings } = await store();
     const invalid = [
-      { cycleIntervalMs: 100 }, { audienceCount: 0 }, { audienceCount: 1.5 },
-      { chatActivity: 'extreme' }, { ramBudgetMiB: 0 }, { vramBudgetMiB: -1 },
-      { gpuComputeTargetPercent: 101 }, { computeBackend: 'directx' },
-      { cpuThreads: 0 }, { contextTokens: 511 }, { contextTokens: 262400 },
-      { gpuOffloadLayers: -1 }, { baselineMs: 61000 }, { historyMaxCount: 300 },
-      { historyMaxAgeMs: 0 }, { inferenceTimeoutMs: 9999 },
-      { inferenceTimeoutMs: Number.POSITIVE_INFINITY }, { videoCaptureIntervalMs: 249 },
-      { videoCaptureMaxWidth: 63 }, { videoCaptureMaxWidth: 640.5 },
-      { videoCaptureMaxHeight: 1081 }, { videoCoverageMs: 61000 },
-      { videoMinFrames: 0 }, { videoMaxFrames: 33 },
-      { videoMinFrames: 25, videoMaxFrames: 24 }, { videoSamplingStrategy: 'random' },
-      { imageMaxTokens: -1 }, { imageMaxTokens: 8193 }, { imageMaxTokens: 32.5 },
+      { cycleIntervalMs: 100 },
+      { audienceCount: 0 },
+      { audienceCount: 1.5 },
+      { chatActivity: 'extreme' },
+      { ramBudgetMiB: 0 },
+      { vramBudgetMiB: -1 },
+      { gpuComputeTargetPercent: 101 },
+      { computeBackend: 'directx' },
+      { cpuThreads: 0 },
+      { contextTokens: 511 },
+      { contextTokens: 262400 },
+      { gpuOffloadLayers: -1 },
+      { baselineMs: 61000 },
+      { historyMaxCount: 300 },
+      { historyMaxAgeMs: 0 },
+      { inferenceTimeoutMs: 9999 },
+      { inferenceTimeoutMs: Number.POSITIVE_INFINITY },
+      { videoCaptureIntervalMs: 249 },
+      { videoCaptureMaxWidth: 63 },
+      { videoCaptureMaxWidth: 640.5 },
+      { videoCaptureMaxHeight: 1081 },
+      { videoCoverageMs: 61000 },
+      { videoMinFrames: 0 },
+      { videoMaxFrames: 33 },
+      { videoMinFrames: 25, videoMaxFrames: 24 },
+      { videoSamplingStrategy: 'random' },
+      { imageMaxTokens: -1 },
+      { imageMaxTokens: 8193 },
+      { imageMaxTokens: 32.5 },
       { manualContext: 'private' },
     ];
     for (const field of invalid)

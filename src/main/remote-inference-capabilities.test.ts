@@ -230,7 +230,8 @@ describe('remote provider capability and multimodal contracts', () => {
     ).toEqual({
       type: 'object',
       properties: { ok: { type: ['string', 'null'] } },
-      required: ['ok'], additionalProperties: false,
+      required: ['ok'],
+      additionalProperties: false,
     });
     expect(() =>
       strictProviderSchema({

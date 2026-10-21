@@ -142,11 +142,11 @@ function fixture(
           : options.probeOutput
             ? { events: [], messages: [] }
             : {
-              events: [{ kind: 'reaction', summary: 'a reunion', ageMs: options.ageMs ?? 100 }],
-              messages: [
-                { author: options.author ?? 'viewer', text: 'Good to see you!', offsetMs: 100 },
-              ],
-            },
+                events: [{ kind: 'reaction', summary: 'a reunion', ageMs: options.ageMs ?? 100 }],
+                messages: [
+                  { author: options.author ?? 'viewer', text: 'Good to see you!', offsetMs: 100 },
+                ],
+              },
       );
       const result = {
         id: 'resp-complete',
@@ -345,14 +345,30 @@ describe('ChatGPT OAuth and subscription inference', () => {
     const memory = new NarrativeMemory();
     memory.observe('Racer won at 100 ms.', 100);
     const adapter = chatGPTUnifiedAdapter(selection(accountId), auth, {
-      roster: [], fetcher: f.fetcher,
+      roster: [],
+      fetcher: f.fetcher,
     });
-    expect(await memory.update(1000, {
-      enabled: true, intervalMs: 1000, maxCharacters: 512, expireAfterMs: 0,
-    }, adapter, new AbortController().signal)).toBe(true);
-    expect(memory.snapshot(1000, {
-      enabled: true, intervalMs: 1000, maxCharacters: 512, expireAfterMs: 0,
-    })?.text).toBe('The racer won at 100 ms.');
+    expect(
+      await memory.update(
+        1000,
+        {
+          enabled: true,
+          intervalMs: 1000,
+          maxCharacters: 512,
+          expireAfterMs: 0,
+        },
+        adapter,
+        new AbortController().signal,
+      ),
+    ).toBe(true);
+    expect(
+      memory.snapshot(1000, {
+        enabled: true,
+        intervalMs: 1000,
+        maxCharacters: 512,
+        expireAfterMs: 0,
+      })?.text,
+    ).toBe('The racer won at 100 ms.');
     const submitted = f.requests.filter((entry) => entry.url.endsWith('/responses'));
     expect(submitted).toHaveLength(1);
     expect(submitted[0].body).not.toHaveProperty('temperature');

@@ -174,7 +174,11 @@ export function chatGPTUnifiedAdapter(
           throw new Error(
             'ChatGPT response completed with no assistant text (only non-text output).',
           );
-        const normalized = normalizeRemoteResult(normalizeStageMemory(boundedJson(responseText), request), options.roster, request.role);
+        const normalized = normalizeRemoteResult(
+          normalizeStageMemory(boundedJson(responseText), request),
+          options.roster,
+          request.role,
+        );
         const counts = usage(completed.usage);
         const raw = {
           id: completed.id,

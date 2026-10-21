@@ -6,7 +6,16 @@ export interface TimelineItem {
   readonly timestamp: number | null;
   /** Original physical time when the primary Inspector timestamp is pause-adjusted. */
   readonly physicalTimestamp?: number | null;
-  readonly kind: 'boundary' | 'observation' | 'frame' | 'transcript' | 'event' | 'batch' | 'chat' | 'stage' | 'scene';
+  readonly kind:
+    | 'boundary'
+    | 'observation'
+    | 'frame'
+    | 'transcript'
+    | 'event'
+    | 'batch'
+    | 'chat'
+    | 'stage'
+    | 'scene';
   readonly title: string;
   readonly description: string;
   readonly state?: 'shown' | 'pending' | 'not-shown';
@@ -156,10 +165,16 @@ export function runTimeline(attempts: readonly TraceAttempt[]): TimelineItem[] {
     const prefix = attempt.id;
     const frameRefs = attempt.sourceFrameIds?.join(', ') || 'none';
     const dependencies = attempt.dependsOn?.join(', ') || 'none';
-    const domain = attempt.startedTimelineAt === undefined ? 'physical' :
-      attempt.startedTimelineAt === attempt.startedAt ? 'physical' : 'pause-adjusted';
+    const domain =
+      attempt.startedTimelineAt === undefined
+        ? 'physical'
+        : attempt.startedTimelineAt === attempt.startedAt
+          ? 'physical'
+          : 'pause-adjusted';
     items.push({
-      key: `${prefix}-request`, attemptId: prefix, kind: 'stage',
+      key: `${prefix}-request`,
+      attemptId: prefix,
+      kind: 'stage',
       timestamp: attempt.startedTimelineAt ?? attempt.startedAt,
       physicalTimestamp: attempt.startedAt,
       clockDomain: domain,
@@ -168,43 +183,66 @@ export function runTimeline(attempts: readonly TraceAttempt[]): TimelineItem[] {
     });
     if (role === 'vision') {
       const scene = typeof attempt.sceneState === 'string' ? attempt.sceneState.trim() : '';
-      if (scene) items.push({
-        key: `${prefix}-scene`, attemptId: prefix, kind: 'scene',
-        timestamp: attempt.availableTimelineAt ?? attempt.availableAt ?? null,
-        physicalTimestamp: attempt.availableAt,
-        clockDomain: domain,
-        title: 'Scene state updated',
-        description: `${scene} · observed ${attempt.observedAt ?? '?'} · from ${prefix}`,
-      });
-      entries(record(attempt.accepted)?.events).forEach((event, index) => items.push({
-        key: `${prefix}-event-${index}`, attemptId: prefix, kind: 'event',
-        timestamp: attempt.availableTimelineAt ?? attempt.availableAt ?? null,
-        physicalTimestamp: attempt.availableAt,
-        clockDomain: domain,
-        title: `Vision Event · ${string(event.kind)}`,
-        description: `${string(event.summary)} · observed ${event.observedAt ?? attempt.observedAt ?? '?'} · from ${prefix}`,
-      }));
+      if (scene)
+        items.push({
+          key: `${prefix}-scene`,
+          attemptId: prefix,
+          kind: 'scene',
+          timestamp: attempt.availableTimelineAt ?? attempt.availableAt ?? null,
+          physicalTimestamp: attempt.availableAt,
+          clockDomain: domain,
+          title: 'Scene state updated',
+          description: `${scene} · observed ${attempt.observedAt ?? '?'} · from ${prefix}`,
+        });
+      entries(record(attempt.accepted)?.events).forEach((event, index) =>
+        items.push({
+          key: `${prefix}-event-${index}`,
+          attemptId: prefix,
+          kind: 'event',
+          timestamp: attempt.availableTimelineAt ?? attempt.availableAt ?? null,
+          physicalTimestamp: attempt.availableAt,
+          clockDomain: domain,
+          title: `Vision Event · ${string(event.kind)}`,
+          description: `${string(event.summary)} · observed ${event.observedAt ?? attempt.observedAt ?? '?'} · from ${prefix}`,
+        }),
+      );
     }
     if (attempt.availableAt != null || attempt.stage === 'cancelled' || attempt.stage === 'failed')
       items.push({
-        key: `${prefix}-result`, attemptId: prefix, kind: 'stage',
-        timestamp: attempt.availableTimelineAt ?? attempt.availableAt ?? attempt.startedTimelineAt ?? attempt.startedAt,
+        key: `${prefix}-result`,
+        attemptId: prefix,
+        kind: 'stage',
+        timestamp:
+          attempt.availableTimelineAt ??
+          attempt.availableAt ??
+          attempt.startedTimelineAt ??
+          attempt.startedAt,
         physicalTimestamp: attempt.availableAt,
         clockDomain: domain,
         title: `${role} ${attempt.stage === 'scheduled' ? 'accepted' : attempt.stage}`,
         description: `Attempt ${prefix}${attempt.errorStage ? ` · failed at ${attempt.errorStage}` : ''}${attempt.error ? ` · ${attempt.error}` : ''}${attempt.usage ? ` · ${attempt.usage.totalTokens ?? '?'} tokens` : ''}`,
       });
     if (role === 'chat' || role === 'unified') {
-      const selected = attemptTimeline(attempt).filter((entry) =>
-        entry.kind === 'batch' || (entry.kind === 'chat' && entry.key.startsWith('message-')) ||
-        (entry.kind === 'event' && entry.key.startsWith('new-event-')));
-      for (const entry of selected) items.push({
-        ...entry, key: `${prefix}-${entry.key}`, attemptId: prefix,
-        clockDomain: record(attempt.scheduled)?.clockDomain === 'pause-adjusted' ? 'pause-adjusted' : 'physical',
-      });
+      const selected = attemptTimeline(attempt).filter(
+        (entry) =>
+          entry.kind === 'batch' ||
+          (entry.kind === 'chat' && entry.key.startsWith('message-')) ||
+          (entry.kind === 'event' && entry.key.startsWith('new-event-')),
+      );
+      for (const entry of selected)
+        items.push({
+          ...entry,
+          key: `${prefix}-${entry.key}`,
+          attemptId: prefix,
+          clockDomain:
+            record(attempt.scheduled)?.clockDomain === 'pause-adjusted'
+              ? 'pause-adjusted'
+              : 'physical',
+        });
     }
   }
   // Stable sort retains the capture order for events sharing one availability timestamp.
-  return items.sort((a, b) =>
-    (a.timestamp ?? Number.POSITIVE_INFINITY) - (b.timestamp ?? Number.POSITIVE_INFINITY));
+  return items.sort(
+    (a, b) => (a.timestamp ?? Number.POSITIVE_INFINITY) - (b.timestamp ?? Number.POSITIVE_INFINITY),
+  );
 }

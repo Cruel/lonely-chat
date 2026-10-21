@@ -24,9 +24,17 @@ import type { PlaygroundFrame } from '../shared/playground-media-contract';
 import { DEFAULT_PREFERENCES, type SessionPreferences } from '../shared/session-contract';
 import { PrivateInferenceError } from './private-inference-error';
 import { traceUsage } from './inference-trace';
-import { executeProfileExperiment, previewProfileExperiment, type PrivateVisionOutput, type ProfileAdapterFactory } from './profile-playground';
+import {
+  executeProfileExperiment,
+  previewProfileExperiment,
+  type PrivateVisionOutput,
+  type ProfileAdapterFactory,
+} from './profile-playground';
 import type { InferenceProfile } from '../shared/inference-profile-contract';
-import type { ProfileExperimentResult, ProfileExperimentPreview } from '../shared/profile-playground-contract';
+import type {
+  ProfileExperimentResult,
+  ProfileExperimentPreview,
+} from '../shared/profile-playground-contract';
 import {
   DEFAULT_NATIVE_VIDEO_PREFERENCES,
   type NativeVideoPreferences,
@@ -79,7 +87,9 @@ const IDLE_WORKER_MS = 5 * 60_000;
 export class PlaygroundService {
   private readonly coordinator = new InferenceCoordinator();
   private readonly visionOutputs = new Map<string, PrivateVisionOutput>();
-  private stageFrameResizer: ((frame: VideoFrame, maxWidth: number, maxHeight: number) => VideoFrame) | undefined;
+  private stageFrameResizer:
+    | ((frame: VideoFrame, maxWidth: number, maxHeight: number) => VideoFrame)
+    | undefined;
   private active: Promise<void> | null = null;
   private abort: AbortController | null = null;
   private cached: { key: string; provider: PlaygroundProvider } | null = null;
@@ -224,14 +234,18 @@ export class PlaygroundService {
     })();
   }
 
-  configureStageFrameResizer(resizer: (frame: VideoFrame, maxWidth: number, maxHeight: number) => VideoFrame): void {
+  configureStageFrameResizer(
+    resizer: (frame: VideoFrame, maxWidth: number, maxHeight: number) => VideoFrame,
+  ): void {
     this.stageFrameResizer = resizer;
   }
 
   /** Private Vision outputs are capped and never written to Chat or Run history. */
   private reference(input: unknown): PrivateVisionOutput | null {
-    const id = input && typeof input === 'object' && 'visionReferenceId' in input
-      ? (input as { visionReferenceId: unknown }).visionReferenceId : undefined;
+    const id =
+      input && typeof input === 'object' && 'visionReferenceId' in input
+        ? (input as { visionReferenceId: unknown }).visionReferenceId
+        : undefined;
     if (id === undefined) return null;
     if (typeof id !== 'string' || !this.visionOutputs.has(id))
       throw new Error('Saved Vision output was not found in this Playground session.');
@@ -239,17 +253,30 @@ export class PlaygroundService {
   }
 
   previewProfile(input: unknown, profile: InferenceProfile): ProfileExperimentPreview {
-    return previewProfileExperiment(input, profile, this.reference(input), this.historyLimits(), this.stageFrameResizer);
+    return previewProfileExperiment(
+      input,
+      profile,
+      this.reference(input),
+      this.historyLimits(),
+      this.stageFrameResizer,
+    );
   }
 
-  runProfile(input: unknown, profile: InferenceProfile, adapters: ProfileAdapterFactory, archivedInput?: InferenceInput): Promise<ProfileExperimentResult> {
+  runProfile(
+    input: unknown,
+    profile: InferenceProfile,
+    adapters: ProfileAdapterFactory,
+    archivedInput?: InferenceInput,
+  ): Promise<ProfileExperimentResult> {
     if (this.busy || this.shutdown) throw new Error('Another Playground inference is in progress.');
     if (!this.canRun()) throw new Error('Stop Simulation before running Playground.');
     const previous = this.reference(input);
     const abort = new AbortController();
     this.abort = abort;
     let resolveDone!: () => void;
-    this.active = new Promise<void>((resolve) => { resolveDone = resolve; });
+    this.active = new Promise<void>((resolve) => {
+      resolveDone = resolve;
+    });
     this.clearIdleTimer();
     this.notify();
     return (async () => {
@@ -258,8 +285,16 @@ export class PlaygroundService {
         await this.evictIdle();
         if (!this.canRun() || abort.signal.aborted || this.shutdown)
           throw new Error('Playground cancelled or Simulation became active.');
-        const execution = await executeProfileExperiment(input, profile, previous, adapters,
-          abort.signal, this.historyLimits(), this.stageFrameResizer, archivedInput);
+        const execution = await executeProfileExperiment(
+          input,
+          profile,
+          previous,
+          adapters,
+          abort.signal,
+          this.historyLimits(),
+          this.stageFrameResizer,
+          archivedInput,
+        );
         if (!abort.signal.aborted && execution.vision) {
           this.visionOutputs.set(execution.vision.reference.id, execution.vision);
           while (this.visionOutputs.size > 12)

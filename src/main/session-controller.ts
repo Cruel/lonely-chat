@@ -18,7 +18,12 @@ import { selectContinuousVideoWindow, type ContinuousVideoWindow } from './conti
 import { resolveUnifiedStageRequest } from './stage-context';
 import { PrivateInferenceError } from './private-inference-error';
 import { InferenceTrace, traceFailureStage, traceUsage } from './inference-trace';
-import { privateStageMetadata, stageFrameIds, stageObservationRefs, type StageTraceFactory } from './stage-trace-evidence';
+import {
+  privateStageMetadata,
+  stageFrameIds,
+  stageObservationRefs,
+  type StageTraceFactory,
+} from './stage-trace-evidence';
 import { deriveInferenceSeed, randomInferenceSeed, validInferenceSeed } from './inference-seeds';
 import { chooseWorkload, type ResourceMeasurements } from './resource-policy';
 import type { AudienceService } from './audience-service';
@@ -69,7 +74,8 @@ export class SessionController {
   private splitRosterProvider: InferenceProvider | null = null;
   private activeProfile: import('../shared/inference-profile-contract').InferenceProfile | null =
     null;
-  private pendingProfile: import('../shared/inference-profile-contract').InferenceProfile | null = null;
+  private pendingProfile: import('../shared/inference-profile-contract').InferenceProfile | null =
+    null;
   private readonly splitCoordinator = new ScheduledSplitInference();
   private splitVisionTimer: unknown = null;
   private splitVisionTick: (() => void) | null = null;
@@ -151,26 +157,48 @@ export class SessionController {
   }
 
   /** Queue a saved revision for the next admission; never change an in-flight attempt. */
-  queueProfileUpdate(profile: import('../shared/inference-profile-contract').InferenceProfile): SessionSnapshot {
-    if (this.state.phase !== 'running' || !this.activeProfile ||
-        profile.id !== this.activeProfile.id ||
-        profile.values.topology !== this.activeProfile.values.topology ||
-        JSON.stringify(profile.values.roles) !== JSON.stringify(this.activeProfile.values.roles))
-      throw new Error('Changing models, providers, or topology requires stopping the Run and an explicit transition.');
-    const liveKeys = new Set(['cycleIntervalMs', 'historyMaxCount', 'historyMaxAgeMs', 'chatActivity']);
-    if (this.activeProfile.values.architecture?.execution !== profile.values.architecture?.execution ||
-        this.activeProfile.values.architecture?.hybridMaxImages !== profile.values.architecture?.hybridMaxImages ||
-        this.activeProfile.values.architecture?.remoteChatImagesConsent !== profile.values.architecture?.remoteChatImagesConsent)
+  queueProfileUpdate(
+    profile: import('../shared/inference-profile-contract').InferenceProfile,
+  ): SessionSnapshot {
+    if (
+      this.state.phase !== 'running' ||
+      !this.activeProfile ||
+      profile.id !== this.activeProfile.id ||
+      profile.values.topology !== this.activeProfile.values.topology ||
+      JSON.stringify(profile.values.roles) !== JSON.stringify(this.activeProfile.values.roles)
+    )
+      throw new Error(
+        'Changing models, providers, or topology requires stopping the Run and an explicit transition.',
+      );
+    const liveKeys = new Set([
+      'cycleIntervalMs',
+      'historyMaxCount',
+      'historyMaxAgeMs',
+      'chatActivity',
+    ]);
+    if (
+      this.activeProfile.values.architecture?.execution !==
+        profile.values.architecture?.execution ||
+      this.activeProfile.values.architecture?.hybridMaxImages !==
+        profile.values.architecture?.hybridMaxImages ||
+      this.activeProfile.values.architecture?.remoteChatImagesConsent !==
+        profile.values.architecture?.remoteChatImagesConsent
+    )
       throw new Error('Changing stage execution or media permissions requires a new Run.');
     const previousSettings = this.activeProfile.values.stageDefaults.unified?.settings ?? {};
     const nextSettings = profile.values.stageDefaults.unified?.settings ?? {};
     for (const key of new Set([...Object.keys(previousSettings), ...Object.keys(nextSettings)])) {
-      if (!liveKeys.has(key) && JSON.stringify(previousSettings[key as keyof typeof previousSettings]) !==
-          JSON.stringify(nextSettings[key as keyof typeof nextSettings]))
+      if (
+        !liveKeys.has(key) &&
+        JSON.stringify(previousSettings[key as keyof typeof previousSettings]) !==
+          JSON.stringify(nextSettings[key as keyof typeof nextSettings])
+      )
         throw new Error('Runtime/resource changes require stopping the Run.');
     }
-    if (this.pendingProfile && profile.revision <= this.pendingProfile.revision ||
-        profile.revision <= this.activeProfile.revision)
+    if (
+      (this.pendingProfile && profile.revision <= this.pendingProfile.revision) ||
+      profile.revision <= this.activeProfile.revision
+    )
       throw new Error('Select a newer saved profile revision.');
     this.pendingProfile = structuredClone(profile);
     this.setState({ pendingProfileRevision: profile.revision });
@@ -186,16 +214,27 @@ export class SessionController {
       const selected = next.values.stageDefaults.unified?.settings;
       this.runPreferences = validatePreferences({
         ...this.runPreferences,
-        ...(selected?.cycleIntervalMs !== undefined ? { cycleIntervalMs: selected.cycleIntervalMs } : {}),
-        ...(selected?.historyMaxCount !== undefined ? { historyMaxCount: selected.historyMaxCount } : {}),
-        ...(selected?.historyMaxAgeMs !== undefined ? { historyMaxAgeMs: selected.historyMaxAgeMs } : {}),
+        ...(selected?.cycleIntervalMs !== undefined
+          ? { cycleIntervalMs: selected.cycleIntervalMs }
+          : {}),
+        ...(selected?.historyMaxCount !== undefined
+          ? { historyMaxCount: selected.historyMaxCount }
+          : {}),
+        ...(selected?.historyMaxAgeMs !== undefined
+          ? { historyMaxAgeMs: selected.historyMaxAgeMs }
+          : {}),
         ...(selected?.chatActivity !== undefined ? { chatActivity: selected.chatActivity } : {}),
       });
       this.history.configure(this.runPreferences, this.observationNow());
     }
     this.setState({
       pendingProfileRevision: null,
-      inferenceProfile: { id: next.id, name: next.name, revision: next.revision, topology: next.values.topology },
+      inferenceProfile: {
+        id: next.id,
+        name: next.name,
+        revision: next.revision,
+        topology: next.values.topology,
+      },
     });
   }
 
@@ -237,7 +276,9 @@ export class SessionController {
     this.splitRosterProvider = rosterProvider;
   }
 
-  configureFrameResizer(resizer: (frame: VideoFrame, maxWidth: number, maxHeight: number) => VideoFrame): void {
+  configureFrameResizer(
+    resizer: (frame: VideoFrame, maxWidth: number, maxHeight: number) => VideoFrame,
+  ): void {
     this.splitCoordinator.configureFrameResizer(resizer);
   }
 
@@ -398,16 +439,26 @@ export class SessionController {
           : validateContext(rawContext);
     if (mode !== 'fake' && mode !== 'native' && mode !== 'remote')
       throw new Error('Unknown inference mode.');
-    if (mode === 'remote' && (profile?.values.topology !== 'split' && profile?.values.topology !== 'hybrid') && !this.remoteAdapter)
+    if (
+      mode === 'remote' &&
+      profile?.values.topology !== 'split' &&
+      profile?.values.topology !== 'hybrid' &&
+      !this.remoteAdapter
+    )
       throw new Error('Remote inference is not configured.');
-    if ((profile?.values.topology === 'split' || profile?.values.topology === 'hybrid') && !this.splitAdapters)
+    if (
+      (profile?.values.topology === 'split' || profile?.values.topology === 'hybrid') &&
+      !this.splitAdapters
+    )
       throw new Error('Split inference stages are not configured.');
     if (mode === 'native' && !this.nativeInference) {
       throw new Error('The native inference runtime is not configured.');
     }
     const sessionSeed = options.seed ?? randomInferenceSeed();
     this.activeInference =
-      mode === 'native' && (profile?.values.topology !== 'split' && profile?.values.topology !== 'hybrid')
+      mode === 'native' &&
+      profile?.values.topology !== 'split' &&
+      profile?.values.topology !== 'hybrid'
         ? this.nativeInference!
         : this.inference;
     this.activeProfile = profile ? structuredClone(profile) : null;
@@ -426,8 +477,19 @@ export class SessionController {
     this.stopSplitVisionLoop();
     this.clearEofTimer();
     this.splitCoordinator.reset();
-    this.splitCoordinator.configureMemory(this.activeProfile?.values.memory ?? { enabled: false, intervalMs: 30000, maxCharacters: 2000, expireAfterMs: 0 });
-    this.splitCoordinator.configureHybrid(this.activeProfile?.values.topology === 'hybrid' ? this.activeProfile.values.architecture?.hybridMaxImages ?? 0 : 0);
+    this.splitCoordinator.configureMemory(
+      this.activeProfile?.values.memory ?? {
+        enabled: false,
+        intervalMs: 30000,
+        maxCharacters: 2000,
+        expireAfterMs: 0,
+      },
+    );
+    this.splitCoordinator.configureHybrid(
+      this.activeProfile?.values.topology === 'hybrid'
+        ? (this.activeProfile.values.architecture?.hybridMaxImages ?? 0)
+        : 0,
+    );
     this.runId++;
     this.history.reset(this.clock.wallNow());
     this.chatStartSequence = this.chat.snapshot().sequence;
@@ -479,12 +541,20 @@ export class SessionController {
       smoothedInferenceMs: null,
       playbackWindowMs: this.runPreferences.cycleIntervalMs,
       effectiveVideoCaptureIntervalMs: this.runPreferences.videoCaptureIntervalMs,
-      effectiveVideoCaptureMaxWidth: Math.max(this.runPreferences.videoCaptureMaxWidth,
+      effectiveVideoCaptureMaxWidth: Math.max(
+        this.runPreferences.videoCaptureMaxWidth,
         this.activeProfile?.values.stageDefaults.observer?.frameSampling?.maxWidth ?? 0,
-        this.activeProfile?.values.topology === 'hybrid' ? this.activeProfile.values.stageDefaults.chat?.frameSampling?.maxWidth ?? 0 : 0),
-      effectiveVideoCaptureMaxHeight: Math.max(this.runPreferences.videoCaptureMaxHeight,
+        this.activeProfile?.values.topology === 'hybrid'
+          ? (this.activeProfile.values.stageDefaults.chat?.frameSampling?.maxWidth ?? 0)
+          : 0,
+      ),
+      effectiveVideoCaptureMaxHeight: Math.max(
+        this.runPreferences.videoCaptureMaxHeight,
         this.activeProfile?.values.stageDefaults.observer?.frameSampling?.maxHeight ?? 0,
-        this.activeProfile?.values.topology === 'hybrid' ? this.activeProfile.values.stageDefaults.chat?.frameSampling?.maxHeight ?? 0 : 0),
+        this.activeProfile?.values.topology === 'hybrid'
+          ? (this.activeProfile.values.stageDefaults.chat?.frameSampling?.maxHeight ?? 0)
+          : 0,
+      ),
       droppedObservations: 0,
       estimatedNextInferenceMs: null,
       adaptiveFrameLimit: null,
@@ -516,7 +586,10 @@ export class SessionController {
     }
     this.pauseEofTimer();
     if (this.splitVisionTimer !== null) {
-      this.splitVisionRemainingMs = Math.max(0, (this.splitVisionNextAt ?? this.clock.now()) - this.clock.now());
+      this.splitVisionRemainingMs = Math.max(
+        0,
+        (this.splitVisionNextAt ?? this.clock.now()) - this.clock.now(),
+      );
       this.clock.clearTimeout(this.splitVisionTimer);
       this.splitVisionTimer = null;
       this.splitVisionNextAt = null;
@@ -536,14 +609,20 @@ export class SessionController {
     this.splitCoordinator.resumeMemory();
     if (!this.eofRequested && this.splitVisionRemainingMs !== null && this.splitVisionTick) {
       this.splitVisionNextAt = this.clock.now() + this.splitVisionRemainingMs;
-      this.splitVisionTimer = this.clock.setTimeout(this.splitVisionTick, this.splitVisionRemainingMs);
+      this.splitVisionTimer = this.clock.setTimeout(
+        this.splitVisionTick,
+        this.splitVisionRemainingMs,
+      );
     }
     this.splitVisionRemainingMs = null;
     this.armEofTimer();
     this.setState({ recordedPlayback: this.eofRequested ? 'draining' : 'playing' });
     const waiters = this.resumeWaiters.splice(0);
     for (const resume of waiters) resume();
-    if (this.remainingCycleDelay !== null && (!this.eofRequested || this.retryWork || this.eofVisionHandoffStarted)) {
+    if (
+      this.remainingCycleDelay !== null &&
+      (!this.eofRequested || this.retryWork || this.eofVisionHandoffStarted)
+    ) {
       const delay = this.remainingCycleDelay;
       this.remainingCycleDelay = null;
       const epoch = this.epoch;
@@ -571,7 +650,9 @@ export class SessionController {
     this.splitVisionTimer = null;
     this.splitVisionNextAt = null;
     this.splitVisionRemainingMs = null;
-    this.eofRemainingMs = this.activeProfile?.values.architecture?.recordedDrainTimeoutMs ?? DEFAULT_RECORDED_DRAIN_TIMEOUT_MS;
+    this.eofRemainingMs =
+      this.activeProfile?.values.architecture?.recordedDrainTimeoutMs ??
+      DEFAULT_RECORDED_DRAIN_TIMEOUT_MS;
     this.armEofTimer();
     if (!this.retryWork) {
       if (this.inferenceTimer !== null) this.clock.clearTimeout(this.inferenceTimer);
@@ -644,7 +725,13 @@ export class SessionController {
   }
 
   private armEofTimer(): void {
-    if (!this.eofRequested || this.pausedAt !== null || this.eofRemainingMs === null || this.eofTimer !== null) return;
+    if (
+      !this.eofRequested ||
+      this.pausedAt !== null ||
+      this.eofRemainingMs === null ||
+      this.eofTimer !== null
+    )
+      return;
     const epoch = this.epoch;
     this.eofDeadlineAt = this.clock.now() + this.eofRemainingMs;
     this.eofTimer = this.clock.setTimeout(() => {
@@ -671,9 +758,13 @@ export class SessionController {
       this.scheduler.stop();
       this.video.clear();
       this.clearEofTimer();
-      this.setState({ phase: 'stopped', recordedPlayback: 'completed',
-        recordedCompletionReason: 'deadline-exceeded', retryAttempt: 0,
-        warning: `Recorded EOF deadline exceeded while draining ${pending.join(', ') || 'final stage work'}.` });
+      this.setState({
+        phase: 'stopped',
+        recordedPlayback: 'completed',
+        recordedCompletionReason: 'deadline-exceeded',
+        retryAttempt: 0,
+        warning: `Recorded EOF deadline exceeded while draining ${pending.join(', ') || 'final stage work'}.`,
+      });
       this.shutdownPromise = this.stopProvider(this.activeInference);
     }, this.eofRemainingMs);
   }
@@ -697,16 +788,31 @@ export class SessionController {
     if (!this.active(this.epoch)) return;
     // Independent Vision work is admitted work, even if Chat already finished.
     if (this.splitCoordinator.visionInFlight) return;
-    const split = this.state.inferenceProfile?.topology === 'split' || this.state.inferenceProfile?.topology === 'hybrid';
+    const split =
+      this.state.inferenceProfile?.topology === 'split' ||
+      this.state.inferenceProfile?.topology === 'hybrid';
     // A decoder can submit its last frame after the previous Vision snapshot.
     // Analyze it once before the final transcript/Chat handoff, including in
     // sequential profiles where independent Vision is normally disabled.
-    if (split && this.splitCoordinator.needsFinalVision(
-      this.video.sampleStage(this.observationNow(), this.activeProfile?.values.stageDefaults.observer?.frameSampling, 1).at(-1))) {
+    if (
+      split &&
+      this.splitCoordinator.needsFinalVision(
+        this.video
+          .sampleStage(
+            this.observationNow(),
+            this.activeProfile?.values.stageDefaults.observer?.frameSampling,
+            1,
+          )
+          .at(-1),
+      )
+    ) {
       if (this.inferenceTimer === null) {
         const epoch = this.epoch;
-        this.scheduleCycle(epoch, this.splitCoordinator.nextVisionDelay(this.observationNow()),
-          () => this.submitSplitVision(epoch));
+        this.scheduleCycle(
+          epoch,
+          this.splitCoordinator.nextVisionDelay(this.observationNow()),
+          () => this.submitSplitVision(epoch),
+        );
       }
       return;
     }
@@ -725,7 +831,9 @@ export class SessionController {
     if (this.splitCoordinator.hasUnconsumedVision() && !this.eofVisionHandoffStarted) {
       this.eofVisionHandoffStarted = true;
       const epoch = this.epoch;
-      this.scheduleCycle(epoch, this.splitCoordinator.nextChatDelay(this.observationNow()), () => this.runCycle(epoch));
+      this.scheduleCycle(epoch, this.splitCoordinator.nextChatDelay(this.observationNow()), () =>
+        this.runCycle(epoch),
+      );
       return;
     }
     // A scheduled final handoff and an admitted memory update are Run-owned work.
@@ -745,7 +853,12 @@ export class SessionController {
     this.splitCoordinator.cancelActive();
     this.video.clear();
     this.clearEofTimer();
-    this.setState({ phase: 'stopped', recordedPlayback: 'completed', recordedCompletionReason: 'drained', retryAttempt: 0 });
+    this.setState({
+      phase: 'stopped',
+      recordedPlayback: 'completed',
+      recordedCompletionReason: 'drained',
+      retryAttempt: 0,
+    });
     this.scheduler.stop();
     this.shutdownPromise = this.stopProvider(this.activeInference);
   }
@@ -850,7 +963,10 @@ export class SessionController {
     activate: () => Promise<void>,
     modelId: string,
   ): Promise<SessionSnapshot> {
-    if ((this.state.inferenceProfile?.topology === 'split' || this.state.inferenceProfile?.topology === 'hybrid'))
+    if (
+      this.state.inferenceProfile?.topology === 'split' ||
+      this.state.inferenceProfile?.topology === 'hybrid'
+    )
       throw new Error('Stop the Split Run before changing its pinned local Model Configuration.');
     if (
       this.state.mode !== 'native' ||
@@ -1085,43 +1201,73 @@ export class SessionController {
       this.admitPendingProfile();
     const cycle = this.state.cycle + 1;
     const now = this.observationNow();
-    const chat = this.chat.snapshot().messages
-      .filter((message) => Number(message.id.slice('chat-'.length)) > this.chatStartSequence)
+    const chat = this.chat
+      .snapshot()
+      .messages.filter(
+        (message) => Number(message.id.slice('chat-'.length)) > this.chatStartSequence,
+      )
       .map((message) => ({ ...message, presentedAt: this.observationTime(message.presentedAt) }));
     const snapshot = this.history.snapshot(
-      this.context, cycle, now, this.playbackWindow(), chat, this.audience?.snapshot().members,
+      this.context,
+      cycle,
+      now,
+      this.playbackWindow(),
+      chat,
+      this.audience?.snapshot().members,
     );
     const media = this.video.sample(
-      snapshot.boundary.fromMs, now, cycle === 1, this.runPreferences.videoMaxFrames,
+      snapshot.boundary.fromMs,
+      now,
+      cycle === 1,
+      this.runPreferences.videoMaxFrames,
     );
     const stageMedia = this.stageMedia(now, media);
     // EOF must be able to inspect the final buffered image even when the last
     // Chat snapshot already advanced the history boundary past that image.
     const frames = this.eofRequested
-      ? this.video.sampleStage(now, this.activeProfile?.values.stageDefaults.observer?.frameSampling,
-          this.runPreferences.videoMaxFrames)
+      ? this.video.sampleStage(
+          now,
+          this.activeProfile?.values.stageDefaults.observer?.frameSampling,
+          this.runPreferences.videoMaxFrames,
+        )
       : stageMedia.frames;
     const input: CycleInput = {
       ...snapshot,
       captureSelection: {
         ...snapshot.captureSelection!,
         frames: frames.map((frame, index) => `${frame.sourceId}:${frame.observedAt}:${index}`),
-        ...(stageMedia.chatFrames ? { chatFrames: stageMedia.chatFrames.map((frame, index) => `${frame.sourceId}:${frame.observedAt}:${index}`) } : {}),
+        ...(stageMedia.chatFrames
+          ? {
+              chatFrames: stageMedia.chatFrames.map(
+                (frame, index) => `${frame.sourceId}:${frame.observedAt}:${index}`,
+              ),
+            }
+          : {}),
       },
       chatActivity: this.runPreferences.chatActivity,
       ...stageMedia,
       frames,
       seed: deriveInferenceSeed(this.state.sessionSeed!, 'cycle', cycle, 1),
     };
-    void this.splitCoordinator.execute(
-      input, this.splitAdapters(input), abort.signal, () => this.waitUntilResumed(),
-      this.activeProfile?.values.stageDefaults ?? {}, this.splitScheduling(),
-      () => this.observationNow(), 'vision', this.stageEvidence(),
-    ).then(() => this.splitCoordinator.waitForVision()).catch(() => {
-      // Vision failures are owned by the stage coordinator, not the loop timer.
-    }).finally(() => {
-      if (this.eofRequested) this.advanceRecordedEof();
-    });
+    void this.splitCoordinator
+      .execute(
+        input,
+        this.splitAdapters(input),
+        abort.signal,
+        () => this.waitUntilResumed(),
+        this.activeProfile?.values.stageDefaults ?? {},
+        this.splitScheduling(),
+        () => this.observationNow(),
+        'vision',
+        this.stageEvidence(),
+      )
+      .then(() => this.splitCoordinator.waitForVision())
+      .catch(() => {
+        // Vision failures are owned by the stage coordinator, not the loop timer.
+      })
+      .finally(() => {
+        if (this.eofRequested) this.advanceRecordedEof();
+      });
   }
 
   /** Remote async Vision is sampled on its own clock, even while Chat is busy. */
@@ -1146,20 +1292,42 @@ export class SessionController {
   private stageMedia(now: number, media: ReturnType<VideoFrameBuffer['sample']>) {
     const stages = this.activeProfile?.values.stageDefaults;
     const frames = stages?.observer?.frameSampling
-      ? this.video.sampleStage(now, stages.observer.frameSampling, this.runPreferences.videoMaxFrames)
+      ? this.video.sampleStage(
+          now,
+          stages.observer.frameSampling,
+          this.runPreferences.videoMaxFrames,
+        )
       : [...media.frames];
-    const chatFrames = this.activeProfile?.values.topology === 'hybrid'
-      ? this.video.sampleStage(now, stages?.chat?.frameSampling,
-          Math.min(this.runPreferences.videoMaxFrames, this.activeProfile.values.architecture?.hybridMaxImages ?? 0))
-      : [];
-    const earliest = Math.min(media.fromMs, ...frames.map((f) => f.observedAt), ...chatFrames.map((f) => f.observedAt));
-    const maxWindow = Math.max(stages?.observer?.frameSampling?.windowMs ?? 0,
-      this.activeProfile?.values.topology === 'hybrid' ? stages?.chat?.frameSampling?.windowMs ?? 0 : 0);
+    const chatFrames =
+      this.activeProfile?.values.topology === 'hybrid'
+        ? this.video.sampleStage(
+            now,
+            stages?.chat?.frameSampling,
+            Math.min(
+              this.runPreferences.videoMaxFrames,
+              this.activeProfile.values.architecture?.hybridMaxImages ?? 0,
+            ),
+          )
+        : [];
+    const earliest = Math.min(
+      media.fromMs,
+      ...frames.map((f) => f.observedAt),
+      ...chatFrames.map((f) => f.observedAt),
+    );
+    const maxWindow = Math.max(
+      stages?.observer?.frameSampling?.windowMs ?? 0,
+      this.activeProfile?.values.topology === 'hybrid'
+        ? (stages?.chat?.frameSampling?.windowMs ?? 0)
+        : 0,
+    );
     return {
       frames,
       ...(this.activeProfile?.values.topology === 'hybrid' ? { chatFrames } : {}),
-      videoWindow: { fromMs: earliest, throughMs: media.throughMs,
-        truncated: media.truncated || maxWindow > this.runPreferences.videoCoverageMs },
+      videoWindow: {
+        fromMs: earliest,
+        throughMs: media.throughMs,
+        truncated: media.truncated || maxWindow > this.runPreferences.videoCoverageMs,
+      },
     };
   }
 
@@ -1203,8 +1371,16 @@ export class SessionController {
       ...snapshot,
       captureSelection: {
         ...snapshot.captureSelection!,
-        frames: stageMedia.frames.map((frame, index) => `${frame.sourceId}:${frame.observedAt}:${index}`),
-        ...(stageMedia.chatFrames ? { chatFrames: stageMedia.chatFrames.map((frame, index) => `${frame.sourceId}:${frame.observedAt}:${index}`) } : {}),
+        frames: stageMedia.frames.map(
+          (frame, index) => `${frame.sourceId}:${frame.observedAt}:${index}`,
+        ),
+        ...(stageMedia.chatFrames
+          ? {
+              chatFrames: stageMedia.chatFrames.map(
+                (frame, index) => `${frame.sourceId}:${frame.observedAt}:${index}`,
+              ),
+            }
+          : {}),
       },
       chatActivity: this.runPreferences.chatActivity,
       ...stageMedia,
@@ -1216,7 +1392,8 @@ export class SessionController {
       warning: null,
       adaptiveFrameLimit: this.state.mode === 'native' ? plan.frameLimit : null,
       effectiveCycleMs:
-        (this.state.inferenceProfile?.topology === 'split' || this.state.inferenceProfile?.topology === 'hybrid')
+        this.state.inferenceProfile?.topology === 'split' ||
+        this.state.inferenceProfile?.topology === 'hybrid'
           ? this.splitScheduling().chatIntervalMs
           : this.state.mode === 'native'
             ? plan.minimumIntervalMs
@@ -1250,7 +1427,11 @@ export class SessionController {
     const traceStarted = this.clock.now();
     const rosterSeed = deriveInferenceSeed(sessionSeed, 'roster', input.cycle, attempt);
     const traceId = this.trace.begin({
-      role: this.state.inferenceProfile?.topology === 'split' || this.state.inferenceProfile?.topology === 'hybrid' ? 'chat' : 'unified',
+      role:
+        this.state.inferenceProfile?.topology === 'split' ||
+        this.state.inferenceProfile?.topology === 'hybrid'
+          ? 'chat'
+          : 'unified',
       profileRevision: attemptProfile?.revision ?? null,
       startedTimelineAt: this.observationNow(),
       observedAt: effectiveInput.boundary?.throughMs ?? null,
@@ -1265,8 +1446,11 @@ export class SessionController {
       mode: this.state.mode,
       modelId: this.state.modelId ?? null,
       startedAt: this.clock.wallNow(),
-      input: (this.state.inferenceProfile?.topology === 'split' || this.state.inferenceProfile?.topology === 'hybrid')
-        ? privateStageMetadata(effectiveInput) : effectiveInput,
+      input:
+        this.state.inferenceProfile?.topology === 'split' ||
+        this.state.inferenceProfile?.topology === 'hybrid'
+          ? privateStageMetadata(effectiveInput)
+          : effectiveInput,
       settings: this.runPreferences,
       promptPreset: this.state.promptPreset ?? null,
       adaptation: {
@@ -1294,7 +1478,8 @@ export class SessionController {
         if (!this.active(epoch) || abort.signal.aborted) return undefined;
         if (this.audience) {
           await this.audience.ensure(
-            (this.state.inferenceProfile?.topology === 'split' || this.state.inferenceProfile?.topology === 'hybrid')
+            this.state.inferenceProfile?.topology === 'split' ||
+              this.state.inferenceProfile?.topology === 'hybrid'
               ? (this.splitRosterProvider ?? provider)
               : provider,
             abort.signal,
@@ -1304,15 +1489,24 @@ export class SessionController {
             rosterSeed,
           );
           effectiveInput = { ...effectiveInput, roster: this.audience.snapshot().members };
-          this.trace.update(traceId, { input: (this.state.inferenceProfile?.topology === 'split' || this.state.inferenceProfile?.topology === 'hybrid')
-            ? privateStageMetadata(effectiveInput) : effectiveInput });
+          this.trace.update(traceId, {
+            input:
+              this.state.inferenceProfile?.topology === 'split' ||
+              this.state.inferenceProfile?.topology === 'hybrid'
+                ? privateStageMetadata(effectiveInput)
+                : effectiveInput,
+          });
         }
         if (!this.active(epoch) || abort.signal.aborted) return undefined;
         await provider.prepare?.(abort.signal);
         await this.waitUntilResumed();
         if (!this.active(epoch) || abort.signal.aborted) return undefined;
         if (this.state.phase === 'starting') this.setState({ phase: 'running' });
-        if ((this.state.inferenceProfile?.topology === 'split' || this.state.inferenceProfile?.topology === 'hybrid')) this.startSplitVisionLoop(epoch);
+        if (
+          this.state.inferenceProfile?.topology === 'split' ||
+          this.state.inferenceProfile?.topology === 'hybrid'
+        )
+          this.startSplitVisionLoop(epoch);
         inferenceStarted = this.clock.now();
         this.setState({
           effectiveSeed: seed,
@@ -1330,23 +1524,36 @@ export class SessionController {
           ) => Promise<unknown>;
           supportsNativeVideo?: () => boolean;
           completeSimulationVideoWindow?: (
-            input: CycleInput, request: unknown, signal: AbortSignal, window: ContinuousVideoWindow,
+            input: CycleInput,
+            request: unknown,
+            signal: AbortSignal,
+            window: ContinuousVideoWindow,
           ) => Promise<unknown>;
         };
-        const nativeVideoWindow = this.state.mode === 'native' &&
+        const nativeVideoWindow =
+          this.state.mode === 'native' &&
           attemptProfile?.values.stageDefaults.unified?.videoInput === 'native' &&
-          nativeProvider.supportsNativeVideo?.() && nativeProvider.completeSimulationVideoWindow
+          nativeProvider.supportsNativeVideo?.() &&
+          nativeProvider.completeSimulationVideoWindow
             ? selectContinuousVideoWindow(
                 effectiveInput.frames ?? [],
                 effectiveInput.videoWindow?.fromMs ?? effectiveInput.boundary?.fromMs ?? 0,
                 effectiveInput.videoWindow?.throughMs ?? effectiveInput.boundary?.throughMs ?? 0,
                 Math.min(this.runPreferences.videoCoverageMs, 15_000),
                 this.runPreferences.videoMaxFrames,
-              ) : null;
+              )
+            : null;
         const videoIdentity = nativeVideoWindow
-          ? nativeVideoWindow.sourceId + ':' + nativeVideoWindow.fromMs + ':' + nativeVideoWindow.throughMs : undefined;
+          ? nativeVideoWindow.sourceId +
+            ':' +
+            nativeVideoWindow.fromMs +
+            ':' +
+            nativeVideoWindow.throughMs
+          : undefined;
         const adapter =
-          this.state.mode === 'remote' && (this.state.inferenceProfile?.topology !== 'split' && this.state.inferenceProfile?.topology !== 'hybrid')
+          this.state.mode === 'remote' &&
+          this.state.inferenceProfile?.topology !== 'split' &&
+          this.state.inferenceProfile?.topology !== 'hybrid'
             ? this.remoteAdapter!(effectiveInput)
             : nativeProvider.completeSimulationRequest
               ? llamaCppAdapter(
@@ -1354,17 +1561,25 @@ export class SessionController {
                     completeSimulationRequest: (selected, request, signal) =>
                       nativeVideoWindow
                         ? nativeProvider.completeSimulationVideoWindow!(
-                            selected as CycleInput, request, signal, nativeVideoWindow,
+                            selected as CycleInput,
+                            request,
+                            signal,
+                            nativeVideoWindow,
                           )
                         : nativeProvider.completeSimulationRequest!(
-                            selected as CycleInput, request, signal,
+                            selected as CycleInput,
+                            request,
+                            signal,
                           ),
                   },
                   effectiveInput,
                   videoIdentity ? { token: videoIdentity } : undefined,
                 )
               : fixtureInferenceAdapter(provider, effectiveInput);
-        if ((this.state.inferenceProfile?.topology === 'split' || this.state.inferenceProfile?.topology === 'hybrid')) {
+        if (
+          this.state.inferenceProfile?.topology === 'split' ||
+          this.state.inferenceProfile?.topology === 'hybrid'
+        ) {
           if (!this.splitAdapters) throw new Error('Split inference models are not configured.');
           const result = await this.splitCoordinator.execute(
             effectiveInput,
@@ -1389,12 +1604,17 @@ export class SessionController {
           };
         }
         const unifiedStage = attemptProfile?.values.stageDefaults.unified;
-        const effectiveAdapter: UnifiedInferenceAdapter = unifiedStage ? {
-          ...adapter,
-          complete: (request, signal, observe) => adapter.complete(
-            resolveUnifiedStageRequest(request, effectiveInput, unifiedStage), signal, observe,
-          ),
-        } : adapter;
+        const effectiveAdapter: UnifiedInferenceAdapter = unifiedStage
+          ? {
+              ...adapter,
+              complete: (request, signal, observe) =>
+                adapter.complete(
+                  resolveUnifiedStageRequest(request, effectiveInput, unifiedStage),
+                  signal,
+                  observe,
+                ),
+            }
+          : adapter;
         return this.coordinator.execute(effectiveInput, effectiveAdapter, {
           signal: abort.signal,
           ...(videoIdentity ? { nativeVideoRef: videoIdentity } : {}),
@@ -1426,7 +1646,8 @@ export class SessionController {
           else
             this.scheduleCycle(
               epoch,
-              (this.state.inferenceProfile?.topology === 'split' || this.state.inferenceProfile?.topology === 'hybrid')
+              this.state.inferenceProfile?.topology === 'split' ||
+                this.state.inferenceProfile?.topology === 'hybrid'
                 ? this.splitScheduling().chatIntervalMs
                 : this.runPreferences.cycleIntervalMs,
               () => this.runCycle(epoch),
@@ -1434,7 +1655,12 @@ export class SessionController {
           return;
         }
         const { parsed: result, accepted } = execution;
-        this.trace.update(traceId, { stage: 'accepted', accepted, availableAt: this.clock.wallNow(), availableTimelineAt: this.observationNow() });
+        this.trace.update(traceId, {
+          stage: 'accepted',
+          accepted,
+          availableAt: this.clock.wallNow(),
+          availableTimelineAt: this.observationNow(),
+        });
         const resolved = accepted.messages;
         // All validation precedes every state change, history acknowledgement and playback.
         const duration = Math.max(0, inferenceCompleted - inferenceStarted);
@@ -1502,7 +1728,8 @@ export class SessionController {
         }
         const delayMs = Math.max(
           0,
-          ((this.state.inferenceProfile?.topology === 'split' || this.state.inferenceProfile?.topology === 'hybrid')
+          (this.state.inferenceProfile?.topology === 'split' ||
+          this.state.inferenceProfile?.topology === 'hybrid'
             ? this.splitScheduling().chatIntervalMs
             : this.state.mode === 'native'
               ? nextPlan.minimumIntervalMs
@@ -1575,7 +1802,8 @@ export class SessionController {
         this.attemptInFlight = true; // Retry is accepted work, including during EOF draining.
         this.retryWork = retry;
         const stageDelay =
-          (this.state.inferenceProfile?.topology === 'split' || this.state.inferenceProfile?.topology === 'hybrid')
+          this.state.inferenceProfile?.topology === 'split' ||
+          this.state.inferenceProfile?.topology === 'hybrid'
             ? this.splitCoordinator.nextChatDelay(this.observationNow())
             : 0;
         this.scheduleCycle(epoch, Math.max(RETRY_BASE_MS * 2 ** (attempt - 1), stageDelay), () => {

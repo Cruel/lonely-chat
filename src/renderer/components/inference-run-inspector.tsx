@@ -184,7 +184,9 @@ export function InferenceRunInspector({
     }
     // Content-bearing sibling records are fetched only after an explicit selection.
     const siblings = listing.attempts.filter((item) => item.runId === chosen.runId);
-    void Promise.all(siblings.map((item) => api?.getInferenceTrace(item.id) ?? Promise.resolve(null)))
+    void Promise.all(
+      siblings.map((item) => api?.getInferenceTrace(item.id) ?? Promise.resolve(null)),
+    )
       .then((values) => {
         if (!live) return;
         const retained = values.filter((item): item is TraceAttempt => item !== null);
@@ -229,14 +231,16 @@ export function InferenceRunInspector({
   const frames = current ? frameList(current.input, current.request) : [];
   const timeline = current ? attemptTimeline(current) : [];
   const joinedTimeline = useMemo(() => runTimeline(runDetails), [runDetails]);
-  const multiStage = runDetails.some((item) => item.role === 'vision' || item.role === 'chat' || item.role === 'memory');
+  const multiStage = runDetails.some(
+    (item) => item.role === 'vision' || item.role === 'chat' || item.role === 'memory',
+  );
 
   return (
     <div className="space-y-4">
       <p className="text-xs text-zinc-400">
         Recent attempts are kept in bounded volatile memory. Summary listings contain metadata only;
-        private stage details are fetched on selection, with binary media and credentials omitted from
-        Split stage evidence. Legacy exact-case capture may include private prompts, images and
+        private stage details are fetched on selection, with binary media and credentials omitted
+        from Split stage evidence. Legacy exact-case capture may include private prompts, images and
         transcripts. Nothing is sent to the overlay; oversized fields may be omitted.
       </p>
       {error && (
@@ -345,7 +349,8 @@ export function InferenceRunInspector({
             <>
               <div className="rounded-lg border border-border p-4 text-sm">
                 <h3 className="font-medium">
-                  Run {current.runId} · cycle {current.cycle} · attempt {current.attempt} · {(current.role ?? 'unified').toUpperCase()}
+                  Run {current.runId} · cycle {current.cycle} · attempt {current.attempt} ·{' '}
+                  {(current.role ?? 'unified').toUpperCase()}
                 </h3>
                 <p className="mt-2 text-xs text-zinc-400">
                   {clockTime(current.startedAt)} · {current.mode} · model{' '}
@@ -365,7 +370,9 @@ export function InferenceRunInspector({
                   </p>
                 )}
                 <p className="mt-2 text-xs text-zinc-400">
-                  Profile revision {current.profileRevision ?? 'unknown'} · observed {clockTime(current.observedAt ?? null)} · result available {clockTime(current.availableAt ?? null)}
+                  Profile revision {current.profileRevision ?? 'unknown'} · observed{' '}
+                  {clockTime(current.observedAt ?? null)} · result available{' '}
+                  {clockTime(current.availableAt ?? null)}
                 </p>
                 {Boolean(current.dependsOn?.length) && (
                   <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
@@ -389,7 +396,12 @@ export function InferenceRunInspector({
                     <Button
                       size="sm"
                       variant="secondary"
-                      disabled={saving || !current.request || !current.modelId || (current.role !== undefined && current.role !== 'unified')}
+                      disabled={
+                        saving ||
+                        !current.request ||
+                        !current.modelId ||
+                        (current.role !== undefined && current.role !== 'unified')
+                      }
                       onClick={async () => {
                         if (!window.lonelyChat?.saveInferenceCase) return;
                         setSaving(true);
@@ -432,23 +444,41 @@ export function InferenceRunInspector({
                 )}
               </div>
               {multiStage && (
-                <section className="rounded-lg border border-border p-3" aria-label="Multi-stage Run timeline">
-                  <h4 className="mb-2 text-sm font-medium">Run {current.runId} · Vision → Chat → presentation</h4>
+                <section
+                  className="rounded-lg border border-border p-3"
+                  aria-label="Multi-stage Run timeline"
+                >
+                  <h4 className="mb-2 text-sm font-medium">
+                    Run {current.runId} · Vision → Chat → presentation
+                  </h4>
                   <p className="mb-3 text-xs text-zinc-400">
-                    Events are ordered by the Run observation axis (pause-adjusted for recorded playback).
-                    Physical request and result-availability times are distinct from the original media observation times.
-                    Select any entry to inspect its stage request and response.
+                    Events are ordered by the Run observation axis (pause-adjusted for recorded
+                    playback). Physical request and result-availability times are distinct from the
+                    original media observation times. Select any entry to inspect its stage request
+                    and response.
                   </p>
                   <ol className="max-h-[36rem] space-y-1 overflow-y-auto">
                     {joinedTimeline.map((item) => (
                       <li key={item.key} className="border-l-2 border-zinc-600 py-2 pl-3 text-xs">
-                        <button type="button" className="w-full text-left" onClick={() => item.attemptId && setSelected(item.attemptId)}>
-                          <span className="font-mono text-zinc-400">{clockTime(item.timestamp)} · {item.clockDomain ?? 'observation'} clock</span>
-                          {item.physicalTimestamp !== undefined && item.physicalTimestamp !== null && item.physicalTimestamp !== item.timestamp && (
-                            <span className="ml-2 text-zinc-500">Wall: {clockTime(item.physicalTimestamp)}</span>
-                          )}
+                        <button
+                          type="button"
+                          className="w-full text-left"
+                          onClick={() => item.attemptId && setSelected(item.attemptId)}
+                        >
+                          <span className="font-mono text-zinc-400">
+                            {clockTime(item.timestamp)} · {item.clockDomain ?? 'observation'} clock
+                          </span>
+                          {item.physicalTimestamp !== undefined &&
+                            item.physicalTimestamp !== null &&
+                            item.physicalTimestamp !== item.timestamp && (
+                              <span className="ml-2 text-zinc-500">
+                                Wall: {clockTime(item.physicalTimestamp)}
+                              </span>
+                            )}
                           <span className="mt-1 block font-medium text-zinc-200">{item.title}</span>
-                          <span className="block break-words text-zinc-400">{item.description}</span>
+                          <span className="block break-words text-zinc-400">
+                            {item.description}
+                          </span>
                         </button>
                       </li>
                     ))}
@@ -575,7 +605,9 @@ export function InferenceRunInspector({
                 value={current.normalized}
               />
               <JsonInspector title="Parsed events and messages" value={current.parsed} />
-              {current.role === 'vision' && <JsonInspector title="Accepted scene state" value={current.sceneState} />}
+              {current.role === 'vision' && (
+                <JsonInspector title="Accepted scene state" value={current.sceneState} />
+              )}
               <JsonInspector
                 title="Validated events and roster-resolved chat"
                 value={current.accepted}

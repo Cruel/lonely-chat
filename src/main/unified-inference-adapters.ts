@@ -1,7 +1,12 @@
 import type { InferenceInput, InferenceProvider } from './fake-inference';
 import type { NativeVideoPreferences } from '../shared/video-tools-contract';
 import { AUDIENCE } from './fake-inference';
-import { extractNativeChat, extractNativeJson, llamaCppRequest, withNativeVideoPlaceholder } from './native-inference';
+import {
+  extractNativeChat,
+  extractNativeJson,
+  llamaCppRequest,
+  withNativeVideoPlaceholder,
+} from './native-inference';
 import { normalizeStageMemory } from './stage-output';
 import type { InferenceRequest } from './unified-inference-request';
 import { executeNativeSimulation } from './simulation-execution';
@@ -29,7 +34,14 @@ export function llamaCppAdapter(
         throw new Error('The native-video source does not match the requested local media.');
       const result = await executeNativeSimulation(
         input,
-        video ? withNativeVideoPlaceholder(llamaCppRequest({ ...request, content: request.content.filter((part) => part.type !== 'image') })) : llamaCppRequest(request),
+        video
+          ? withNativeVideoPlaceholder(
+              llamaCppRequest({
+                ...request,
+                content: request.content.filter((part) => part.type !== 'image'),
+              }),
+            )
+          : llamaCppRequest(request),
         signal,
         (nativeRequest, activeSignal) =>
           video
@@ -41,9 +53,10 @@ export function llamaCppAdapter(
                 video.options,
               )
             : provider.completeSimulationRequest(input, nativeRequest, activeSignal),
-        (raw) => (request as InferenceRequest).role === 'memory'
-          ? normalizeStageMemory(extractNativeJson(raw), request)
-          : normalizeStageMemory(extractNativeChat(raw, input.roster ?? AUDIENCE), request),
+        (raw) =>
+          (request as InferenceRequest).role === 'memory'
+            ? normalizeStageMemory(extractNativeJson(raw), request)
+            : normalizeStageMemory(extractNativeChat(raw, input.roster ?? AUDIENCE), request),
         observe,
       );
       return { raw: result.rawNativeOutput, normalized: result.normalizedResult };
@@ -62,7 +75,10 @@ export function nativeVideoStageAdapter(
     prepare(signal: AbortSignal): Promise<void>;
     supportsNativeVideo(): boolean;
     completeSimulationVideoWindow(
-      input: InferenceInput, request: unknown, signal: AbortSignal, window: ContinuousVideoWindow,
+      input: InferenceInput,
+      request: unknown,
+      signal: AbortSignal,
+      window: ContinuousVideoWindow,
     ): Promise<unknown>;
   },
   input: InferenceInput,
@@ -72,10 +88,14 @@ export function nativeVideoStageAdapter(
     async complete(request, signal, observe) {
       await provider.prepare(signal);
       if (!provider.supportsNativeVideo()) return base.complete(request, signal, observe);
-      const identities = new Set(request.content.filter((part) => part.type === 'image')
-        .map((part) => part.sourceId + ':' + part.observedAt));
+      const identities = new Set(
+        request.content
+          .filter((part) => part.type === 'image')
+          .map((part) => part.sourceId + ':' + part.observedAt),
+      );
       const selected = (input.frames ?? []).filter((frame) =>
-        identities.has(frame.sourceId + ':' + frame.observedAt));
+        identities.has(frame.sourceId + ':' + frame.observedAt),
+      );
       const window = selectContinuousVideoWindow(
         selected,
         input.videoWindow?.fromMs ?? input.boundary?.fromMs ?? 0,
@@ -83,10 +103,19 @@ export function nativeVideoStageAdapter(
       );
       if (!window) return base.complete(request, signal, observe);
       const token = window.sourceId + ':' + window.fromMs + ':' + window.throughMs;
-      const video = llamaCppAdapter({
-        completeSimulationRequest: (selectedInput, nativeRequest, activeSignal) =>
-          provider.completeSimulationVideoWindow(selectedInput, nativeRequest, activeSignal, window),
-      }, input, { token });
+      const video = llamaCppAdapter(
+        {
+          completeSimulationRequest: (selectedInput, nativeRequest, activeSignal) =>
+            provider.completeSimulationVideoWindow(
+              selectedInput,
+              nativeRequest,
+              activeSignal,
+              window,
+            ),
+        },
+        input,
+        { token },
+      );
       return video.complete({ ...request, nativeVideo: { sourceRef: token } }, signal, observe);
     },
   };

@@ -117,8 +117,12 @@ export function strictProviderSchema(value: Record<string, unknown>): Record<str
       validate(schema.items);
     } else if (
       !['string', 'integer', 'number', 'boolean', 'null'].includes(schema.type as string) &&
-      !(Array.isArray(schema.type) && schema.type.length === 2 && schema.type.includes('null') &&
-        schema.type.some((type) => ['string', 'integer', 'number', 'boolean'].includes(type)))
+      !(
+        Array.isArray(schema.type) &&
+        schema.type.length === 2 &&
+        schema.type.includes('null') &&
+        schema.type.some((type) => ['string', 'integer', 'number', 'boolean'].includes(type))
+      )
     ) {
       throw new Error('Unsupported strict provider JSON Schema type.');
     }
@@ -265,7 +269,11 @@ async function remoteComplete(
     );
     if (result.status !== 'completed')
       throw new Error('Remote inference did not complete. No Chat batch was accepted.');
-    const normalized = normalizeRemoteResult(normalizeStageMemory(boundedJson(completedResponsesText(result)), request), roster, request.role);
+    const normalized = normalizeRemoteResult(
+      normalizeStageMemory(boundedJson(completedResponsesText(result)), request),
+      roster,
+      request.role,
+    );
     const counts = usage(result.usage);
     const raw = {
       id: result.id,
@@ -318,7 +326,11 @@ async function remoteComplete(
   const choice = result.choices[0];
   if (!choice || choice.finish_reason !== 'stop' || typeof choice.message.content !== 'string')
     throw new Error('Remote inference did not finish normally. No Chat batch was accepted.');
-  const normalized = normalizeRemoteResult(normalizeStageMemory(boundedJson(choice.message.content), request), roster, request.role);
+  const normalized = normalizeRemoteResult(
+    normalizeStageMemory(boundedJson(choice.message.content), request),
+    roster,
+    request.role,
+  );
   const counts = usage(result.usage);
   const raw = {
     id: result.id,

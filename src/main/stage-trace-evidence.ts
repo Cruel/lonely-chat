@@ -38,7 +38,9 @@ export function privateStageMetadata(value: unknown): unknown {
       : Object.fromEntries(
           Object.entries(item).map(([key, child]) => [
             key,
-            /^(?:authorization|proxy-authorization|api[-_]?key|access[-_]?token|refresh[-_]?token|cookie|set-cookie|password|client[-_]?secret)$/i.test(key)
+            /^(?:authorization|proxy-authorization|api[-_]?key|access[-_]?token|refresh[-_]?token|cookie|set-cookie|password|client[-_]?secret)$/i.test(
+              key,
+            )
               ? '[redacted]'
               : visit(child, depth + 1),
           ]),
@@ -52,10 +54,13 @@ export function privateStageMetadata(value: unknown): unknown {
 /** Stable source refs are generated at admission, not inferred from wall-clock ordering. */
 export function stageFrameIds(input: InferenceInput): string[] {
   const refs = (frames: InferenceInput['frames'], selected?: readonly string[]) =>
-    (frames ?? []).slice(0, 32).map((frame, index) =>
-      selected && selected.length === frames?.length && selected[index]
-        ? selected[index]
-        : `${frame.sourceId}:${frame.observedAt}:${frame.mediaTimeMs ?? 'wall'}`);
+    (frames ?? [])
+      .slice(0, 32)
+      .map((frame, index) =>
+        selected && selected.length === frames?.length && selected[index]
+          ? selected[index]
+          : `${frame.sourceId}:${frame.observedAt}:${frame.mediaTimeMs ?? 'wall'}`,
+      );
   return [
     ...refs(input.frames, input.captureSelection?.frames),
     ...refs(input.chatFrames, input.captureSelection?.chatFrames),
@@ -64,11 +69,15 @@ export function stageFrameIds(input: InferenceInput): string[] {
 
 export function stageObservationRefs(input: InferenceInput): string[] {
   return [
-    ...(input.observations ?? []).slice(0, 64).map((item, index) =>
-      input.captureSelection?.observations[index] !== undefined
-        ? `observation:${input.captureSelection.observations[index]}`
-        : `observation:${item.source}:${item.observedAt}`),
-    ...(input.recentTranscripts ?? []).slice(0, 64).map((item) =>
-      `transcript:${item.sourceId}:${item.observedAt}`),
+    ...(input.observations ?? [])
+      .slice(0, 64)
+      .map((item, index) =>
+        input.captureSelection?.observations[index] !== undefined
+          ? `observation:${input.captureSelection.observations[index]}`
+          : `observation:${item.source}:${item.observedAt}`,
+      ),
+    ...(input.recentTranscripts ?? [])
+      .slice(0, 64)
+      .map((item) => `transcript:${item.sourceId}:${item.observedAt}`),
   ];
 }

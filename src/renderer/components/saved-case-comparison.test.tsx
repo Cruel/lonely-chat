@@ -195,7 +195,9 @@ it('distinguishes explicitly omitted source and child output from successful res
     sourceResult: {
       ...fixture.sourceResult,
       omitted: 'Original outcome exceeded the 2 MiB evidence storage limit.',
-      rawNativeOutput: null, normalizedResult: null, parsedResult: null,
+      rawNativeOutput: null,
+      normalizedResult: null,
+      parsedResult: null,
       accepted: null,
     },
     children: [

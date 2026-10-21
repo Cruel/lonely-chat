@@ -2,7 +2,12 @@ import path from 'node:path';
 import { readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { SavedInferenceCases } from './saved-inference-cases';
 import { splitRequests } from './split-inference';
-import { replayRun, prepareRecordedChatFork, compareRecordedChat, requireRecordedTextConsent } from './run-replay';
+import {
+  replayRun,
+  prepareRecordedChatFork,
+  compareRecordedChat,
+  requireRecordedTextConsent,
+} from './run-replay';
 import { makeArchive, openArchive } from './portable-archive';
 import { packageScenario, importScenario, portableRun, restoreRun } from './portable-scenarios';
 import {
@@ -325,9 +330,14 @@ let nativeInference: NativeInference;
 let localModelPool: import('./local-model-pool').LocalModelPool | null = null;
 let localWarmIdleMs = 0;
 let playground: PlaygroundService;
-let stageExperimentFactory: ((
-  ...args: [...Parameters<ProfileAdapterFactory>, settings?: import('../shared/inference-profile-contract').InferenceStageDefaults['settings']]
-) => ReturnType<ProfileAdapterFactory>) | null = null;
+let stageExperimentFactory:
+  | ((
+      ...args: [
+        ...Parameters<ProfileAdapterFactory>,
+        settings?: import('../shared/inference-profile-contract').InferenceStageDefaults['settings'],
+      ]
+    ) => ReturnType<ProfileAdapterFactory>)
+  | null = null;
 let speechTest: SpeechPlaygroundService;
 let audio: AudioService;
 let sessionMedia: SessionMedia | undefined;
@@ -393,32 +403,51 @@ function profileExperimentAdapters(
     if (signal.aborted) throw new DOMException('Experiment cancelled.', 'AbortError');
     if (ref.kind === 'remote') {
       const selected = remoteStore.selected(ref.modelId);
-      const settings = { ...session.getPreferences(), ...profile.values.stageDefaults[role]?.settings };
-      const adapter = selected.connection.credentialMode === 'chatgpt'
-        ? chatGPTUnifiedAdapter(selected, chatGPTAuth, {
-            roster: input.roster ?? [], timeoutMs: settings.inferenceTimeoutMs,
-          })
-        : remoteUnifiedAdapter(selected, {
-            roster: input.roster, timeoutMs: settings.inferenceTimeoutMs,
-          });
+      const settings = {
+        ...session.getPreferences(),
+        ...profile.values.stageDefaults[role]?.settings,
+      };
+      const adapter =
+        selected.connection.credentialMode === 'chatgpt'
+          ? chatGPTUnifiedAdapter(selected, chatGPTAuth, {
+              roster: input.roster ?? [],
+              timeoutMs: settings.inferenceTimeoutMs,
+            })
+          : remoteUnifiedAdapter(selected, {
+              roster: input.roster,
+              timeoutMs: settings.inferenceTimeoutMs,
+            });
       return { adapter, stop: async () => {} };
     }
     if (!stageExperimentFactory) throw new Error('Profile Playground adapters are unavailable.');
-    const owned = await stageExperimentFactory(ref, role, input, signal, profile.values.stageDefaults[role]?.settings);
+    const owned = await stageExperimentFactory(
+      ref,
+      role,
+      input,
+      signal,
+      profile.values.stageDefaults[role]?.settings,
+    );
     const adapter = owned.adapter;
     return {
       adapter: {
         ...adapter,
-        complete: async (submitted: Parameters<typeof adapter.complete>[0],
-          activeSignal: AbortSignal, observe?: Parameters<typeof adapter.complete>[2]) => {
+        complete: async (
+          submitted: Parameters<typeof adapter.complete>[0],
+          activeSignal: AbortSignal,
+          observe?: Parameters<typeof adapter.complete>[2],
+        ) => {
           const previous = gpuQueue;
           let release!: () => void;
-          gpuQueue = new Promise<void>((resolve) => { release = resolve; });
+          gpuQueue = new Promise<void>((resolve) => {
+            release = resolve;
+          });
           await previous;
           try {
             if (activeSignal.aborted) throw new DOMException('Experiment cancelled.', 'AbortError');
             return await adapter.complete(submitted, activeSignal, observe);
-          } finally { release(); }
+          } finally {
+            release();
+          }
         },
       },
       stop: owned.stop,
@@ -455,7 +484,11 @@ function registerHandlers(): void {
     'chatgpt:signout': (id: string) => chatGPTAuth.signOut(id),
     'chatgpt:models': (id: string) => chatGPTAuth.models(id),
     'remote:list': () => remoteStore.list(),
-    'remote:usage': () => remoteStore.list().models.map((model) => ({ modelId: model.id, ...(activeRemoteUsage?.snapshot(model) ?? new RemoteUsageGuard().snapshot(model)) })),
+    'remote:usage': () =>
+      remoteStore.list().models.map((model) => ({
+        modelId: model.id,
+        ...(activeRemoteUsage?.snapshot(model) ?? new RemoteUsageGuard().snapshot(model)),
+      })),
     'remote:connection:save': (
       connection: import('../shared/remote-inference-contract').RemoteConnection,
     ) => remoteStore.putConnection(connection),
@@ -597,11 +630,18 @@ function registerHandlers(): void {
     'presets:delete': (id: string) => promptPresets.delete(id),
     'playground:run': (request: import('../shared/playground-contract').FreeformRequest) =>
       playground.run(request),
-    'profiles:preview-stages': (input: import('./fake-inference').InferenceInput, stages: import('../shared/inference-profile-contract').InferenceProfileValues['stageDefaults'], events: import('../shared/session-contract').InferredEvent[], observations: import('../shared/session-contract').CapturedObservation[]) => {
+    'profiles:preview-stages': (
+      input: import('./fake-inference').InferenceInput,
+      stages: import('../shared/inference-profile-contract').InferenceProfileValues['stageDefaults'],
+      events: import('../shared/session-contract').InferredEvent[],
+      observations: import('../shared/session-contract').CapturedObservation[],
+    ) => {
       const built = splitRequests(input, stages);
       const redact = (request: ReturnType<typeof built.chat>) => ({
         ...request,
-        content: request.content.map((part) => part.type === 'image' ? { ...part, dataUrl: '[image bytes redacted]' } : part),
+        content: request.content.map((part) =>
+          part.type === 'image' ? { ...part, dataUrl: '[image bytes redacted]' } : part,
+        ),
       });
       return { vision: redact(built.vision), chat: redact(built.chat(events, observations)) };
     },
@@ -614,7 +654,8 @@ function registerHandlers(): void {
     'playground:profile:run': async (
       request: import('../shared/profile-playground-contract').ProfileExperimentRequest,
     ) => {
-      if (remotePlayground.busy) throw new Error('Another remote Playground experiment is running.');
+      if (remotePlayground.busy)
+        throw new Error('Another remote Playground experiment is running.');
       const profile = await inferenceProfiles.resolve(request.profileId, request.profileRevision);
       return playground.runProfile(request, profile, profileExperimentAdapters(profile));
     },
@@ -811,18 +852,29 @@ function registerHandlers(): void {
     },
     'run:replay': async (id: string) => {
       const run = (await recordedScenarios.runs()).find((item) => item.id === id);
-      if (!run || run.status === 'running') throw new Error('Stop the recorded Run before replaying.');
+      if (!run || run.status === 'running')
+        throw new Error('Stop the recorded Run before replaying.');
       return replayRun(run, compactRecorder);
     },
-    'run:chat-reinfer': async (id: string, attemptId: string, profileId: string, allowRemoteText: boolean) => {
+    'run:chat-reinfer': async (
+      id: string,
+      attemptId: string,
+      profileId: string,
+      allowRemoteText: boolean,
+    ) => {
       const run = (await recordedScenarios.runs()).find((item) => item.id === id);
-      if (!run || run.status === 'running') throw new Error('Stop the recorded Run before comparing.');
+      if (!run || run.status === 'running')
+        throw new Error('Stop the recorded Run before comparing.');
       const profile = await inferenceProfiles.resolve(profileId);
       requireRecordedTextConsent(profile, allowRemoteText);
-      if (remotePlayground.busy) throw new Error('Another remote Playground experiment is running.');
+      if (remotePlayground.busy)
+        throw new Error('Another remote Playground experiment is running.');
       const fork = await prepareRecordedChatFork(run, compactRecorder, attemptId, profile);
       const result = await playground.runProfile(
-        fork.request, profile, profileExperimentAdapters(profile), fork.input,
+        fork.request,
+        profile,
+        profileExperimentAdapters(profile),
+        fork.input,
       );
       return compareRecordedChat(fork.original, result);
     },
@@ -1011,8 +1063,11 @@ function registerHandlers(): void {
         const profileId = recordedConfig?.profileId ?? options?.profileId;
         const profileRevision = recordedConfig?.profileRevision ?? options?.profileRevision;
         const profile = await resolveRunStartProfile(
-          profileId, profileRevision, recordedConfig,
-          (id, revision) => inferenceProfiles.resolve(id, revision), profileRoleAvailable,
+          profileId,
+          profileRevision,
+          recordedConfig,
+          (id, revision) => inferenceProfiles.resolve(id, revision),
+          profileRoleAvailable,
         );
 
         const unifiedRole = profile?.values.roles.unified;
@@ -1034,7 +1089,10 @@ function registerHandlers(): void {
               )
           : undefined;
         if (presetId && !preset) throw new Error('Selected prompt preset was not found.');
-        const splitChat = (profile?.values.topology === 'split' || profile?.values.topology === 'hybrid') ? profile.values.roles.chat : null;
+        const splitChat =
+          profile?.values.topology === 'split' || profile?.values.topology === 'hybrid'
+            ? profile.values.roles.chat
+            : null;
         if (splitChat && mode !== (splitChat.kind === 'remote' ? 'remote' : 'native'))
           throw new Error('Split Simulation provider must match its Chat role.');
         const activeModel =
@@ -1064,14 +1122,21 @@ function registerHandlers(): void {
           throw new Error(
             'Activate the local Model Configuration selected by this Inference Profile before starting.',
           );
-        const splitRoles = (profile?.values.topology === 'split' || profile?.values.topology === 'hybrid') ? profile.values.roles : null;
-        if (profile?.values.topology === 'hybrid' &&
-            (profile.values.architecture?.hybridMaxImages ?? 0) > 0 &&
-            splitRoles?.chat?.kind === 'remote' &&
-            profile.values.architecture?.remoteChatImagesConsent !== true)
+        const splitRoles =
+          profile?.values.topology === 'split' || profile?.values.topology === 'hybrid'
+            ? profile.values.roles
+            : null;
+        if (
+          profile?.values.topology === 'hybrid' &&
+          (profile.values.architecture?.hybridMaxImages ?? 0) > 0 &&
+          splitRoles?.chat?.kind === 'remote' &&
+          profile.values.architecture?.remoteChatImagesConsent !== true
+        )
           throw new Error('Remote Chat image transmission requires explicit Hybrid consent.');
         const localSplitModels = splitRoles
-          ? [splitRoles.observer, splitRoles.chat, splitRoles.memory].filter((ref) => ref?.kind === 'local')
+          ? [splitRoles.observer, splitRoles.chat, splitRoles.memory].filter(
+              (ref) => ref?.kind === 'local',
+            )
           : [];
         if (localSplitModels.length && !localModelPool && !packageE2E)
           throw new Error('Local Split model pool is unavailable.');
@@ -1119,7 +1184,9 @@ function registerHandlers(): void {
         }
         const remoteUsage = new RemoteUsageGuard();
         activeRemoteUsage = remoteUsage;
-        const resolvedRemoteRoles: Partial<Record<'unified' | 'observer' | 'chat' | 'memory', ReturnType<typeof snapshotRemoteRole>>> = {};
+        const resolvedRemoteRoles: Partial<
+          Record<'unified' | 'observer' | 'chat' | 'memory', ReturnType<typeof snapshotRemoteRole>>
+        > = {};
         if (splitRoles) {
           // Pin the resolved provider/model configuration for this entire Run.
           const pinnedRemote = {
@@ -1149,19 +1216,25 @@ function registerHandlers(): void {
               return packageE2E
                 ? session.createLocalSplitAdapter(input)
                 : localModelPool!.adapter(
-                    ref.modelId, role, input,
-                    role === 'observer' && profile?.values.stageDefaults.observer?.videoInput === 'native',
+                    ref.modelId,
+                    role,
+                    input,
+                    role === 'observer' &&
+                      profile?.values.stageDefaults.observer?.videoInput === 'native',
                   );
             const selected = pinnedRemote[role]!;
-            return remoteUsage.wrap(selected.model, selected.connection.credentialMode === 'chatgpt'
-              ? chatGPTUnifiedAdapter(selected, chatGPTAuth, {
-                  timeoutMs: effectiveSettings.inferenceTimeoutMs,
-                  roster: input.roster ?? [],
-                })
-              : remoteUnifiedAdapter(selected, {
-                  timeoutMs: effectiveSettings.inferenceTimeoutMs,
-                  roster: input.roster,
-                }));
+            return remoteUsage.wrap(
+              selected.model,
+              selected.connection.credentialMode === 'chatgpt'
+                ? chatGPTUnifiedAdapter(selected, chatGPTAuth, {
+                    timeoutMs: effectiveSettings.inferenceTimeoutMs,
+                    roster: input.roster ?? [],
+                  })
+                : remoteUnifiedAdapter(selected, {
+                    timeoutMs: effectiveSettings.inferenceTimeoutMs,
+                    roster: input.roster,
+                  }),
+            );
           };
           session.configureSplit(
             (input) => ({
@@ -1182,15 +1255,18 @@ function registerHandlers(): void {
           const selected = remoteStore.selected(activeModel);
           resolvedRemoteRoles.unified = snapshotRemoteRole(selected);
           session.configureRemote((input) =>
-            remoteUsage.wrap(selected.model, selected.connection.credentialMode === 'chatgpt'
-              ? chatGPTUnifiedAdapter(selected, chatGPTAuth, {
-                  timeoutMs: effectiveSettings.inferenceTimeoutMs,
-                  roster: input.roster ?? [],
-                })
-              : remoteUnifiedAdapter(selected, {
-                  timeoutMs: effectiveSettings.inferenceTimeoutMs,
-                  roster: input.roster,
-                })),
+            remoteUsage.wrap(
+              selected.model,
+              selected.connection.credentialMode === 'chatgpt'
+                ? chatGPTUnifiedAdapter(selected, chatGPTAuth, {
+                    timeoutMs: effectiveSettings.inferenceTimeoutMs,
+                    roster: input.roster ?? [],
+                  })
+                : remoteUnifiedAdapter(selected, {
+                    timeoutMs: effectiveSettings.inferenceTimeoutMs,
+                    roster: input.roster,
+                  }),
+            ),
           );
         }
         const started = session.start(
@@ -1364,7 +1440,8 @@ function registerHandlers(): void {
       await playground.stop();
       const current = session.snapshot();
       if (
-        (current.inferenceProfile?.topology === 'split' || current.inferenceProfile?.topology === 'hybrid') &&
+        (current.inferenceProfile?.topology === 'split' ||
+          current.inferenceProfile?.topology === 'hybrid') &&
         ['starting', 'running', 'error'].includes(current.phase)
       )
         throw new Error('Stop the Split Run before changing a pinned projector.');
@@ -1395,7 +1472,8 @@ function registerHandlers(): void {
       await playground.stop();
       const current = session.snapshot();
       if (
-        (current.inferenceProfile?.topology === 'split' || current.inferenceProfile?.topology === 'hybrid') &&
+        (current.inferenceProfile?.topology === 'split' ||
+          current.inferenceProfile?.topology === 'hybrid') &&
         ['starting', 'running', 'error'].includes(current.phase)
       )
         throw new Error('Stop the Split Run before changing a pinned projector.');
@@ -1438,7 +1516,8 @@ function registerHandlers(): void {
       if (current === id) return installs.snapshot();
       if (role === 'vision-language') {
         if (
-          (session.snapshot().inferenceProfile?.topology === 'split' || session.snapshot().inferenceProfile?.topology === 'hybrid') &&
+          (session.snapshot().inferenceProfile?.topology === 'split' ||
+            session.snapshot().inferenceProfile?.topology === 'hybrid') &&
           ['running', 'starting', 'switching', 'error'].includes(session.snapshot().phase)
         )
           throw new Error('Stop the Split Run before changing its pinned local models.');
@@ -1806,25 +1885,34 @@ async function boot(): Promise<void> {
     if (signal.aborted) throw new DOMException('Experiment cancelled.', 'AbortError');
     const baseSettings = nativeWorkerSettings(session, 'playground');
     const settings = () => ({ ...baseSettings(), ...overrides });
-    const provider = packageE2E ? certificationPlaygroundProvider() : buildNative(
-      async () => {
-        const files = await installs.visionFiles(ref.modelId);
-        if (role === 'observer' && input.frames?.length && !files.projectorPath)
-          throw new Error('Selected Vision model has no installed projector.');
-        return {
-          modelPath: files.modelPath,
-          projectorPath: role === 'observer' && input.frames?.length ? files.projectorPath : null,
-        };
-      },
-      settings,
-      undefined,
-      true,
-    );
+    const provider = packageE2E
+      ? certificationPlaygroundProvider()
+      : buildNative(
+          async () => {
+            const files = await installs.visionFiles(ref.modelId);
+            if (role === 'observer' && input.frames?.length && !files.projectorPath)
+              throw new Error('Selected Vision model has no installed projector.');
+            return {
+              modelPath: files.modelPath,
+              projectorPath:
+                role === 'observer' && input.frames?.length ? files.projectorPath : null,
+            };
+          },
+          settings,
+          undefined,
+          true,
+        );
     if (!provider.completeSimulationRequest)
       throw new Error('The selected stage worker cannot accept structured inference requests.');
-    return { adapter: llamaCppAdapter({
-      completeSimulationRequest: (...args) => provider.completeSimulationRequest!(...args),
-    }, input), stop: () => provider.stop() };
+    return {
+      adapter: llamaCppAdapter(
+        {
+          completeSimulationRequest: (...args) => provider.completeSimulationRequest!(...args),
+        },
+        input,
+      ),
+      stop: () => provider.stop(),
+    };
   };
   nativeInference = buildNative(
     () => installs.activeVisionFiles(),
@@ -1955,7 +2043,11 @@ async function boot(): Promise<void> {
     diagnostics,
     reportError,
   );
-  const resizeStageFrame = (frame: import('../shared/video-contract').VideoFrame, maxWidth: number, maxHeight: number) => {
+  const resizeStageFrame = (
+    frame: import('../shared/video-contract').VideoFrame,
+    maxWidth: number,
+    maxHeight: number,
+  ) => {
     const source = nativeImage.createFromDataURL(frame.dataUrl);
     const size = source.getSize();
     if (source.isEmpty() || size.width !== frame.width || size.height !== frame.height)
@@ -1965,7 +2057,8 @@ async function boot(): Promise<void> {
     const width = Math.max(1, Math.floor(size.width * scale));
     const height = Math.max(1, Math.floor(size.height * scale));
     const dataUrl = `data:image/jpeg;base64,${source.resize({ width, height }).toJPEG(85).toString('base64')}`;
-    if (dataUrl.length > 2_700_000) throw new Error('Resized stage frame exceeds the media budget.');
+    if (dataUrl.length > 2_700_000)
+      throw new Error('Resized stage frame exceeds the media budget.');
     return { ...frame, width, height, dataUrl };
   };
   session.configureFrameResizer(resizeStageFrame);
@@ -2016,13 +2109,20 @@ async function boot(): Promise<void> {
   });
   let previousSessionPhase = '';
   session.subscribe((status) => {
-    if (activeRecordedRun && status.runId === activeRecordedRun.sessionRunId &&
-        status.pendingProfileRevision === null && status.inferenceProfile &&
-        status.inferenceProfile.revision !== lastRecordedProfileRevision) {
+    if (
+      activeRecordedRun &&
+      status.runId === activeRecordedRun.sessionRunId &&
+      status.pendingProfileRevision === null &&
+      status.inferenceProfile &&
+      status.inferenceProfile.revision !== lastRecordedProfileRevision
+    ) {
       const profile = session.getEffectiveProfile();
       if (profile && lastRecordedProfileRevision !== null) {
-        void recordedScenarios.recordProfileAdmission(activeRecordedRun.id, status.cycle, profile)
-          .catch((error: unknown) => logger.error('recording', 'Unable to record live profile admission', error));
+        void recordedScenarios
+          .recordProfileAdmission(activeRecordedRun.id, status.cycle, profile)
+          .catch((error: unknown) =>
+            logger.error('recording', 'Unable to record live profile admission', error),
+          );
       }
       lastRecordedProfileRevision = status.inferenceProfile.revision;
     }
@@ -2048,7 +2148,8 @@ async function boot(): Promise<void> {
           status.cycle,
           // A deadline-limited EOF is terminal but not a full successful drain.
           // Preserve the reason in the saved Run, not just the transient UI snapshot.
-          status.error ?? (status.recordedCompletionReason === 'deadline-exceeded' ? status.warning : null),
+          status.error ??
+            (status.recordedCompletionReason === 'deadline-exceeded' ? status.warning : null),
           compactRecorder.takeRunRecordingIds(completed.sessionRunId),
         )
         .catch((error: unknown) =>

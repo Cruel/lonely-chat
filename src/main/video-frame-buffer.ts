@@ -137,7 +137,11 @@ export class VideoFrameBuffer {
     };
   }
 
-  sampleStage(throughMs: number, policy: InferenceStageDefaults['frameSampling'], cap: number): VideoFrame[] {
+  sampleStage(
+    throughMs: number,
+    policy: InferenceStageDefaults['frameSampling'],
+    cap: number,
+  ): VideoFrame[] {
     this.prune(throughMs);
     return selectStageFrames(this.frames, throughMs, policy, cap);
   }

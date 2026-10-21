@@ -59,7 +59,14 @@ export class SplitNarrative {
     if (!sameFrame) this.lastVisionAt = observedAt;
     const trimmed = text.trim();
     if (trimmed && (!sameFrame || !this.scene)) {
-      this.scene = { text: trimmed, sourceModel: 'vision', frameIds: [...frameIds], observedAt, availableAt, attemptId };
+      this.scene = {
+        text: trimmed,
+        sourceModel: 'vision',
+        frameIds: [...frameIds],
+        observedAt,
+        availableAt,
+        attemptId,
+      };
       if (this.interpretations.at(-1)?.text !== trimmed) {
         this.interpretations.push(this.scene);
         this.interpretations = this.interpretations.slice(-256);
@@ -129,7 +136,14 @@ export class SplitNarrative {
   sceneObservation(now: number, maxAgeMs: number): CapturedObservation[] {
     const scene = this.currentScene(now, maxAgeMs);
     return scene
-      ? [{ source: 'vision', kind: 'visual', description: scene.text, observedAt: scene.observedAt }]
+      ? [
+          {
+            source: 'vision',
+            kind: 'visual',
+            description: scene.text,
+            observedAt: scene.observedAt,
+          },
+        ]
       : [];
   }
 

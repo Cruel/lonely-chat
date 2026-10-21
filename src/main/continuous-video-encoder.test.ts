@@ -5,10 +5,28 @@ import { ffmpegNativeVideoEncoder } from './continuous-video-encoder';
 import { selectContinuousVideoWindow } from './continuous-video-window';
 
 const jpeg = 'data:image/jpeg;base64,/9j/';
-const window = selectContinuousVideoWindow([
-  { sourceId: 'recording', observedAt: 1000, mediaTimeMs: 10000, width: 8, height: 8, dataUrl: jpeg },
-  { sourceId: 'recording', observedAt: 1200, mediaTimeMs: 10500, width: 8, height: 8, dataUrl: jpeg },
-], 0, 1200)!;
+const window = selectContinuousVideoWindow(
+  [
+    {
+      sourceId: 'recording',
+      observedAt: 1000,
+      mediaTimeMs: 10000,
+      width: 8,
+      height: 8,
+      dataUrl: jpeg,
+    },
+    {
+      sourceId: 'recording',
+      observedAt: 1200,
+      mediaTimeMs: 10500,
+      width: 8,
+      height: 8,
+      dataUrl: jpeg,
+    },
+  ],
+  0,
+  1200,
+)!;
 
 describe('bounded native-video encoding', () => {
   it('gives FFmpeg only the selected frames, preserves media durations and cleans private temp data', async () => {
@@ -20,8 +38,10 @@ describe('bounded native-video encoding', () => {
       manifest = await readFile(source, 'utf8');
       await writeFile(args.at(-1)!, 'synthetic clip');
     });
-    const result = await ffmpegNativeVideoEncoder('/test/ffmpeg', runner)
-      .encode(window, new AbortController().signal);
+    const result = await ffmpegNativeVideoEncoder('/test/ffmpeg', runner).encode(
+      window,
+      new AbortController().signal,
+    );
     expect(Buffer.from(result, 'base64').toString()).toBe('synthetic clip');
     expect(manifest).toContain('duration 0.500');
     expect(manifest).toContain('frame-001.jpg');
@@ -33,8 +53,9 @@ describe('bounded native-video encoding', () => {
     const runner = vi.fn(async () => {});
     const controller = new AbortController();
     controller.abort();
-    await expect(ffmpegNativeVideoEncoder('/test/ffmpeg', runner).encode(window, controller.signal))
-      .rejects.toMatchObject({ name: 'AbortError' });
+    await expect(
+      ffmpegNativeVideoEncoder('/test/ffmpeg', runner).encode(window, controller.signal),
+    ).rejects.toMatchObject({ name: 'AbortError' });
     expect(runner).not.toHaveBeenCalled();
   });
 });

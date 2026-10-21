@@ -20,13 +20,28 @@ export interface InferenceStageDefaults {
     readonly maxAgeMs: number;
     readonly maxCount: number;
     readonly maxCharacters: number;
-    readonly sources: readonly ('events' | 'transcripts' | 'chat' | 'scene' | 'observations' | 'narrative' | 'interpretations' | 'significantEvents')[];
+    readonly sources: readonly (
+      | 'events'
+      | 'transcripts'
+      | 'chat'
+      | 'scene'
+      | 'observations'
+      | 'narrative'
+      | 'interpretations'
+      | 'significantEvents'
+    )[];
   };
   /** Vision must always emit protocol-required fields; disabled outputs are empty. */
   readonly visionOutput?: 'scene' | 'events' | 'both';
   /** Explicit native clip opt-in; uncertain or unsupported models retain JPEG frames. */
   readonly videoInput?: 'frames' | 'native';
-  readonly frameSampling?: { readonly maxFrames: number; readonly windowMs: number; readonly strategy: 'uniform' | 'latest'; readonly maxWidth: number; readonly maxHeight: number };
+  readonly frameSampling?: {
+    readonly maxFrames: number;
+    readonly windowMs: number;
+    readonly strategy: 'uniform' | 'latest';
+    readonly maxWidth: number;
+    readonly maxHeight: number;
+  };
   readonly maxResponseTokens?: number;
   readonly visionOptionalFields?: readonly ('confidence' | 'notes')[];
 }
@@ -34,7 +49,12 @@ export interface InferenceProfileValues {
   readonly topology: InferenceTopology;
   readonly roles: Partial<Record<InferenceRole, ProfileModelReference>>;
   readonly stageDefaults: Partial<Record<InferenceRole, InferenceStageDefaults>>;
-  readonly memory?: { readonly enabled: boolean; readonly intervalMs: number; readonly maxCharacters: number; readonly expireAfterMs: number };
+  readonly memory?: {
+    readonly enabled: boolean;
+    readonly intervalMs: number;
+    readonly maxCharacters: number;
+    readonly expireAfterMs: number;
+  };
   readonly contextDefaults?: {
     readonly context?: string;
     readonly chatActivity?: SessionPreferences['chatActivity'];
@@ -77,11 +97,23 @@ function exact(value: Record<string, unknown>, allowed: readonly string[], label
   if (Object.keys(value).some((key) => !allowed.includes(key)))
     throw new Error(`Unexpected ${label} field.`);
 }
-const variables = new Set(['context', 'cycle', 'events', 'transcripts', 'chat', 'scene', 'observations', 'narrative', 'interpretations', 'significantEvents']);
+const variables = new Set([
+  'context',
+  'cycle',
+  'events',
+  'transcripts',
+  'chat',
+  'scene',
+  'observations',
+  'narrative',
+  'interpretations',
+  'significantEvents',
+]);
 function safePrompt(value: unknown) {
   if (typeof value !== 'string' || value.length > 12000) return false;
   const stripped = value.replace(/{{\s*([^{}]+?)\s*}}/g, (_part, key: string) =>
-    variables.has(key) ? '' : '__invalid__');
+    variables.has(key) ? '' : '__invalid__',
+  );
   return !stripped.includes('__invalid__') && !stripped.includes('{{') && !stripped.includes('}}');
 }
 
@@ -101,7 +133,9 @@ export function validateProfileValues(
   const required = roles[topology];
   const assignments = object(value.roles, 'Inference Profile roles');
   if (
-    Object.keys(assignments).some((key) => ![...required, 'memory'].includes(key as InferenceRole)) ||
+    Object.keys(assignments).some(
+      (key) => ![...required, 'memory'].includes(key as InferenceRole),
+    ) ||
     required.some((role) => !assignments[role])
   )
     throw new Error(`The ${topology} topology requires ${required.join(' and ')} roles.`);
@@ -128,35 +162,70 @@ export function validateProfileValues(
   const stages: Partial<Record<InferenceRole, InferenceStageDefaults>> = {};
   for (const [role, raw] of Object.entries(defaults)) {
     const stage = object(raw, `${role} stage defaults`);
-    exact(stage, ['settings', 'systemPrompt', 'userPrompt', 'contextPolicy', 'visionOutput', 'maxResponseTokens', 'visionOptionalFields', 'frameSampling', 'videoInput'], `${role} stage default`);
-    if (stage.visionOutput !== undefined &&
-      (role !== 'observer' || !['scene', 'events', 'both'].includes(String(stage.visionOutput))))
+    exact(
+      stage,
+      [
+        'settings',
+        'systemPrompt',
+        'userPrompt',
+        'contextPolicy',
+        'visionOutput',
+        'maxResponseTokens',
+        'visionOptionalFields',
+        'frameSampling',
+        'videoInput',
+      ],
+      `${role} stage default`,
+    );
+    if (
+      stage.visionOutput !== undefined &&
+      (role !== 'observer' || !['scene', 'events', 'both'].includes(String(stage.visionOutput)))
+    )
       throw new Error('Invalid Vision output selection.');
-    if (stage.visionOptionalFields !== undefined &&
-      (role !== 'observer' || !Array.isArray(stage.visionOptionalFields) ||
+    if (
+      stage.visionOptionalFields !== undefined &&
+      (role !== 'observer' ||
+        !Array.isArray(stage.visionOptionalFields) ||
         stage.visionOptionalFields.some((v: unknown) => v !== 'confidence' && v !== 'notes') ||
-        new Set(stage.visionOptionalFields).size !== stage.visionOptionalFields.length))
+        new Set(stage.visionOptionalFields).size !== stage.visionOptionalFields.length)
+    )
       throw new Error('Invalid optional Vision fields.');
-    if (stage.maxResponseTokens !== undefined &&
-      (!Number.isSafeInteger(stage.maxResponseTokens) || (stage.maxResponseTokens as number) < 128 ||
-        (stage.maxResponseTokens as number) > 8192))
+    if (
+      stage.maxResponseTokens !== undefined &&
+      (!Number.isSafeInteger(stage.maxResponseTokens) ||
+        (stage.maxResponseTokens as number) < 128 ||
+        (stage.maxResponseTokens as number) > 8192)
+    )
       throw new Error('Invalid stage response token budget.');
-    if (stage.videoInput !== undefined &&
+    if (
+      stage.videoInput !== undefined &&
       (!['frames', 'native'].includes(String(stage.videoInput)) ||
-        (role !== 'unified' && role !== 'observer')))
+        (role !== 'unified' && role !== 'observer'))
+    )
       throw new Error('Native video is only selectable for Unified and Vision stages.');
     if (stage.videoInput === 'native' && resolved[role as InferenceRole]?.kind !== 'local')
       throw new Error('Native video requires a local model for the selected stage.');
     let frameSampling: InferenceStageDefaults['frameSampling'];
     if (stage.frameSampling !== undefined) {
-      if (role !== 'observer' && role !== 'chat') throw new Error('Frame sampling only supports Vision and Chat.');
+      if (role !== 'observer' && role !== 'chat')
+        throw new Error('Frame sampling only supports Vision and Chat.');
       const f = object(stage.frameSampling, 'frame sampling');
       exact(f, ['maxFrames', 'windowMs', 'strategy', 'maxWidth', 'maxHeight'], 'frame sampling');
-      if (!Number.isSafeInteger(f.maxFrames) || (f.maxFrames as number) < 1 || (f.maxFrames as number) > 32 ||
-          !Number.isSafeInteger(f.windowMs) || (f.windowMs as number) < 250 || (f.windowMs as number) > 60000 ||
-          !['uniform','latest'].includes(String(f.strategy)) ||
-          !Number.isSafeInteger(f.maxWidth) || (f.maxWidth as number) < 64 || (f.maxWidth as number) > 1920 ||
-          !Number.isSafeInteger(f.maxHeight) || (f.maxHeight as number) < 64 || (f.maxHeight as number) > 1080)
+      if (
+        !Number.isSafeInteger(f.maxFrames) ||
+        (f.maxFrames as number) < 1 ||
+        (f.maxFrames as number) > 32 ||
+        !Number.isSafeInteger(f.windowMs) ||
+        (f.windowMs as number) < 250 ||
+        (f.windowMs as number) > 60000 ||
+        !['uniform', 'latest'].includes(String(f.strategy)) ||
+        !Number.isSafeInteger(f.maxWidth) ||
+        (f.maxWidth as number) < 64 ||
+        (f.maxWidth as number) > 1920 ||
+        !Number.isSafeInteger(f.maxHeight) ||
+        (f.maxHeight as number) < 64 ||
+        (f.maxHeight as number) > 1080
+      )
         throw new Error('Invalid stage frame sampling.');
       frameSampling = f as unknown as NonNullable<InferenceStageDefaults['frameSampling']>;
     }
@@ -164,15 +233,32 @@ export function validateProfileValues(
     if (stage.contextPolicy !== undefined) {
       const policy = object(stage.contextPolicy, 'stage context policy');
       exact(policy, ['maxAgeMs', 'maxCount', 'maxCharacters', 'sources'], 'stage context policy');
-      if (!Number.isSafeInteger(policy.maxAgeMs) || (policy.maxAgeMs as number) < 1000 ||
-          (policy.maxAgeMs as number) > 3600000 ||
-          !Number.isSafeInteger(policy.maxCount) || (policy.maxCount as number) < 0 ||
-          (policy.maxCount as number) > 256 ||
-          !Number.isSafeInteger(policy.maxCharacters) || (policy.maxCharacters as number) < 512 ||
-          (policy.maxCharacters as number) > 100000 ||
-          !Array.isArray(policy.sources) ||
-          policy.sources.some((source: unknown) => !['events','transcripts','chat','scene','observations','narrative','interpretations','significantEvents'].includes(String(source))) ||
-          new Set(policy.sources).size !== policy.sources.length)
+      if (
+        !Number.isSafeInteger(policy.maxAgeMs) ||
+        (policy.maxAgeMs as number) < 1000 ||
+        (policy.maxAgeMs as number) > 3600000 ||
+        !Number.isSafeInteger(policy.maxCount) ||
+        (policy.maxCount as number) < 0 ||
+        (policy.maxCount as number) > 256 ||
+        !Number.isSafeInteger(policy.maxCharacters) ||
+        (policy.maxCharacters as number) < 512 ||
+        (policy.maxCharacters as number) > 100000 ||
+        !Array.isArray(policy.sources) ||
+        policy.sources.some(
+          (source: unknown) =>
+            ![
+              'events',
+              'transcripts',
+              'chat',
+              'scene',
+              'observations',
+              'narrative',
+              'interpretations',
+              'significantEvents',
+            ].includes(String(source)),
+        ) ||
+        new Set(policy.sources).size !== policy.sources.length
+      )
         throw new Error('Invalid stage context policy.');
       contextPolicy = policy as unknown as NonNullable<InferenceStageDefaults['contextPolicy']>;
     }
@@ -194,20 +280,36 @@ export function validateProfileValues(
       ...(stage.userPrompt !== undefined ? { userPrompt: stage.userPrompt as string } : {}),
       ...(contextPolicy ? { contextPolicy } : {}),
       ...(frameSampling ? { frameSampling } : {}),
-      ...(stage.videoInput !== undefined ? { videoInput: stage.videoInput as 'frames' | 'native' } : {}),
-      ...(stage.maxResponseTokens !== undefined ? { maxResponseTokens: stage.maxResponseTokens as number } : {}),
-      ...(stage.visionOutput !== undefined ? { visionOutput: stage.visionOutput as 'scene' | 'events' | 'both' } : {}),
-      ...(stage.visionOptionalFields !== undefined ? { visionOptionalFields: stage.visionOptionalFields as ('confidence' | 'notes')[] } : {}),
+      ...(stage.videoInput !== undefined
+        ? { videoInput: stage.videoInput as 'frames' | 'native' }
+        : {}),
+      ...(stage.maxResponseTokens !== undefined
+        ? { maxResponseTokens: stage.maxResponseTokens as number }
+        : {}),
+      ...(stage.visionOutput !== undefined
+        ? { visionOutput: stage.visionOutput as 'scene' | 'events' | 'both' }
+        : {}),
+      ...(stage.visionOptionalFields !== undefined
+        ? { visionOptionalFields: stage.visionOptionalFields as ('confidence' | 'notes')[] }
+        : {}),
     };
   }
   let memory: InferenceProfileValues['memory'];
   if (value.memory !== undefined) {
     const entry = object(value.memory, 'narrative memory');
     exact(entry, ['enabled', 'intervalMs', 'maxCharacters', 'expireAfterMs'], 'narrative memory');
-    if (typeof entry.enabled !== 'boolean' ||
-      !Number.isSafeInteger(entry.intervalMs) || (entry.intervalMs as number) < 1000 || (entry.intervalMs as number) > 3600000 ||
-      !Number.isSafeInteger(entry.maxCharacters) || (entry.maxCharacters as number) < 256 || (entry.maxCharacters as number) > 12000 ||
-      !Number.isSafeInteger(entry.expireAfterMs) || (entry.expireAfterMs as number) < 0 || (entry.expireAfterMs as number) > 86400000)
+    if (
+      typeof entry.enabled !== 'boolean' ||
+      !Number.isSafeInteger(entry.intervalMs) ||
+      (entry.intervalMs as number) < 1000 ||
+      (entry.intervalMs as number) > 3600000 ||
+      !Number.isSafeInteger(entry.maxCharacters) ||
+      (entry.maxCharacters as number) < 256 ||
+      (entry.maxCharacters as number) > 12000 ||
+      !Number.isSafeInteger(entry.expireAfterMs) ||
+      (entry.expireAfterMs as number) < 0 ||
+      (entry.expireAfterMs as number) > 86400000
+    )
       throw new Error('Invalid narrative memory policy.');
     memory = entry as unknown as NonNullable<InferenceProfileValues['memory']>;
   }
@@ -260,7 +362,10 @@ export function validateProfileValues(
       )
         throw new Error(`Invalid ${key} stage scheduling limit.`);
     }
-    if (config.remoteChatImagesConsent !== undefined && typeof config.remoteChatImagesConsent !== 'boolean')
+    if (
+      config.remoteChatImagesConsent !== undefined &&
+      typeof config.remoteChatImagesConsent !== 'boolean'
+    )
       throw new Error('Invalid Hybrid remote-image consent.');
     if (config.strictWait !== undefined && typeof config.strictWait !== 'boolean')
       throw new Error('Invalid strict-wait policy.');
@@ -289,7 +394,9 @@ export function validateProfileValues(
       ...(config.maximumAgeMs !== undefined ? { maximumAgeMs: config.maximumAgeMs as number } : {}),
       ...(config.strictWait !== undefined ? { strictWait: config.strictWait as boolean } : {}),
       ...(config.warmIdleMs !== undefined ? { warmIdleMs: config.warmIdleMs as number } : {}),
-      ...(config.recordedDrainTimeoutMs !== undefined ? { recordedDrainTimeoutMs: config.recordedDrainTimeoutMs as number } : {}),
+      ...(config.recordedDrainTimeoutMs !== undefined
+        ? { recordedDrainTimeoutMs: config.recordedDrainTimeoutMs as number }
+        : {}),
     };
   }
   return {

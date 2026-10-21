@@ -15,9 +15,14 @@ function entries(value: unknown): Record<string, unknown>[] {
 }
 function uniqueStrings(items: unknown[]): string[] {
   return [
-    ...new Set(items.filter((item): item is string =>
-      typeof item === 'string' && item.length > 0 && item.length <= 128)),
-  ].sort().slice(0, 64);
+    ...new Set(
+      items.filter(
+        (item): item is string => typeof item === 'string' && item.length > 0 && item.length <= 128,
+      ),
+    ),
+  ]
+    .sort()
+    .slice(0, 64);
 }
 
 export function traceFacets(attempt: TraceAttempt) {

@@ -552,7 +552,12 @@ export interface DesktopAPI {
   exportRecordedRun?(id: string): Promise<boolean>;
   importRecordedRun?(): Promise<RecordedRun | null>;
   replayRecordedRun?(id: string): Promise<import('./run-replay-contract').RunReplay>;
-  reinferRecordedChat?(id: string, attemptId: string, profileId: string, allowRemoteText: boolean): Promise<import('./run-replay-contract').RunChatComparison>;
+  reinferRecordedChat?(
+    id: string,
+    attemptId: string,
+    profileId: string,
+    allowRemoteText: boolean,
+  ): Promise<import('./run-replay-contract').RunChatComparison>;
   /** File paths are returned only for File objects explicitly selected in the desktop window. */
   pathForRecordedFile?(file: File): string | null;
   openRecordedMedia?(path: string): Promise<string>;

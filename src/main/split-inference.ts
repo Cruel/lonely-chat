@@ -13,7 +13,12 @@ import { SplitNarrative } from './split-narrative';
 import { NarrativeMemory, type NarrativeMemoryPolicy } from './narrative-memory';
 import { selectStageFrames } from './stage-frame-selection';
 import { validateVisionStageResult } from './vision-output';
-import { DEFAULT_CHAT_PROMPT, DEFAULT_VISION_PROMPT, resolveStageContext, resolveStageTemplate } from './stage-context';
+import {
+  DEFAULT_CHAT_PROMPT,
+  DEFAULT_VISION_PROMPT,
+  resolveStageContext,
+  resolveStageTemplate,
+} from './stage-context';
 import type { InferenceProfileValues } from '../shared/inference-profile-contract';
 import type { StageTraceFactory } from './stage-trace-evidence';
 import { traceUsage } from './inference-trace';
@@ -59,37 +64,65 @@ export function splitRequests(
   const base = buildUnifiedInferenceRequest(input);
   const visionContext = resolveStageContext(input, stages.observer);
   const visionBase = buildUnifiedInferenceRequest({
-    ...input, recentEvents: visionContext.data.events as InferenceInput['recentEvents'],
+    ...input,
+    recentEvents: visionContext.data.events as InferenceInput['recentEvents'],
     recentTranscripts: visionContext.data.transcripts as InferenceInput['recentTranscripts'],
     recentChat: visionContext.data.chat as InferenceInput['recentChat'],
-    observations: [...(visionContext.data.scene as NonNullable<InferenceInput['observations']>),
-      ...(visionContext.data.observations as NonNullable<InferenceInput['observations']>)],
+    observations: [
+      ...(visionContext.data.scene as NonNullable<InferenceInput['observations']>),
+      ...(visionContext.data.observations as NonNullable<InferenceInput['observations']>),
+    ],
   });
   const visionOutput = stages.observer?.visionOutput ?? 'both';
   return {
     vision: frozen({
       ...visionBase,
       role: 'vision',
-      sampling: { ...visionBase.sampling, maxTokens: stages.observer?.maxResponseTokens ?? visionBase.sampling.maxTokens },
-      instructions:
-        resolveStageTemplate(stages.observer?.systemPrompt ?? `${DEFAULT_VISION_PROMPT} Output selection: ${visionOutput}. Always return events, messages (empty) and sceneState (empty if disabled).`, visionContext.data),
+      sampling: {
+        ...visionBase.sampling,
+        maxTokens: stages.observer?.maxResponseTokens ?? visionBase.sampling.maxTokens,
+      },
+      instructions: resolveStageTemplate(
+        stages.observer?.systemPrompt ??
+          `${DEFAULT_VISION_PROMPT} Output selection: ${visionOutput}. Always return events, messages (empty) and sceneState (empty if disabled).`,
+        visionContext.data,
+      ),
       content: stages.observer?.userPrompt
-        ? [{ type: 'text' as const, text: resolveStageTemplate(stages.observer.userPrompt, visionContext.data) }, ...visionBase.content]
+        ? [
+            {
+              type: 'text' as const,
+              text: resolveStageTemplate(stages.observer.userPrompt, visionContext.data),
+            },
+            ...visionBase.content,
+          ]
         : visionBase.content,
       // Retained summaries and prior interpretations aren't part of the legacy
       // unified JSON context; supply them explicitly as uncertain context.
-      ...((visionContext.data.significantEvents as unknown[]).length > 0 || (visionContext.data.interpretations as unknown[]).length > 0 || hasRetainedMemory(visionContext.data.narrative)
-        ? { content: [
-            ...(stages.observer?.userPrompt
-              ? [{ type: 'text' as const, text: resolveStageTemplate(stages.observer.userPrompt, visionContext.data) }]
-              : []),
-            { type: 'text' as const, text: JSON.stringify({
-              retainedNarrative: visionContext.data.narrative,
-              significantHistoricalSummaries: visionContext.data.significantEvents,
-              uncertainPriorInterpretations: visionContext.data.interpretations,
-            }) },
-            ...visionBase.content,
-          ] } : {}),
+      ...((visionContext.data.significantEvents as unknown[]).length > 0 ||
+      (visionContext.data.interpretations as unknown[]).length > 0 ||
+      hasRetainedMemory(visionContext.data.narrative)
+        ? {
+            content: [
+              ...(stages.observer?.userPrompt
+                ? [
+                    {
+                      type: 'text' as const,
+                      text: resolveStageTemplate(stages.observer.userPrompt, visionContext.data),
+                    },
+                  ]
+                : []),
+              {
+                type: 'text' as const,
+                text: JSON.stringify({
+                  retainedNarrative: visionContext.data.narrative,
+                  significantHistoricalSummaries: visionContext.data.significantEvents,
+                  uncertainPriorInterpretations: visionContext.data.interpretations,
+                }),
+              },
+              ...visionBase.content,
+            ],
+          }
+        : {}),
       response: {
         ...base.response,
         schema: {
@@ -100,15 +133,24 @@ export function splitRequests(
             messages: { ...base.response.schema.properties.messages, maxItems: 0 },
             sceneState: { type: 'string', maxLength: 2000 },
             ...(stages.observer?.visionOptionalFields?.includes('confidence')
-              ? { confidence: { type: 'number', minimum: 0, maximum: 1 } } : {}),
+              ? { confidence: { type: 'number', minimum: 0, maximum: 1 } }
+              : {}),
             ...(stages.observer?.visionOptionalFields?.includes('notes')
-              ? { notes: { type: 'string', maxLength: 1000 } } : {}),
+              ? { notes: { type: 'string', maxLength: 1000 } }
+              : {}),
           },
         },
       },
     } as unknown as UnifiedInferenceRequest),
     chat: (events, observations) => {
-      const selectedContext = resolveStageContext({ ...input, recentEvents: [...(input.recentEvents ?? []), ...events], observations: [...(input.observations ?? []), ...observations] }, stages.chat);
+      const selectedContext = resolveStageContext(
+        {
+          ...input,
+          recentEvents: [...(input.recentEvents ?? []), ...events],
+          observations: [...(input.observations ?? []), ...observations],
+        },
+        stages.chat,
+      );
       const textOnly = buildUnifiedInferenceRequest({
         ...input,
         frames: input.chatFrames ?? [],
@@ -116,29 +158,56 @@ export function splitRequests(
         recentEvents: selectedContext.data.events as InferenceInput['recentEvents'],
         recentTranscripts: selectedContext.data.transcripts as InferenceInput['recentTranscripts'],
         recentChat: selectedContext.data.chat as InferenceInput['recentChat'],
-        observations: [...(selectedContext.data.scene as NonNullable<InferenceInput['observations']>), ...(selectedContext.data.observations as NonNullable<InferenceInput['observations']>)],
+        observations: [
+          ...(selectedContext.data.scene as NonNullable<InferenceInput['observations']>),
+          ...(selectedContext.data.observations as NonNullable<InferenceInput['observations']>),
+        ],
       });
       return frozen({
         ...textOnly,
         role: 'chat' as const,
-        sampling: { ...textOnly.sampling, maxTokens: stages.chat?.maxResponseTokens ?? textOnly.sampling.maxTokens },
+        sampling: {
+          ...textOnly.sampling,
+          maxTokens: stages.chat?.maxResponseTokens ?? textOnly.sampling.maxTokens,
+        },
         content: stages.chat?.userPrompt
-          ? [{ type: 'text' as const, text: resolveStageTemplate(stages.chat.userPrompt, selectedContext.data) }, ...textOnly.content]
-          : textOnly.content,
-        ...((selectedContext.data.significantEvents as unknown[]).length > 0 || (selectedContext.data.interpretations as unknown[]).length > 0 || hasRetainedMemory(selectedContext.data.narrative)
-          ? { content: [
-              ...(stages.chat?.userPrompt
-                ? [{ type: 'text' as const, text: resolveStageTemplate(stages.chat.userPrompt, selectedContext.data) }]
-                : []),
-              { type: 'text' as const, text: JSON.stringify({
-                retainedNarrative: selectedContext.data.narrative,
-                significantHistoricalSummaries: selectedContext.data.significantEvents,
-                uncertainPriorInterpretations: selectedContext.data.interpretations,
-              }) },
+          ? [
+              {
+                type: 'text' as const,
+                text: resolveStageTemplate(stages.chat.userPrompt, selectedContext.data),
+              },
               ...textOnly.content,
-            ] } : {}),
-        instructions:
-          resolveStageTemplate(stages.chat?.systemPrompt ?? `${DEFAULT_CHAT_PROMPT} ${textOnly.instructions}`, selectedContext.data),
+            ]
+          : textOnly.content,
+        ...((selectedContext.data.significantEvents as unknown[]).length > 0 ||
+        (selectedContext.data.interpretations as unknown[]).length > 0 ||
+        hasRetainedMemory(selectedContext.data.narrative)
+          ? {
+              content: [
+                ...(stages.chat?.userPrompt
+                  ? [
+                      {
+                        type: 'text' as const,
+                        text: resolveStageTemplate(stages.chat.userPrompt, selectedContext.data),
+                      },
+                    ]
+                  : []),
+                {
+                  type: 'text' as const,
+                  text: JSON.stringify({
+                    retainedNarrative: selectedContext.data.narrative,
+                    significantHistoricalSummaries: selectedContext.data.significantEvents,
+                    uncertainPriorInterpretations: selectedContext.data.interpretations,
+                  }),
+                },
+                ...textOnly.content,
+              ],
+            }
+          : {}),
+        instructions: resolveStageTemplate(
+          stages.chat?.systemPrompt ?? `${DEFAULT_CHAT_PROMPT} ${textOnly.instructions}`,
+          selectedContext.data,
+        ),
       } as unknown as UnifiedInferenceRequest);
     },
   };
@@ -201,16 +270,32 @@ export class ScheduledSplitInference {
   private readonly narrative = new SplitNarrative();
   private readonly memory = new NarrativeMemory();
   private hybridMaxImages = 0;
-  private frameResizer: ((frame: VideoFrame, maxWidth: number, maxHeight: number) => VideoFrame) | null = null;
-  configureFrameResizer(resizer: (frame: VideoFrame, maxWidth: number, maxHeight: number) => VideoFrame): void {
+  private frameResizer:
+    | ((frame: VideoFrame, maxWidth: number, maxHeight: number) => VideoFrame)
+    | null = null;
+  configureFrameResizer(
+    resizer: (frame: VideoFrame, maxWidth: number, maxHeight: number) => VideoFrame,
+  ): void {
     this.frameResizer = resizer;
   }
-  private resizeFrames(frames: VideoFrame[], policy: InferenceProfileValues['stageDefaults']['observer']): VideoFrame[] {
+  private resizeFrames(
+    frames: VideoFrame[],
+    policy: InferenceProfileValues['stageDefaults']['observer'],
+  ): VideoFrame[] {
     const size = policy?.frameSampling;
-    return this.frameResizer && size ? frames.map((frame) => this.frameResizer!(frame, size.maxWidth, size.maxHeight)) : frames;
+    return this.frameResizer && size
+      ? frames.map((frame) => this.frameResizer!(frame, size.maxWidth, size.maxHeight))
+      : frames;
   }
-  configureHybrid(maxImages: number): void { this.hybridMaxImages = maxImages; }
-  private memoryPolicy: NarrativeMemoryPolicy = { enabled: false, intervalMs: 30000, maxCharacters: 2000, expireAfterMs: 0 };
+  configureHybrid(maxImages: number): void {
+    this.hybridMaxImages = maxImages;
+  }
+  private memoryPolicy: NarrativeMemoryPolicy = {
+    enabled: false,
+    intervalMs: 30000,
+    maxCharacters: 2000,
+    expireAfterMs: 0,
+  };
 
   configureMemory(policy: NarrativeMemoryPolicy): void {
     this.memoryPolicy = policy;
@@ -253,22 +338,32 @@ export class ScheduledSplitInference {
     if (this.visionRevision || this.visionTask || this.retryPayload)
       throw new Error('Cannot seed Vision after stage admission.');
     const mediaIdentity = [...new Set((input.frames ?? []).map((frame) => frame.sourceId))]
-      .sort().join(',');
+      .sort()
+      .join(',');
     this.mediaIdentity = mediaIdentity;
     const observedAt = input.frames?.at(-1)?.observedAt ?? input.boundary?.throughMs ?? now;
     const identity = `${this.generation}:${this.mediaIdentity}`;
     const observations: CapturedObservation[] = sceneState.trim()
-      ? [{ source: 'vision', kind: 'visual', description: sceneState.trim(), observedAt }] : [];
+      ? [{ source: 'vision', kind: 'visual', description: sceneState.trim(), observedAt }]
+      : [];
     this.narrative.observeVision(sceneState, events, observedAt, now, []);
     this.latest.publish({ events, observations, serial: ++this.serial }, now, observedAt, identity);
     this.visionRevision++;
   }
 
-  suspendMemory(): void { this.memory.suspend(); }
-  resumeMemory(): void { this.memory.resume(); }
+  suspendMemory(): void {
+    this.memory.suspend();
+  }
+  resumeMemory(): void {
+    this.memory.resume();
+  }
 
-  get visionInFlight(): boolean { return this.visionTask !== null; }
-  get memoryInFlight(): boolean { return this.memoryTask !== null; }
+  get visionInFlight(): boolean {
+    return this.visionTask !== null;
+  }
+  get memoryInFlight(): boolean {
+    return this.memoryTask !== null;
+  }
 
   /** EOF needs a final visual handoff only when a new media frame was captured. */
   needsFinalVision(frame: VideoFrame | undefined): boolean {
@@ -283,11 +378,17 @@ export class ScheduledSplitInference {
     return (this.visionCadence?.nextDelay(now) ?? 0) === 0;
   }
 
-  waitForVision(): Promise<void> { return this.visionTask ?? Promise.resolve(); }
+  waitForVision(): Promise<void> {
+    return this.visionTask ?? Promise.resolve();
+  }
 
-  async waitForMemory(): Promise<void> { await this.memoryTask; }
+  async waitForMemory(): Promise<void> {
+    await this.memoryTask;
+  }
 
-  hasUnconsumedVision(): boolean { return this.visionRevision > this.chatVisionRevision; }
+  hasUnconsumedVision(): boolean {
+    return this.visionRevision > this.chatVisionRevision;
+  }
 
   nextChatDelay(now: number): number {
     return this.chatCadence?.nextDelay(now) ?? 0;
@@ -318,9 +419,23 @@ export class ScheduledSplitInference {
     const generation = this.generation;
     const sourceFrames = input.frames ?? [];
     const chatSourceFrames = input.chatFrames ?? sourceFrames;
-    const boundaryNow = Math.max(input.boundary?.throughMs ?? 0, sourceFrames.at(-1)?.observedAt ?? 0);
-    const visionFrames = this.resizeFrames(selectStageFrames(sourceFrames, boundaryNow, stages.observer?.frameSampling, 32), stages.observer);
-    const chatFrames = this.resizeFrames(selectStageFrames(chatSourceFrames, boundaryNow, stages.chat?.frameSampling, this.hybridMaxImages), stages.chat);
+    const boundaryNow = Math.max(
+      input.boundary?.throughMs ?? 0,
+      sourceFrames.at(-1)?.observedAt ?? 0,
+    );
+    const visionFrames = this.resizeFrames(
+      selectStageFrames(sourceFrames, boundaryNow, stages.observer?.frameSampling, 32),
+      stages.observer,
+    );
+    const chatFrames = this.resizeFrames(
+      selectStageFrames(
+        chatSourceFrames,
+        boundaryNow,
+        stages.chat?.frameSampling,
+        this.hybridMaxImages,
+      ),
+      stages.chat,
+    );
     if (chatFrames.length && !adapters.chat.capabilities.images)
       throw new Error('Selected Chat model does not accept Hybrid image frames.');
     const snapshot = frozen({
@@ -370,10 +485,17 @@ export class ScheduledSplitInference {
               const result = await adapters.vision.complete(
                 requests.vision,
                 activeSignal,
-                (stage, value) => { observer?.(stage, value); evidence?.observe(stage, value); },
+                (stage, value) => {
+                  observer?.(stage, value);
+                  evidence?.observe(stage, value);
+                },
               );
-              evidence?.update({ stage: 'normalization', rawResponse: result.raw,
-                usage: result.usage ?? traceUsage(result.raw), normalized: result.normalized });
+              evidence?.update({
+                stage: 'normalization',
+                rawResponse: result.raw,
+                usage: result.usage ?? traceUsage(result.raw),
+                normalized: result.normalized,
+              });
               failureStage = 'validation';
               evidence?.update({ stage: 'validation' });
               const output = validateVisionStageResult(result.normalized, stages.observer);
@@ -386,19 +508,28 @@ export class ScheduledSplitInference {
             enforceAudience: false,
             beforeAccept,
           });
-          if (signal.aborted || generation !== this.generation ||
-              identity !== `${this.generation}:${this.mediaIdentity}`) {
+          if (
+            signal.aborted ||
+            generation !== this.generation ||
+            identity !== `${this.generation}:${this.mediaIdentity}`
+          ) {
             evidence?.update({ stage: 'cancelled', errorStage: failureStage });
             return;
           }
-          evidence?.update({ stage: 'accepted', parsed: output.parsed, accepted: output.accepted,
-            sceneState, usage: output.usage });
+          evidence?.update({
+            stage: 'accepted',
+            parsed: output.parsed,
+            accepted: output.accepted,
+            sceneState,
+            usage: output.usage,
+          });
           const observations: CapturedObservation[] = sceneState.trim()
             ? [{ source: 'vision', kind: 'visual', description: sceneState.trim(), observedAt }]
             : [];
           const availableAt = now();
           if (sceneState.trim()) this.memory.observe(sceneState, observedAt);
-          for (const event of output.accepted.events) this.memory.observe(event.summary, event.observedAt);
+          for (const event of output.accepted.events)
+            this.memory.observe(event.summary, event.observedAt);
           this.narrative.observeVision(
             sceneState,
             output.accepted.events,
@@ -409,15 +540,23 @@ export class ScheduledSplitInference {
           );
           if (observations.length || output.accepted.events.length) this.visionRevision++;
           this.latest.publish(
-            { events: output.accepted.events, observations, serial: ++this.serial, attemptId: evidence?.id },
+            {
+              events: output.accepted.events,
+              observations,
+              serial: ++this.serial,
+              attemptId: evidence?.id,
+            },
             availableAt,
             observedAt,
             identity,
           );
         } catch (error) {
           visionFailure = error;
-          evidence?.update({ stage: signal.aborted || generation !== this.generation ? 'cancelled' : 'failed',
-            errorStage: failureStage, error: error instanceof Error ? error.message : 'Vision inference failed.' });
+          evidence?.update({
+            stage: signal.aborted || generation !== this.generation ? 'cancelled' : 'failed',
+            errorStage: failureStage,
+            error: error instanceof Error ? error.message : 'Vision inference failed.',
+          });
           // A failed Vision attempt is not an accepted observation. Chat may
           // consume a still-eligible earlier result, according to policy.
         } finally {
@@ -443,25 +582,43 @@ export class ScheduledSplitInference {
       }
       // An unsuccessful Chat attempt pins its exact Vision context until a successful
       // acknowledgement; newer Vision completions remain queued for the next Chat cycle.
-      const pending = this.retryPayload?.events ?? this.narrative.pending(now(), policy.maximumAgeMs);
-      const observations = this.retryPayload?.observations ?? this.narrative.sceneObservation(now(), policy.maximumAgeMs);
+      const pending =
+        this.retryPayload?.events ?? this.narrative.pending(now(), policy.maximumAgeMs);
+      const observations =
+        this.retryPayload?.observations ??
+        this.narrative.sceneObservation(now(), policy.maximumAgeMs);
       const events = pending.map((entry) => entry.event);
       const scene = this.narrative.currentScene(now(), policy.maximumAgeMs);
-      const dependsOn = this.retryPayload?.dependsOn ?? [...new Set(
-        [selected?.attemptId, scene?.attemptId, ...pending.map((entry) => entry.attemptId)]
-          .filter((id): id is string => Boolean(id)),
-      )];
-      const chatRequest = this.retryPayload?.request ?? splitRequests({ ...visionInput, chatFrames }, stages).chat(events, observations);
-      const chatInput = this.retryPayload?.input ?? frozen({
-        ...snapshot,
-        narrativeMemory: memory ?? undefined,
-        frames: chatFrames,
-        videoWindow: chatFrames.length ? snapshot.videoWindow : undefined,
-        recentEvents: [...(snapshot.recentEvents ?? []), ...events],
-        observations: [...(snapshot.observations ?? []), ...observations],
-      });
-      this.retryPayload ??= { events: pending, observations, request: chatRequest, input: chatInput,
-        visionRevision: admittedVisionRevision, dependsOn };
+      const dependsOn = this.retryPayload?.dependsOn ?? [
+        ...new Set(
+          [
+            selected?.attemptId,
+            scene?.attemptId,
+            ...pending.map((entry) => entry.attemptId),
+          ].filter((id): id is string => Boolean(id)),
+        ),
+      ];
+      const chatRequest =
+        this.retryPayload?.request ??
+        splitRequests({ ...visionInput, chatFrames }, stages).chat(events, observations);
+      const chatInput =
+        this.retryPayload?.input ??
+        frozen({
+          ...snapshot,
+          narrativeMemory: memory ?? undefined,
+          frames: chatFrames,
+          videoWindow: chatFrames.length ? snapshot.videoWindow : undefined,
+          recentEvents: [...(snapshot.recentEvents ?? []), ...events],
+          observations: [...(snapshot.observations ?? []), ...observations],
+        });
+      this.retryPayload ??= {
+        events: pending,
+        observations,
+        request: chatRequest,
+        input: chatInput,
+        visionRevision: admittedVisionRevision,
+        dependsOn,
+      };
       const chatEvidence = capture?.('chat', chatInput, chatRequest, observedAt, dependsOn);
       const adapter: UnifiedInferenceAdapter = {
         ...adapters.chat,
@@ -471,17 +628,21 @@ export class ScheduledSplitInference {
             chatEvidence?.observe(stage, value);
           }),
       };
-      const output = await this.chatCoordinator.execute(
-        chatInput,
-        adapter,
-        { signal, beforeAccept,
-          onTransport: (raw, normalized) => chatEvidence?.update({ stage: 'validation', rawResponse: raw, normalized }),
-          onParsed: (parsed) => chatEvidence?.update({ stage: 'validation', parsed }),
-        },
-      );
+      const output = await this.chatCoordinator.execute(chatInput, adapter, {
+        signal,
+        beforeAccept,
+        onTransport: (raw, normalized) =>
+          chatEvidence?.update({ stage: 'validation', rawResponse: raw, normalized }),
+        onParsed: (parsed) => chatEvidence?.update({ stage: 'validation', parsed }),
+      });
       if (signal.aborted || generation !== this.generation) return null;
-      chatEvidence?.update({ stage: 'validation', rawResponse: output.raw, normalized: output.normalized,
-        parsed: output.parsed, usage: output.usage });
+      chatEvidence?.update({
+        stage: 'validation',
+        rawResponse: output.raw,
+        normalized: output.normalized,
+        parsed: output.parsed,
+        usage: output.usage,
+      });
       const freshChat = this.narrative.merge(output.accepted.events, 'chat', now());
       this.narrative.acknowledge(pending);
       this.chatVisionRevision = Math.max(this.chatVisionRevision, admittedVisionRevision);
@@ -490,9 +651,20 @@ export class ScheduledSplitInference {
       for (const event of freshChat) this.memory.observe(event.event.summary, event.observedAt);
       if (!signal.aborted && generation === this.generation) {
         // Memory updates happen after time-critical Chat publication, never on its critical path.
-        const task = this.memory.update(now(), this.memoryPolicy, adapters.memory ?? adapters.chat, signal,
-          capture ? (request) => capture('memory', chatInput, request, observedAt,
-            [...dependsOn, ...(chatEvidence ? [chatEvidence.id] : [])]) : undefined, beforeAccept);
+        const task = this.memory.update(
+          now(),
+          this.memoryPolicy,
+          adapters.memory ?? adapters.chat,
+          signal,
+          capture
+            ? (request) =>
+                capture('memory', chatInput, request, observedAt, [
+                  ...dependsOn,
+                  ...(chatEvidence ? [chatEvidence.id] : []),
+                ])
+            : undefined,
+          beforeAccept,
+        );
         this.memoryTask = task;
         void task.finally(() => {
           if (this.memoryTask === task) this.memoryTask = null;

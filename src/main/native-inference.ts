@@ -640,7 +640,9 @@ export class NativeInference implements InferenceProvider {
                 throw new Error(
                   'Model compatibility check failed: unable to query loaded modalities.',
                 );
-              const props = (await readBounded(response)) as { modalities?: { vision?: unknown; video?: unknown } };
+              const props = (await readBounded(response)) as {
+                modalities?: { vision?: unknown; video?: unknown };
+              };
               if (props?.modalities?.vision !== true) {
                 throw new Error(
                   'Model compatibility check failed: the pinned llama.cpp runtime did not load a vision-capable model/projector pair. Select a matching projector or text-only.',
@@ -804,13 +806,18 @@ export class NativeInference implements InferenceProvider {
   ): Promise<unknown> {
     await this.prepare(signal);
     if (!this.videoReady)
-      throw new Error('Selected local model has no verified native-video modality; use image frames.');
+      throw new Error(
+        'Selected local model has no verified native-video modality; use image frames.',
+      );
     const directory = this.options.videoFfmpegDir?.();
     if (!encoder && !directory)
       throw new Error('FFmpeg is required for continuous native-video clips.');
-    const encoded = await (encoder ?? ffmpegNativeVideoEncoder(
-      path.join(directory!, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'),
-    )).encode(window, signal);
+    const encoded = await (
+      encoder ??
+      ffmpegNativeVideoEncoder(
+        path.join(directory!, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'),
+      )
+    ).encode(window, signal);
     if (signal.aborted) throw new DOMException('Native video cancelled.', 'AbortError');
     return this.complete(withNativeVideoData(request, encoded), signal);
   }

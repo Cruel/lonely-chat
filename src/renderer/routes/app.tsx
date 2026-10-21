@@ -159,9 +159,9 @@ export function DesktopPage() {
     setSection('logs');
   };
   const [caseFocus, setCaseFocus] = useState<string | null>(null);
-  const [playgroundTab, setPlaygroundTab] = useState<'freeform' | 'simulation' | 'stages' | 'speech'>(
-    'freeform',
-  );
+  const [playgroundTab, setPlaygroundTab] = useState<
+    'freeform' | 'simulation' | 'stages' | 'speech'
+  >('freeform');
   const [overlayStatus, setOverlayStatus] = useState<OverlayStatus>({
     port: DEFAULT_OVERLAY_PORT,
     url: null,

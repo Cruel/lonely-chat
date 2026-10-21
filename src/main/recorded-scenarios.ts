@@ -2,7 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { validatePreferences } from '../shared/session-contract';
-import { validateProfileSnapshot, type InferenceProfile } from '../shared/inference-profile-contract';
+import {
+  validateProfileSnapshot,
+  type InferenceProfile,
+} from '../shared/inference-profile-contract';
 import { supportedRecordedMediaPath } from './recorded-media-access';
 import { validateRecordedRemoteRoles } from './recorded-role-evidence';
 import type {
@@ -244,22 +247,32 @@ export class RecordedScenarioStore {
             }
           : {}),
         effective: validateScenarioConfig(value.effective),
-        ...(value.appliedProfileRevisions === undefined ? {} : {
-          appliedProfileRevisions: (() => {
-            if (!Array.isArray(value.appliedProfileRevisions) || value.appliedProfileRevisions.length > 128)
-              throw new Error('Invalid recorded Run profile revisions.');
-            return value.appliedProfileRevisions.map((entry: unknown) => {
-              const revision = object(entry);
-              if (!integer(revision.cycle, 1, Number.MAX_SAFE_INTEGER))
-                throw new Error('Invalid recorded Run profile admission.');
-              return { cycle: revision.cycle as number, profile: validateProfileSnapshot(revision.profile) };
-            });
-          })(),
-        }),
+        ...(value.appliedProfileRevisions === undefined
+          ? {}
+          : {
+              appliedProfileRevisions: (() => {
+                if (
+                  !Array.isArray(value.appliedProfileRevisions) ||
+                  value.appliedProfileRevisions.length > 128
+                )
+                  throw new Error('Invalid recorded Run profile revisions.');
+                return value.appliedProfileRevisions.map((entry: unknown) => {
+                  const revision = object(entry);
+                  if (!integer(revision.cycle, 1, Number.MAX_SAFE_INTEGER))
+                    throw new Error('Invalid recorded Run profile admission.');
+                  return {
+                    cycle: revision.cycle as number,
+                    profile: validateProfileSnapshot(revision.profile),
+                  };
+                });
+              })(),
+            }),
         effectiveSettings: validatePreferences(value.effectiveSettings),
-        ...(value.resolvedRemoteRoles === undefined ? {} : {
-          resolvedRemoteRoles: validateRecordedRemoteRoles(value.resolvedRemoteRoles),
-        }),
+        ...(value.resolvedRemoteRoles === undefined
+          ? {}
+          : {
+              resolvedRemoteRoles: validateRecordedRemoteRoles(value.resolvedRemoteRoles),
+            }),
       } as unknown as RecordedRun;
     });
     return { version: 1, scenarios, runs };
@@ -311,9 +324,11 @@ export class RecordedScenarioStore {
         status: snapshot.status === 'running' ? 'interrupted' : snapshot.status,
         effective: validateScenarioConfig(snapshot.effective),
         effectiveSettings: validatePreferences(snapshot.effectiveSettings),
-        ...(snapshot.resolvedRemoteRoles === undefined ? {} : {
-          resolvedRemoteRoles: validateRecordedRemoteRoles(snapshot.resolvedRemoteRoles),
-        }),
+        ...(snapshot.resolvedRemoteRoles === undefined
+          ? {}
+          : {
+              resolvedRemoteRoles: validateRecordedRemoteRoles(snapshot.resolvedRemoteRoles),
+            }),
       };
       data.runs.push(run);
       await this.publish(data);
@@ -367,9 +382,11 @@ export class RecordedScenarioStore {
         throw new Error('Run history limit reached. Existing Run evidence will not be evicted.');
       const run: RecordedRun = {
         ...structuredClone(input),
-        ...(input.resolvedRemoteRoles === undefined ? {} : {
-          resolvedRemoteRoles: validateRecordedRemoteRoles(input.resolvedRemoteRoles),
-        }),
+        ...(input.resolvedRemoteRoles === undefined
+          ? {}
+          : {
+              resolvedRemoteRoles: validateRecordedRemoteRoles(input.resolvedRemoteRoles),
+            }),
         id: randomUUID(),
         startedAt: new Date().toISOString(),
         endedAt: null,
@@ -384,7 +401,11 @@ export class RecordedScenarioStore {
     });
   }
   /** Record the exact saved profile only after its admission, not when merely queued. */
-  async recordProfileAdmission(id: string, cycle: number, profile: InferenceProfile): Promise<void> {
+  async recordProfileAdmission(
+    id: string,
+    cycle: number,
+    profile: InferenceProfile,
+  ): Promise<void> {
     const snapshot = validateProfileSnapshot(profile);
     if (!uuid.test(id) || !integer(cycle, 1, Number.MAX_SAFE_INTEGER))
       throw new Error('Invalid profile admission.');
@@ -394,8 +415,10 @@ export class RecordedScenarioStore {
       if (index < 0 || data.runs[index].status !== 'running') return;
       const prior = data.runs[index].appliedProfileRevisions ?? [];
       if (prior.length >= 128) throw new Error('Run profile revision evidence is full.');
-      data.runs[index] = { ...data.runs[index],
-        appliedProfileRevisions: [...prior, { cycle, profile: snapshot }] };
+      data.runs[index] = {
+        ...data.runs[index],
+        appliedProfileRevisions: [...prior, { cycle, profile: snapshot }],
+      };
       await this.publish(data);
     });
   }

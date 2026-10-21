@@ -5,7 +5,9 @@ import { FakeClock, flushMicrotasks } from './test-support/fake-clock';
 import type { InferenceProfile } from '../shared/inference-profile-contract';
 
 const profile = (revision: number, modelId = 'local-1'): InferenceProfile => ({
-  id: 'run-profile', name: 'Live profile', revision,
+  id: 'run-profile',
+  name: 'Live profile',
+  revision,
   values: {
     topology: 'unified',
     roles: { unified: { kind: 'local', modelId } },
@@ -23,8 +25,9 @@ describe('live profile admission', () => {
     const queued = controller.queueProfileUpdate(profile(2));
     expect(queued.inferenceProfile?.revision).toBe(1);
     expect(queued.pendingProfileRevision).toBe(2);
-    expect(() => controller.queueProfileUpdate(profile(3, 'different-model')))
-      .toThrow(/explicit transition/);
+    expect(() => controller.queueProfileUpdate(profile(3, 'different-model'))).toThrow(
+      /explicit transition/,
+    );
     expect(() => controller.queueProfileUpdate(profile(1))).toThrow(/newer/);
     clock.advance(10_000);
     await flushMicrotasks();
@@ -36,16 +39,29 @@ describe('live profile admission', () => {
     const clock = new FakeClock();
     const seen: unknown[] = [];
     let release!: (value: unknown) => void;
-    const pending = new Promise<unknown>((resolve) => { release = resolve; });
-    const inference = { generate: vi.fn((input: unknown) => { seen.push(input); return pending; }) };
+    const pending = new Promise<unknown>((resolve) => {
+      release = resolve;
+    });
+    const inference = {
+      generate: vi.fn((input: unknown) => {
+        seen.push(input);
+        return pending;
+      }),
+    };
     const controller = new SessionController(new ChatService(), inference, clock);
     controller.start('stream', 'fake', null, undefined, undefined, undefined, profile(1));
     await flushMicrotasks();
     const inputBefore = JSON.stringify(seen[0]);
     const revised: InferenceProfile = {
-      ...profile(2), values: { ...profile(2).values,
-        stageDefaults: { unified: { systemPrompt: 'new prompt',
-          settings: { cycleIntervalMs: 6000, historyMaxCount: 12 } } },
+      ...profile(2),
+      values: {
+        ...profile(2).values,
+        stageDefaults: {
+          unified: {
+            systemPrompt: 'new prompt',
+            settings: { cycleIntervalMs: 6000, historyMaxCount: 12 },
+          },
+        },
       },
     };
     controller.queueProfileUpdate(revised);
@@ -58,7 +74,10 @@ describe('live profile admission', () => {
     clock.advance(6000);
     await flushMicrotasks();
     expect(controller.snapshot().inferenceProfile?.revision).toBe(2);
-    expect(controller.getRunPreferences()).toMatchObject({ cycleIntervalMs: 6000, historyMaxCount: 12 });
+    expect(controller.getRunPreferences()).toMatchObject({
+      cycleIntervalMs: 6000,
+      historyMaxCount: 12,
+    });
     controller.stop();
   });
 });
@@ -68,8 +87,11 @@ it('resolves Unified prompt templates and sampling from an admission snapshot', 
   const { buildUnifiedInferenceRequest } = await import('./unified-inference-request');
   const input = { context: 'arena', cycle: 5 };
   const base = buildUnifiedInferenceRequest(input);
-  const stage = { systemPrompt: 'Observe {{context}} in cycle {{cycle}}',
-    userPrompt: 'History {{events}}', maxResponseTokens: 512 };
+  const stage = {
+    systemPrompt: 'Observe {{context}} in cycle {{cycle}}',
+    userPrompt: 'History {{events}}',
+    maxResponseTokens: 512,
+  };
   const captured = resolveUnifiedStageRequest(base, input, stage);
   expect(captured.instructions).toBe('Observe arena in cycle 5');
   expect(captured.content[0]).toEqual({ type: 'text', text: 'History []' });

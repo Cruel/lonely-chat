@@ -131,18 +131,27 @@ it('pins ordered frame evidence and role-specific prompts in immutable stage req
 });
 
 it('resolves bounded stage templates, selected optional Vision fields and response budgets', async () => {
-  const vision = adapter({ sceneState: '', events: visionOutput.events, messages: [], confidence: 0.9 }, true);
+  const vision = adapter(
+    { sceneState: '', events: visionOutput.events, messages: [], confidence: 0.9 },
+    true,
+  );
   const chat = adapter(chatOutput, false);
   await new SequentialSplitInference().execute(
-    { ...input, recentEvents: [{ kind: 'context', summary: 'Old', observedAt: 10 },
-      { kind: 'reaction', summary: 'New', observedAt: 2900 }] },
+    {
+      ...input,
+      recentEvents: [
+        { kind: 'context', summary: 'Old', observedAt: 10 },
+        { kind: 'reaction', summary: 'New', observedAt: 2900 },
+      ],
+    },
     { vision, chat },
     new AbortController().signal,
     undefined,
     {
       observer: {
         systemPrompt: 'Scene: {{context}} Events: {{events}}',
-        visionOutput: 'events', visionOptionalFields: ['confidence'],
+        visionOutput: 'events',
+        visionOptionalFields: ['confidence'],
         maxResponseTokens: 512,
         contextPolicy: { maxAgeMs: 1000, maxCount: 2, maxCharacters: 2048, sources: ['events'] },
       },
@@ -160,11 +169,17 @@ it('resolves bounded stage templates, selected optional Vision fields and respon
 it('includes retained significant history and uncertain prior interpretations in real stage text', async () => {
   const vision = adapter(visionOutput, true);
   const chat = adapter(chatOutput, false);
-  await new SequentialSplitInference().execute({
-    ...input,
-    significantEvents: [{ observedAt: -100000, summary: 'The families reunited long ago' }],
-    priorInterpretations: [{ observedAt: 1500, text: 'Might be a family member', sourceModel: 'vision' }],
-  }, { vision, chat }, new AbortController().signal);
+  await new SequentialSplitInference().execute(
+    {
+      ...input,
+      significantEvents: [{ observedAt: -100000, summary: 'The families reunited long ago' }],
+      priorInterpretations: [
+        { observedAt: 1500, text: 'Might be a family member', sourceModel: 'vision' },
+      ],
+    },
+    { vision, chat },
+    new AbortController().signal,
+  );
   const request = vi.mocked(vision.complete).mock.calls[0][0];
   const parts = JSON.stringify(request.content);
   expect(parts).toContain('The families reunited long ago');
