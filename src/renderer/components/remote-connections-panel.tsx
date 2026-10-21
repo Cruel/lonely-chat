@@ -11,6 +11,7 @@ import {
   type RemoteCatalog,
   type RemoteConnection,
   type RemoteModelConfiguration,
+  type RemoteUsageReport,
 } from '../../shared/remote-inference-contract';
 
 const EMPTY: RemoteCatalog = { connections: [], models: [] };
@@ -46,6 +47,7 @@ export function RemoteConnectionsPanel({
   onCatalog?: (value: RemoteCatalog) => void;
 }) {
   const [catalog, setCatalog] = useState<RemoteCatalog>(EMPTY);
+  const [usage, setUsage] = useState<readonly RemoteUsageReport[]>([]);
   const [chatGPT, setChatGPT] = useState<ChatGPTStatus>({
     secureStorageAvailable: true,
     persistCredentials: true,
@@ -73,6 +75,10 @@ export function RemoteConnectionsPanel({
   };
   useEffect(() => {
     void refresh().catch(() => {});
+    const update = () => { void window.lonelyChat?.getRemoteUsage?.().then(setUsage).catch(() => {}); };
+    update();
+    const timer = setInterval(update, 3000);
+    return () => clearInterval(timer);
   }, []);
   useEffect(() => {
     let mounted = true;
@@ -709,6 +715,11 @@ export function RemoteConnectionsPanel({
               </label>
               <section className="space-y-2 rounded-md border border-zinc-700 p-3" aria-label="Remote privacy and usage limits">
                 <h5 className="text-sm font-medium">Privacy and usage guards</h5>
+                {usage.filter((entry) => entry.modelId === model.id).map((entry) => (
+                  <p className="text-xs text-zinc-300" key={entry.modelId}>
+                    Current or most recent Run: {entry.requests} requests; provider-reported {entry.providerPromptTokens} input and {entry.providerCompletionTokens} output tokens; {entry.estimatedTokens} accounted tokens {entry.hasEstimatedUsage ? '(includes estimates)' : '(provider usage where available)'}; {selectedModelConnection?.credentialMode === 'chatgpt' ? 'ChatGPT plan allowance (not API billed)' : `estimated API cost $${entry.estimatedCostUsd.toFixed(4)} (not a billed amount)`}.
+                  </p>
+                ))}
                 <p className="text-xs text-zinc-400">Remote inference transmits selected transcript, chat history, scene/event text and prompt context to the configured endpoint. Images leave this machine only with the separate image permission above. No local-to-cloud failover occurs automatically.</p>
                 <p className="text-xs text-zinc-400">Limits apply across scheduled Vision, Chat and Memory requests sharing this model during a Run. Token limits use conservative estimates and available provider usage, not guaranteed billing caps. ChatGPT subscription allowances are separate from paid API charges; exhaustion of plan allowance never triggers API billing.</p>
                 {([

@@ -218,6 +218,7 @@ const chatGPTAuth = new ChatGPTAuth(
   credentialPolicy,
 );
 const remotePlayground = new RemoteInferencePlayground();
+let activeRemoteUsage: RemoteUsageGuard | null = null;
 const promptPresets = new PromptPresetStore(app.getPath('userData'));
 const inferenceProfiles = new InferenceProfileStore(app.getPath('userData'), (ref, role) =>
   ref.kind === 'remote'
@@ -404,6 +405,7 @@ function registerHandlers(): void {
     'chatgpt:signout': (id: string) => chatGPTAuth.signOut(id),
     'chatgpt:models': (id: string) => chatGPTAuth.models(id),
     'remote:list': () => remoteStore.list(),
+    'remote:usage': () => remoteStore.list().models.map((model) => ({ modelId: model.id, ...(activeRemoteUsage?.snapshot(model) ?? new RemoteUsageGuard().snapshot(model)) })),
     'remote:connection:save': (
       connection: import('../shared/remote-inference-contract').RemoteConnection,
     ) => remoteStore.putConnection(connection),
@@ -1032,6 +1034,7 @@ function registerHandlers(): void {
           await localModelPool!.reserve(localSplitModels.map((ref) => ref!.modelId));
         }
         const remoteUsage = new RemoteUsageGuard();
+        activeRemoteUsage = remoteUsage;
         if (splitRoles) {
           // Pin the resolved provider/model configuration for this entire Run.
           const pinnedRemote = {
@@ -2065,6 +2068,7 @@ app.on('will-quit', () => {
     'profiles:save',
     'profiles:delete',
     'remote:list',
+    'remote:usage',
     'remote:connection:save',
     'remote:connection:delete',
     'remote:model:save',

@@ -101,6 +101,7 @@ export interface DesktopInvocations {
   'chatgpt:signout': { status: import('./chatgpt-contract').ChatGPTStatus; revoked: boolean };
   'chatgpt:models': import('./chatgpt-contract').ChatGPTModel[];
   'remote:list': RemoteCatalog;
+  'remote:usage': readonly import('./remote-inference-contract').RemoteUsageReport[];
   'remote:connection:save': RemoteConnection;
   'remote:connection:delete': void;
   'remote:model:save': RemoteModelConfiguration;
@@ -250,6 +251,7 @@ export interface DesktopArguments {
   'chatgpt:signout': [accountId: string];
   'chatgpt:models': [accountId: string];
   'remote:list': [];
+  'remote:usage': [];
   'remote:connection:save': [connection: RemoteConnection];
   'remote:connection:delete': [id: string];
   'remote:model:save': [configuration: RemoteModelConfiguration];
@@ -404,6 +406,7 @@ export interface DesktopAPI {
   signOutChatGPT?(accountId: string): Promise<DesktopInvocations['chatgpt:signout']>;
   listChatGPTModels?(accountId: string): Promise<import('./chatgpt-contract').ChatGPTModel[]>;
   listRemoteConfigurations?(): Promise<RemoteCatalog>;
+  getRemoteUsage?(): Promise<DesktopInvocations['remote:usage']>;
   saveRemoteConnection?(connection: RemoteConnection): Promise<RemoteConnection>;
   deleteRemoteConnection?(id: string): Promise<void>;
   saveRemoteModel?(configuration: RemoteModelConfiguration): Promise<RemoteModelConfiguration>;

@@ -35,7 +35,7 @@ describe('remote usage guard', () => {
     await memory.complete(request, new AbortController().signal);
     await expect(chat.complete(request, new AbortController().signal)).rejects.toThrow(/count/);
     expect(complete).toHaveBeenCalledTimes(3);
-    expect(guard.snapshot(model)).toEqual({ requests: 3, estimatedTokens: 90, estimatedCostUsd: 0.00012 });
+    expect(guard.snapshot(model)).toEqual({ requests: 3, providerPromptTokens: 60, providerCompletionTokens: 30, estimatedTokens: 90, hasEstimatedUsage: false, estimatedCostUsd: 0.00012 });
   });
 
   it('rejects estimated token volume before transport, and validates limits', async () => {

@@ -3,7 +3,7 @@ import type { UnifiedInferenceAdapter } from './inference-coordinator';
 
 /** Run-scoped and model-scoped. All stages, including Memory, share one ledger. */
 export class RemoteUsageGuard {
-  private readonly ledgers = new Map<string, { times: number[]; requests: number; tokens: number; reserved: number; prompt: number; completion: number }>();
+  private readonly ledgers = new Map<string, { times: number[]; requests: number; tokens: number; reserved: number; prompt: number; completion: number; providerPrompt: number; providerCompletion: number; estimated: boolean }>();
   constructor(private readonly now: () => number = Date.now) {}
 
   wrap(model: RemoteModelConfiguration, adapter: UnifiedInferenceAdapter): UnifiedInferenceAdapter {
@@ -12,7 +12,7 @@ export class RemoteUsageGuard {
       capabilities: adapter.capabilities,
       complete: async (request, signal, observe) => {
         if (signal.aborted) throw new DOMException('Remote inference cancelled.', 'AbortError');
-        const state = this.ledgers.get(id) ?? { times: [], requests: 0, tokens: 0, reserved: 0, prompt: 0, completion: 0 };
+        const state = this.ledgers.get(id) ?? { times: [], requests: 0, tokens: 0, reserved: 0, prompt: 0, completion: 0, providerPrompt: 0, providerCompletion: 0, estimated: false };
         const now = this.now();
         state.times = state.times.filter((time) => time > now - 60_000);
         if (model.maxRequestsPerMinute !== undefined && state.times.length >= model.maxRequestsPerMinute)
@@ -36,6 +36,9 @@ export class RemoteUsageGuard {
           state.tokens += result.usage?.totalTokens ?? (prompt !== null && prompt !== undefined && completion !== null && completion !== undefined ? prompt + completion : reservation);
           state.prompt += prompt ?? estimatedInput;
           state.completion += completion ?? request.sampling.maxTokens;
+          state.providerPrompt += prompt ?? 0;
+          state.providerCompletion += completion ?? 0;
+          if (prompt === null || prompt === undefined || completion === null || completion === undefined) state.estimated = true;
           return result;
         } finally {
           state.reserved -= reservation;
@@ -49,7 +52,10 @@ export class RemoteUsageGuard {
     return {
       requests: state?.requests ?? 0,
       /** Mixed provider-advertised values and conservative estimates must not be labelled actual charges. */
+      providerPromptTokens: state?.providerPrompt ?? 0,
+      providerCompletionTokens: state?.providerCompletion ?? 0,
       estimatedTokens: state?.tokens ?? 0,
+      hasEstimatedUsage: state?.estimated ?? false,
       estimatedCostUsd: ((state?.prompt ?? 0) * (model.inputUsdPerMillion ?? 0) +
         (state?.completion ?? 0) * (model.outputUsdPerMillion ?? 0)) / 1_000_000,
     };

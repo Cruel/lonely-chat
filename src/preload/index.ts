@@ -207,6 +207,7 @@ const api: DesktopAPI = {
     return () => ipcRenderer.removeListener('native:change', receive);
   },
   listRemoteConfigurations: () => invoke('remote:list'),
+  getRemoteUsage: () => invoke('remote:usage'),
   saveRemoteConnection: (connection) => invoke('remote:connection:save', connection),
   deleteRemoteConnection: (id) => invoke('remote:connection:delete', id),
   saveRemoteModel: (model) => invoke('remote:model:save', model),

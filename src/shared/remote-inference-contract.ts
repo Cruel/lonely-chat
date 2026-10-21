@@ -164,6 +164,16 @@ export interface RemoteModelConfiguration {
   readonly capabilityEvidence?: RemoteCapabilityEvidence;
 }
 
+export interface RemoteUsageReport {
+  readonly modelId: string;
+  readonly requests: number;
+  readonly providerPromptTokens: number;
+  readonly providerCompletionTokens: number;
+  readonly estimatedTokens: number;
+  readonly estimatedCostUsd: number;
+  readonly hasEstimatedUsage: boolean;
+}
+
 export interface RemoteCatalog {
   readonly connections: readonly RemoteConnection[];
   readonly models: readonly RemoteModelConfiguration[];
