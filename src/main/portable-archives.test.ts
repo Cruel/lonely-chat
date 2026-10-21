@@ -251,6 +251,14 @@ it('round-trips a Run with exact requests, shared JPEGs and replies without leak
   expect(raw).not.toContain(root);
   const unpacked = openArchive(raw, 'run');
   const meta = unpacked.metadata as { run: unknown; recordings: unknown };
+  const injected = JSON.parse(raw);
+  injected.metadata.run.authorization = 'Bearer exported-secret-must-not-pass';
+  await expect(restoreRun(injected.metadata.run, destination)).rejects.toThrow(/private metadata/);
+  const damagedProfile = JSON.parse(raw);
+  damagedProfile.metadata.run.effectiveProfile = { roles: { chat: { token: 'secret' } } };
+  await expect(restoreRun(damagedProfile.metadata.run, destination)).rejects.toThrow();
+  const hostileExport = { ...importedSnapshot, password: 'not-allowed' };
+  expect(JSON.stringify(portableRun(hostileExport))).not.toContain('not-allowed');
   const restored = await restoreRun(meta.run, destination);
   const imported = new CompactInferenceRecorder(destination);
   const folders = await imported.importRunEvidence(3, meta.recordings, unpacked.files);

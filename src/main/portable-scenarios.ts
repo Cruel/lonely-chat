@@ -7,6 +7,8 @@ import type {
   RecordedScenarioConfig,
 } from '../shared/recorded-scenario-contract';
 import { validatePreferences } from '../shared/session-contract';
+import { validateProfileSnapshot } from '../shared/inference-profile-contract';
+import { validateRecordedRemoteRoles } from './recorded-role-evidence';
 import { supportedRecordedMediaPath } from './recorded-media-access';
 import { makeArchive, openArchive } from './portable-archive';
 import { RecordedScenarioStore, validateScenarioConfig } from './recorded-scenarios';
@@ -207,9 +209,31 @@ export async function importScenario(
   }
 }
 
+const RUN_FIELDS = [
+  'id', 'scenarioId', 'name', 'startedAt', 'endedAt', 'sessionRunId',
+  'status', 'cycles', 'error', 'effective', 'effectiveSettings',
+  'effectiveProfile', 'appliedProfileRevisions', 'effectiveModelId',
+  'resolvedRemoteRoles', 'effectivePreset', 'effectivePrompt', 'effectiveSeed',
+] as const;
+
 export function portableRun(run: RecordedRun): unknown {
-  const { recordingIds: _localRecordingIds, ...snapshot } = run;
-  return { ...snapshot, scenarioId: null, effective: portableConfig(run.effective) };
+  // Export only the public Run snapshot contract. Raw recording directory IDs
+  // and any unknown local/credential fields must never be included.
+  return {
+    ...Object.fromEntries(RUN_FIELDS.filter((field) => field !== 'effective')
+      .filter((field) => run[field] !== undefined).map((field) => [field, run[field]])),
+    scenarioId: null,
+    effective: portableConfig(run.effective),
+    effectivePrompt: {
+      context: run.effectivePrompt.context,
+      chatActivity: run.effectivePrompt.chatActivity,
+    },
+    effectivePreset: run.effectivePreset ? {
+      id: run.effectivePreset.id,
+      name: run.effectivePreset.name,
+      revision: run.effectivePreset.revision,
+    } : null,
+  };
 }
 
 export async function restoreRun(
@@ -217,10 +241,14 @@ export async function restoreRun(
   root: string,
 ): Promise<{ run: RecordedRun; directory: string }> {
   const snapshot = object(value);
+  if (Object.keys(snapshot).some((field) => !(RUN_FIELDS as readonly string[]).includes(field)))
+    throw new Error('Portable Run contains unsupported or private metadata fields.');
   if (
+    typeof snapshot.id !== 'string' || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(snapshot.id) ||
+    snapshot.scenarioId !== null ||
     typeof snapshot.name !== 'string' ||
     snapshot.name.length > 80 ||
-    typeof snapshot.startedAt !== 'string' ||
+    typeof snapshot.startedAt !== 'string' || !Number.isFinite(Date.parse(snapshot.startedAt)) ||
     !Number.isSafeInteger(snapshot.sessionRunId) ||
     (snapshot.sessionRunId as number) < 1 ||
     !Number.isSafeInteger(snapshot.cycles) ||
@@ -231,15 +259,41 @@ export async function restoreRun(
     !['running', 'completed', 'stopped', 'failed', 'interrupted'].includes(
       String(snapshot.status),
     ) ||
-    (snapshot.endedAt !== null && typeof snapshot.endedAt !== 'string') ||
+    (snapshot.endedAt !== null &&
+      (typeof snapshot.endedAt !== 'string' || !Number.isFinite(Date.parse(snapshot.endedAt)))) ||
     (snapshot.error !== null &&
       (typeof snapshot.error !== 'string' || snapshot.error.length > 400)) ||
-    (snapshot.effectiveModelId !== null && typeof snapshot.effectiveModelId !== 'string')
+    (snapshot.effectiveModelId !== null &&
+      (typeof snapshot.effectiveModelId !== 'string' || snapshot.effectiveModelId.length > 200))
   )
     throw new Error('Invalid portable Run snapshot.');
   const settings = validatePreferences(snapshot.effectiveSettings);
+  if (snapshot.effectiveProfile !== undefined && snapshot.effectiveProfile !== null)
+    validateProfileSnapshot(snapshot.effectiveProfile);
+  if (snapshot.resolvedRemoteRoles !== undefined)
+    validateRecordedRemoteRoles(snapshot.resolvedRemoteRoles);
+  if (snapshot.appliedProfileRevisions !== undefined) {
+    if (!Array.isArray(snapshot.appliedProfileRevisions) ||
+      snapshot.appliedProfileRevisions.length > 128)
+      throw new Error('Invalid portable Run profile revision history.');
+    for (const record of snapshot.appliedProfileRevisions) {
+      const revision = object(record);
+      if (Object.keys(revision).some((key) => key !== 'cycle' && key !== 'profile') ||
+        !Number.isSafeInteger(revision.cycle) || (revision.cycle as number) < 1)
+        throw new Error('Invalid portable Run profile admission.');
+      validateProfileSnapshot(revision.profile);
+    }
+  }
+  if (snapshot.effectivePreset !== null) {
+    const preset = object(snapshot.effectivePreset);
+    if (Object.keys(preset).some((field) => !['id', 'name', 'revision'].includes(field)) ||
+      typeof preset.id !== 'string' || typeof preset.name !== 'string' ||
+      !Number.isSafeInteger(preset.revision))
+      throw new Error('Invalid portable Run preset.');
+  }
   const prompt = object(snapshot.effectivePrompt);
   if (
+    Object.keys(prompt).some((field) => !['context', 'chatActivity'].includes(field)) ||
     typeof prompt.context !== 'string' ||
     prompt.context.length > 2000 ||
     !['quiet', 'normal', 'busy'].includes(String(prompt.chatActivity))
@@ -251,6 +305,20 @@ export async function restoreRun(
       ...snapshot,
       effective: restored.config,
       effectiveSettings: settings,
+      effectivePrompt: { context: prompt.context, chatActivity: prompt.chatActivity },
+      ...(snapshot.effectiveProfile !== undefined ? {
+        effectiveProfile: snapshot.effectiveProfile === null
+          ? null : validateProfileSnapshot(snapshot.effectiveProfile),
+      } : {}),
+      ...(snapshot.resolvedRemoteRoles !== undefined ? {
+        resolvedRemoteRoles: validateRecordedRemoteRoles(snapshot.resolvedRemoteRoles),
+      } : {}),
+      ...(snapshot.appliedProfileRevisions !== undefined ? {
+        appliedProfileRevisions: (snapshot.appliedProfileRevisions as unknown[]).map((record) => {
+          const item = object(record);
+          return { cycle: item.cycle, profile: validateProfileSnapshot(item.profile) };
+        }),
+      } : {}),
       scenarioId: null,
     } as unknown as RecordedRun,
     directory: restored.directory,

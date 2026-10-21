@@ -93,7 +93,12 @@ afterEach(async () => {
 describe('immutable exact inference cases', () => {
   it('round-trips exact submitted request, original source selection and binary images across restart and import', async () => {
     const { root, cases } = await setup();
-    const saved = await cases.save(attempt);
+    const saved = await cases.save({
+      ...attempt, role: 'chat', profileRevision: 3,
+      observedAt: 1700000000420, availableAt: 1700000001040,
+      dependsOn: ['attempt-8'], sourceFrameIds: ['recorded:video:1700000000420:0'],
+      observationRefs: ['transcript:voice-1:1700000000300'],
+    });
     expect(saved).toMatchObject({ modelId: 'installed-vision', seed: 42, frameCount: 1 });
     const store = new SavedInferenceCases(root);
     expect((await store.list()).map((item) => item.id)).toEqual([saved.id]);
@@ -111,6 +116,11 @@ describe('immutable exact inference cases', () => {
       parsedResult: null,
       accepted: null,
       usage: null,
+      role: 'chat', profileRevision: 3,
+      observedAt: 1700000000420, availableAt: 1700000001040,
+      dependsOn: ['attempt-8'],
+      sourceFrameIds: ['recorded:video:1700000000420:0'],
+      observationRefs: ['transcript:voice-1:1700000000300'],
     });
     expect(copy.frames[0]).toMatchObject({
       sourceId: frame.sourceId,

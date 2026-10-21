@@ -60,6 +60,7 @@ import { reportRendererFailure } from '../renderer-error-reporting';
 import { FreeformPlayground } from '@/components/freeform-playground';
 import { SimulationPlayground } from '@/components/simulation-playground';
 import { ProfileStagePlayground } from '@/components/profile-stage-playground';
+import { RecordedRunReplay } from '@/components/recorded-run-replay';
 import { SpeechPlayground } from '@/components/speech-playground';
 import { SpeechCaptureControls } from '@/components/speech-capture-controls';
 import { AudioInput } from '@/components/audio-input';
@@ -1208,6 +1209,36 @@ export function DesktopPage() {
                                 >
                                   View media diagnostics in Logs (Run {run.sessionRunId})
                                 </Button>
+                                <RecordedRunReplay
+                                  run={run}
+                                  active={mediaActive}
+                                  onFullReinfer={() => {
+                                    loadScenario({
+                                      id: run.id,
+                                      name: run.name,
+                                      savedAt: run.startedAt,
+                                      config: {
+                                        ...run.effective,
+                                        context: run.effectivePrompt.context,
+                                        seed: run.effectiveSeed,
+                                        modelId: run.effectiveModelId,
+                                        presetId: null,
+                                        presetRevision: null,
+                                        profileId: run.effectiveProfile?.id ?? null,
+                                        profileRevision: run.effectiveProfile?.revision ?? null,
+                                        profileSnapshot: run.effectiveProfile ?? null,
+                                        settingsSnapshot: run.effectiveSettings,
+                                        settingsPolicy: 'saved',
+                                        publishToOverlay: false,
+                                      },
+                                    });
+                                    setScenarioId(null);
+                                    setScenarioName(run.name + ' comparison');
+                                    setScenarioNotice(
+                                      'Review and relink original source media, then Start simulation for full reinference. Overlay publishing is disabled.',
+                                    );
+                                  }}
+                                />
                                 <JsonInspector
                                   title={`Run ${run.id} frozen configuration`}
                                   value={{

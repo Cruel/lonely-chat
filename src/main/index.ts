@@ -2,6 +2,7 @@ import path from 'node:path';
 import { readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { SavedInferenceCases } from './saved-inference-cases';
 import { splitRequests } from './split-inference';
+import { replayRun, prepareRecordedChatFork, compareRecordedChat, requireRecordedTextConsent } from './run-replay';
 import { makeArchive, openArchive } from './portable-archive';
 import { packageScenario, importScenario, portableRun, restoreRun } from './portable-scenarios';
 import {
@@ -383,6 +384,48 @@ function requireRecordedAudio(): void {
     throw new Error('Recorded audio requires an active recorded simulation.');
 }
 
+/** One independent adapter queue per Playground experiment; never touches overlay state. */
+function profileExperimentAdapters(
+  profile: import('../shared/inference-profile-contract').InferenceProfile,
+): ProfileAdapterFactory {
+  let gpuQueue = Promise.resolve();
+  return async (ref, role, input, signal) => {
+    if (signal.aborted) throw new DOMException('Experiment cancelled.', 'AbortError');
+    if (ref.kind === 'remote') {
+      const selected = remoteStore.selected(ref.modelId);
+      const settings = { ...session.getPreferences(), ...profile.values.stageDefaults[role]?.settings };
+      const adapter = selected.connection.credentialMode === 'chatgpt'
+        ? chatGPTUnifiedAdapter(selected, chatGPTAuth, {
+            roster: input.roster ?? [], timeoutMs: settings.inferenceTimeoutMs,
+          })
+        : remoteUnifiedAdapter(selected, {
+            roster: input.roster, timeoutMs: settings.inferenceTimeoutMs,
+          });
+      return { adapter, stop: async () => {} };
+    }
+    if (!stageExperimentFactory) throw new Error('Profile Playground adapters are unavailable.');
+    const owned = await stageExperimentFactory(ref, role, input, signal, profile.values.stageDefaults[role]?.settings);
+    const adapter = owned.adapter;
+    return {
+      adapter: {
+        ...adapter,
+        complete: async (submitted: Parameters<typeof adapter.complete>[0],
+          activeSignal: AbortSignal, observe?: Parameters<typeof adapter.complete>[2]) => {
+          const previous = gpuQueue;
+          let release!: () => void;
+          gpuQueue = new Promise<void>((resolve) => { release = resolve; });
+          await previous;
+          try {
+            if (activeSignal.aborted) throw new DOMException('Experiment cancelled.', 'AbortError');
+            return await adapter.complete(submitted, activeSignal, observe);
+          } finally { release(); }
+        },
+      },
+      stop: owned.stop,
+    };
+  };
+}
+
 function registerHandlers(): void {
   const broadcastVideoTools = (
     status: import('../shared/video-tools-contract').VideoToolsStatus,
@@ -573,47 +616,7 @@ function registerHandlers(): void {
     ) => {
       if (remotePlayground.busy) throw new Error('Another remote Playground experiment is running.');
       const profile = await inferenceProfiles.resolve(request.profileId, request.profileRevision);
-      // Serialise resident local stage execution: async remote stages may still
-      // overlap, but two independently created local workers must not compete for GPU.
-      let gpuQueue = Promise.resolve();
-      return playground.runProfile(request, profile, async (ref, role, input, signal) => {
-        if (signal.aborted) throw new DOMException('Experiment cancelled.', 'AbortError');
-        if (ref.kind === 'remote') {
-          const selected = remoteStore.selected(ref.modelId);
-          const settings = {
-            ...session.getPreferences(),
-            ...profile.values.stageDefaults[role]?.settings,
-          };
-          const adapter = selected.connection.credentialMode === 'chatgpt'
-            ? chatGPTUnifiedAdapter(selected, chatGPTAuth, {
-                roster: input.roster ?? [], timeoutMs: settings.inferenceTimeoutMs,
-              })
-            : remoteUnifiedAdapter(selected, {
-                roster: input.roster, timeoutMs: settings.inferenceTimeoutMs,
-              });
-          return { adapter, stop: async () => {} };
-        }
-        if (!stageExperimentFactory) throw new Error('Profile Playground adapters are unavailable.');
-        const owned = await stageExperimentFactory(ref, role, input, signal, profile.values.stageDefaults[role]?.settings);
-        const adapter = owned.adapter;
-        return {
-          adapter: {
-            ...adapter,
-            complete: async (submitted: Parameters<typeof adapter.complete>[0],
-              activeSignal: AbortSignal, observe?: Parameters<typeof adapter.complete>[2]) => {
-              const previous = gpuQueue;
-              let release!: () => void;
-              gpuQueue = new Promise<void>((resolve) => { release = resolve; });
-              await previous;
-              try {
-                if (activeSignal.aborted) throw new DOMException('Experiment cancelled.', 'AbortError');
-                return await adapter.complete(submitted, activeSignal, observe);
-              } finally { release(); }
-            },
-          },
-          stop: owned.stop,
-        };
-      });
+      return playground.runProfile(request, profile, profileExperimentAdapters(profile));
     },
     'playground:simulation:preview': (
       request: import('../shared/playground-contract').SimulationExperimentRequest,
@@ -805,6 +808,23 @@ function registerHandlers(): void {
         recordedScenarios,
         app.getPath('userData'),
       );
+    },
+    'run:replay': async (id: string) => {
+      const run = (await recordedScenarios.runs()).find((item) => item.id === id);
+      if (!run || run.status === 'running') throw new Error('Stop the recorded Run before replaying.');
+      return replayRun(run, compactRecorder);
+    },
+    'run:chat-reinfer': async (id: string, attemptId: string, profileId: string, allowRemoteText: boolean) => {
+      const run = (await recordedScenarios.runs()).find((item) => item.id === id);
+      if (!run || run.status === 'running') throw new Error('Stop the recorded Run before comparing.');
+      const profile = await inferenceProfiles.resolve(profileId);
+      requireRecordedTextConsent(profile, allowRemoteText);
+      if (remotePlayground.busy) throw new Error('Another remote Playground experiment is running.');
+      const fork = await prepareRecordedChatFork(run, compactRecorder, attemptId, profile);
+      const result = await playground.runProfile(
+        fork.request, profile, profileExperimentAdapters(profile), fork.input,
+      );
+      return compareRecordedChat(fork.original, result);
     },
     'run:export': async (id: string) => {
       if (!mainWindow) throw new Error('Desktop window unavailable.');
@@ -2247,6 +2267,8 @@ app.on('will-quit', () => {
     'scenario:import',
     'run:export',
     'run:import',
+    'run:replay',
+    'run:chat-reinfer',
     'recorded:media:open',
     'recorded:media:choose',
     'recorded:media:fingerprint',

@@ -188,6 +188,8 @@ export interface DesktopInvocations {
   'scenario:import': { scenario: RecordedScenario; missing: string[] } | null;
   'run:export': boolean;
   'run:import': RecordedRun | null;
+  'run:replay': import('./run-replay-contract').RunReplay;
+  'run:chat-reinfer': import('./run-replay-contract').RunChatComparison;
   'recorded:media:open': string;
   'recorded:media:choose': string | null;
   'recorded:media:fingerprint': string;
@@ -352,6 +354,8 @@ export interface DesktopArguments {
   'scenario:import': [];
   'run:export': [id: string];
   'run:import': [];
+  'run:replay': [id: string];
+  'run:chat-reinfer': [id: string, attemptId: string, profileId: string, allowRemoteText: boolean];
   'recorded:media:open': [path: string];
   'recorded:media:choose': [kind: 'video' | 'audio'];
   'recorded:media:fingerprint': [path: string];
@@ -547,6 +551,8 @@ export interface DesktopAPI {
   importRecordedScenario?(): Promise<{ scenario: RecordedScenario; missing: string[] } | null>;
   exportRecordedRun?(id: string): Promise<boolean>;
   importRecordedRun?(): Promise<RecordedRun | null>;
+  replayRecordedRun?(id: string): Promise<import('./run-replay-contract').RunReplay>;
+  reinferRecordedChat?(id: string, attemptId: string, profileId: string, allowRemoteText: boolean): Promise<import('./run-replay-contract').RunChatComparison>;
   /** File paths are returned only for File objects explicitly selected in the desktop window. */
   pathForRecordedFile?(file: File): string | null;
   openRecordedMedia?(path: string): Promise<string>;

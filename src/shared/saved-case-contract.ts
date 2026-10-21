@@ -40,6 +40,14 @@ export interface SavedCaseSourceResult {
   readonly error: string | null;
   readonly durationMs: number | null;
   readonly usage: TraceUsage | null;
+  /** Original stage provenance and causality, including imported recorded cases. */
+  readonly role?: import('./inference-trace-contract').TraceRole;
+  readonly profileRevision?: number | null;
+  readonly observedAt?: number | null;
+  readonly availableAt?: number | null;
+  readonly dependsOn?: readonly string[];
+  readonly sourceFrameIds?: readonly string[];
+  readonly observationRefs?: readonly string[];
   readonly rawNativeOutput: unknown;
   readonly normalizedResult: unknown;
   readonly parsedResult: unknown;

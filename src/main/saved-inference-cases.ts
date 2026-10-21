@@ -181,6 +181,13 @@ function sourceResult(
     error: attempt.error,
     durationMs: attempt.durationMs,
     usage: attempt.usage,
+    ...(attempt.role ? { role: attempt.role } : {}),
+    ...(attempt.profileRevision === undefined ? {} : { profileRevision: attempt.profileRevision }),
+    ...(attempt.observedAt === undefined ? {} : { observedAt: attempt.observedAt }),
+    ...(attempt.availableAt === undefined ? {} : { availableAt: attempt.availableAt }),
+    ...(attempt.dependsOn ? { dependsOn: attempt.dependsOn } : {}),
+    ...(attempt.sourceFrameIds ? { sourceFrameIds: attempt.sourceFrameIds } : {}),
+    ...(attempt.observationRefs ? { observationRefs: attempt.observationRefs } : {}),
     presentationClosed: attempt.presentationClosed ?? false,
     ...(requestProvenance ? { requestProvenance } : {}),
   };
@@ -239,6 +246,19 @@ function validateManifest(value: unknown): Manifest {
     throw new Error('Saved case original input is incomplete.');
   if (record.sourceResult !== undefined) {
     const evidence = obj(record.sourceResult);
+    if (
+      (evidence.role !== undefined && !['unified', 'vision', 'chat', 'memory'].includes(String(evidence.role))) ||
+      (evidence.profileRevision !== undefined && evidence.profileRevision !== null &&
+        (!Number.isSafeInteger(evidence.profileRevision) || (evidence.profileRevision as number) < 1)) ||
+      ['observedAt', 'availableAt'].some((field) =>
+        evidence[field] !== undefined && evidence[field] !== null &&
+        (typeof evidence[field] !== 'number' || !Number.isFinite(evidence[field]))) ||
+      ['dependsOn', 'sourceFrameIds', 'observationRefs'].some((field) =>
+        evidence[field] !== undefined && (!Array.isArray(evidence[field]) ||
+          (evidence[field] as unknown[]).length > 64 ||
+          (evidence[field] as unknown[]).some((part) => typeof part !== 'string' || part.length > 250)))
+    )
+      throw new Error('Invalid saved case stage provenance.');
     if (
       evidence.requestProvenance !== undefined &&
       evidence.requestProvenance !== 'current-builder-reconstruction' &&

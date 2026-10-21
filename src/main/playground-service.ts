@@ -242,7 +242,7 @@ export class PlaygroundService {
     return previewProfileExperiment(input, profile, this.reference(input), this.historyLimits(), this.stageFrameResizer);
   }
 
-  runProfile(input: unknown, profile: InferenceProfile, adapters: ProfileAdapterFactory): Promise<ProfileExperimentResult> {
+  runProfile(input: unknown, profile: InferenceProfile, adapters: ProfileAdapterFactory, archivedInput?: InferenceInput): Promise<ProfileExperimentResult> {
     if (this.busy || this.shutdown) throw new Error('Another Playground inference is in progress.');
     if (!this.canRun()) throw new Error('Stop Simulation before running Playground.');
     const previous = this.reference(input);
@@ -259,7 +259,7 @@ export class PlaygroundService {
         if (!this.canRun() || abort.signal.aborted || this.shutdown)
           throw new Error('Playground cancelled or Simulation became active.');
         const execution = await executeProfileExperiment(input, profile, previous, adapters,
-          abort.signal, this.historyLimits(), this.stageFrameResizer);
+          abort.signal, this.historyLimits(), this.stageFrameResizer, archivedInput);
         if (!abort.signal.aborted && execution.vision) {
           this.visionOutputs.set(execution.vision.reference.id, execution.vision);
           while (this.visionOutputs.size > 12)

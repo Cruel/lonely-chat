@@ -158,6 +158,9 @@ const api: DesktopAPI = {
   importRecordedScenario: () => invoke('scenario:import'),
   exportRecordedRun: (id) => invoke('run:export', id),
   importRecordedRun: () => invoke('run:import'),
+  replayRecordedRun: (id) => invoke('run:replay', id),
+  reinferRecordedChat: (id, attemptId, profileId, allowRemoteText) =>
+    invoke('run:chat-reinfer', id, attemptId, profileId, allowRemoteText),
   pathForRecordedFile: (file) => webUtils.getPathForFile(file) || null,
   openRecordedMedia: (path) => invoke('recorded:media:open', path),
   chooseRecordedMedia: (kind) => invoke('recorded:media:choose', kind),

@@ -46,6 +46,7 @@ function requireRole(profile: InferenceProfile, role: InferenceRole): ProfileMod
 function prepare(
   value: unknown, profile: InferenceProfile, saved: PrivateVisionOutput | null,
   preferences: Pick<SessionPreferences, 'historyMaxAgeMs' | 'historyMaxCount'>,
+  archivedInput?: InferenceInput,
 ): Prepared {
   if (!value || typeof value !== 'object' || Array.isArray(value))
     throw new Error('Invalid stage experiment.');
@@ -71,9 +72,12 @@ function prepare(
   if (raw.mode !== 'chat' && raw.visionReferenceId)
     throw new Error('Saved Vision output is supported for Chat-only experiments.');
   const now = Date.now();
-  const input = buildSimulationExperimentInput(request.values, now, preferences, request.frames, request.seed);
+  // Only the main process can supply a verified archived input. Its original
+  // observation and Event clocks must not be rebased to today's wall clock.
+  const input = archivedInput ?? buildSimulationExperimentInput(request.values, now, preferences, request.frames, request.seed);
   const hybridMax = profile.values.topology === 'hybrid' ? profile.values.architecture?.hybridMaxImages ?? 0 : 0;
   if (hybridMax > 0 && profile.values.roles.chat?.kind === 'remote' &&
+      (!archivedInput || raw.mode !== 'chat' || (input.frames?.length ?? 0) > 0) &&
       profile.values.architecture?.remoteChatImagesConsent !== true)
     throw new Error('Remote Chat image transmission requires explicit Hybrid consent.');
   return {
@@ -164,8 +168,9 @@ export async function executeProfileExperiment(
   signal: AbortSignal,
   preferences: Pick<SessionPreferences, 'historyMaxAgeMs' | 'historyMaxCount'> = DEFAULT_PREFERENCES,
   frameResizer?: (frame: VideoFrame, maxWidth: number, maxHeight: number) => VideoFrame,
+  archivedInput?: InferenceInput,
 ): Promise<{ result: ProfileExperimentResult; vision: PrivateVisionOutput | null }> {
-  const prepared = prepare(value, profile, saved, preferences);
+  const prepared = prepare(value, profile, saved, preferences, archivedInput);
   const { input, request } = prepared;
   const startedAt = new Date().toISOString();
   const started = performance.now();
@@ -281,7 +286,9 @@ export async function executeProfileExperiment(
         ? profile.values.architecture?.hybridMaxImages ?? 0 : 0);
       // Memory is an optional independent stage; it must be allowed to finish
       // before disposing the experiment's owned adapters.
-      stage.configureMemory(profile.values.memory ?? {
+      stage.configureMemory(request.mode === 'chat'
+        ? { enabled: false, intervalMs: 30000, maxCharacters: 2000, expireAfterMs: 0 }
+        : profile.values.memory ?? {
         enabled: false, intervalMs: 30000, maxCharacters: 2000, expireAfterMs: 0,
       });
       const roleAdapters = {
@@ -291,7 +298,7 @@ export async function executeProfileExperiment(
         chat: request.mode === 'vision' ? { capabilities: { images: false },
           complete: async () => { throw new Error('Chat is not admitted for Vision-only experiments.'); } }
           : await make('chat'),
-        ...(profile.values.memory?.enabled && profile.values.roles.memory
+        ...(request.mode !== 'chat' && profile.values.memory?.enabled && profile.values.roles.memory
           ? { memory: await make('memory') } : {}),
       };
       const injected = seededContext(prepared);
