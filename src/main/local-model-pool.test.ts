@@ -148,6 +148,49 @@ describe('resident local models', () => {
     expect(stop).toHaveBeenCalledTimes(1);
   });
 
+  it('preserves Memory admission priority and role-specific timeouts on the shared Chat worker', async () => {
+    const pool = new LocalModelPool({
+      files: async () => ({ modelPath: process.execPath, projectorPath: null }),
+      create: () =>
+        ({
+          completeSimulationRequest: async () => ({
+            choices: [
+              {
+                finish_reason: 'stop',
+                message: { content: JSON.stringify({ summary: 'Memory revision' }) },
+              },
+            ],
+          }),
+          stop: async () => {},
+        }) as unknown as NativeInference,
+      ramBudgetMiB: () => 1000000,
+      vramBudgetMiB: () => 0,
+      clock: () => 0,
+      timeoutMs: () => 10000,
+    });
+    await pool.reserve(['chat']);
+    const submit = vi.spyOn(pool.gpu, 'submit');
+    const memoryRequest = {
+      role: 'memory',
+      instructions: 'Summarize',
+      content: [{ type: 'text', text: 'A race occurred' }],
+      response: { kind: 'json', schema: { properties: { summary: { maxLength: 1000 } } } },
+      sampling: { temperature: 0, maxTokens: 128 },
+      evidenceWindow: null,
+    } as unknown as import('./unified-inference-request').UnifiedInferenceRequest;
+    const output = await pool
+      .adapter('chat', 'chat', { context: 'Race', cycle: 1 }, false, 3210)
+      .complete(memoryRequest, new AbortController().signal);
+    expect(submit).toHaveBeenCalledWith(
+      'memory',
+      expect.any(AbortSignal),
+      3210,
+      expect.any(Function),
+    );
+    expect(output.normalized).toEqual({ summary: 'Memory revision' });
+    await pool.unload();
+  });
+
   it('rejects combined resident weight budgets before starting any worker', async () => {
     const oneSize = (await stat(process.execPath)).size / 1048576;
     const create = vi.fn(() => {

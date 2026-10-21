@@ -13,6 +13,16 @@ import { executeNativeSimulation } from './simulation-execution';
 import type { UnifiedInferenceAdapter } from './inference-coordinator';
 import { selectContinuousVideoWindow, type ContinuousVideoWindow } from './continuous-video-window';
 
+/** Local Playground models need a projector only if their stage actually submits visual media. */
+export function stageRequiresProjector(
+  role: import('../shared/inference-profile-contract').InferenceRole,
+  input: InferenceInput,
+): boolean {
+  if (role === 'observer' || role === 'unified') return Boolean(input.frames?.length);
+  if (role === 'chat') return Boolean(input.chatFrames?.length);
+  return false;
+}
+
 /** Local llama.cpp implements only the transport; prompts and acceptance are app-owned. */
 export function llamaCppAdapter(
   provider: {

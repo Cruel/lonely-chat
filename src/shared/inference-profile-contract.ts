@@ -272,6 +272,13 @@ export function validateProfileValues(
       const preferences = object(stage.settings, `${role} settings`);
       exact(preferences, Object.keys(DEFAULT_PREFERENCES), `${role} preference`);
       validatePreferences({ ...DEFAULT_PREFERENCES, ...preferences });
+      if (
+        topology !== 'unified' &&
+        Object.keys(preferences).some((key) => key !== 'inferenceTimeoutMs')
+      )
+        throw new Error(
+          'Split stage settings only support inferenceTimeoutMs; configure cadence, media, and output limits with the stage policies.',
+        );
       settings = preferences as Partial<SessionPreferences>;
     }
     stages[role as InferenceRole] = {
@@ -311,8 +318,14 @@ export function validateProfileValues(
       (entry.expireAfterMs as number) > 86400000
     )
       throw new Error('Invalid narrative memory policy.');
+    if (topology === 'unified' && entry.enabled)
+      throw new Error(
+        'Narrative memory is not supported for Unified profiles; select Split or Hybrid.',
+      );
     memory = entry as unknown as NonNullable<InferenceProfileValues['memory']>;
   }
+  if (stages.memory?.settings && !memory?.enabled)
+    throw new Error('Memory stage settings require enabled narrative memory.');
   let contextDefaults: InferenceProfileValues['contextDefaults'];
   if (value.contextDefaults !== undefined) {
     const context = object(value.contextDefaults, 'profile context defaults');

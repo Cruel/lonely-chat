@@ -25,7 +25,7 @@ import { serializeOperationalLogs } from './operational-log-export';
 import { validateRendererFailure } from '../shared/renderer-log-contract';
 import { PlaygroundService } from './playground-service';
 import type { ProfileAdapterFactory } from './profile-playground';
-import { llamaCppAdapter } from './unified-inference-adapters';
+import { llamaCppAdapter, stageRequiresProjector } from './unified-inference-adapters';
 import { PlaygroundVideoTools } from './playground-video-tools';
 import { canStartPausedSpeech } from './paused-speech-gate';
 import { RecordedResumeReservation } from './recorded-resume-reservation';
@@ -1211,7 +1211,10 @@ function registerHandlers(): void {
             role: 'observer' | 'chat' | 'memory',
             input: import('./fake-inference').InferenceInput,
           ) => {
-            const ref = splitRoles[role]!;
+            // Optional Memory role defaults to the pinned Chat model, but owns
+            // its own adapter policy and low-priority GPU admission.
+            const ref =
+              role === 'memory' ? (splitRoles.memory ?? splitRoles.chat!) : splitRoles[role]!;
             if (ref.kind === 'local')
               return packageE2E
                 ? session.createLocalSplitAdapter(input)
@@ -1221,17 +1224,23 @@ function registerHandlers(): void {
                     input,
                     role === 'observer' &&
                       profile?.values.stageDefaults.observer?.videoInput === 'native',
+                    profile?.values.stageDefaults[role]?.settings?.inferenceTimeoutMs ??
+                      effectiveSettings.inferenceTimeoutMs,
                   );
-            const selected = pinnedRemote[role]!;
+            const selected =
+              role === 'memory' ? (pinnedRemote.memory ?? pinnedRemote.chat!) : pinnedRemote[role]!;
+            const timeoutMs =
+              profile?.values.stageDefaults[role]?.settings?.inferenceTimeoutMs ??
+              effectiveSettings.inferenceTimeoutMs;
             return remoteUsage.wrap(
               selected.model,
               selected.connection.credentialMode === 'chatgpt'
                 ? chatGPTUnifiedAdapter(selected, chatGPTAuth, {
-                    timeoutMs: effectiveSettings.inferenceTimeoutMs,
+                    timeoutMs,
                     roster: input.roster ?? [],
                   })
                 : remoteUnifiedAdapter(selected, {
-                    timeoutMs: effectiveSettings.inferenceTimeoutMs,
+                    timeoutMs,
                     roster: input.roster,
                   }),
             );
@@ -1240,7 +1249,7 @@ function registerHandlers(): void {
             (input) => ({
               vision: make('observer', input),
               chat: make('chat', input),
-              ...(splitRoles.memory ? { memory: make('memory', input) } : {}),
+              ...(profile?.values.memory?.enabled ? { memory: make('memory', input) } : {}),
             }),
             localSplitModels.length > 0,
             splitChat?.kind === 'local'
@@ -1890,12 +1899,12 @@ async function boot(): Promise<void> {
       : buildNative(
           async () => {
             const files = await installs.visionFiles(ref.modelId);
-            if (role === 'observer' && input.frames?.length && !files.projectorPath)
-              throw new Error('Selected Vision model has no installed projector.');
+            const needsVision = stageRequiresProjector(role, input);
+            if (needsVision && !files.projectorPath)
+              throw new Error('Selected image-capable stage model has no installed projector.');
             return {
               modelPath: files.modelPath,
-              projectorPath:
-                role === 'observer' && input.frames?.length ? files.projectorPath : null,
+              projectorPath: needsVision ? files.projectorPath : null,
             };
           },
           settings,

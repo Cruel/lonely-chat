@@ -159,6 +159,7 @@ export class LocalModelPool {
     role: Role,
     input: InferenceInput,
     nativeVideo = false,
+    timeoutMs = this.options.timeoutMs(),
   ): UnifiedInferenceAdapter {
     const worker = this.workers.get(id);
     if (!worker || !this.pinned.has(id)) throw new Error('Local Split model is not resident.');
@@ -169,10 +170,17 @@ export class LocalModelPool {
       capabilities: base.capabilities,
       complete: (request, signal, observer) =>
         this.gpu.submit(
-          role,
+          (request as import('./unified-inference-request').InferenceRequest).role === 'memory'
+            ? 'memory'
+            : role,
           signal,
-          (this.options.clock?.() ?? Date.now()) + this.options.timeoutMs(),
-          () => base.complete(request, signal, observer),
+          (this.options.clock?.() ?? Date.now()) + timeoutMs,
+          () =>
+            base.complete(
+              request,
+              AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]),
+              observer,
+            ),
         ),
     };
   }

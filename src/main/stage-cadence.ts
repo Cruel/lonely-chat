@@ -58,7 +58,7 @@ export class LatestStageResult<T> {
       !this.value ||
       this.value.identity !== identity ||
       now < this.value.completedAt ||
-      now - this.value.completedAt > maximumAgeMs
+      now - this.value.observedAt > maximumAgeMs
     )
       return null;
     return this.value.result;

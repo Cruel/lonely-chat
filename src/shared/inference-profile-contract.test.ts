@@ -70,6 +70,50 @@ test('validates independent Hybrid frame policies and requires an explicit conse
   ).toThrow(/consent/);
 });
 
+test('allows per-stage timeout overrides but rejects unsupported Split worker settings', () => {
+  const values = {
+    topology: 'split',
+    roles: {
+      observer: { kind: 'local', modelId: 'vision' },
+      chat: { kind: 'remote', modelId: 'chat' },
+    },
+    stageDefaults: {
+      observer: { settings: { inferenceTimeoutMs: 123000 } },
+      chat: { settings: { inferenceTimeoutMs: 456000 } },
+    },
+  };
+  expect(
+    validateProfileValues(values, () => true).stageDefaults.chat?.settings?.inferenceTimeoutMs,
+  ).toBe(456000);
+  expect(() =>
+    validateProfileValues(
+      { ...values, stageDefaults: { chat: { settings: { imageMaxTokens: 1024 } } } },
+      () => true,
+    ),
+  ).toThrow(/only support inferenceTimeoutMs/);
+});
+
+test('rejects enabled Unified narrative memory rather than silently failing to schedule it', () => {
+  expect(() =>
+    validateProfileValues(
+      {
+        ...profile.values,
+        memory: { enabled: true, intervalMs: 30000, maxCharacters: 2000, expireAfterMs: 0 },
+      },
+      () => true,
+    ),
+  ).toThrow(/not supported for Unified/);
+  expect(
+    validateProfileValues(
+      {
+        ...profile.values,
+        memory: { enabled: false, intervalMs: 30000, maxCharacters: 2000, expireAfterMs: 0 },
+      },
+      () => true,
+    ).memory?.enabled,
+  ).toBe(false);
+});
+
 test('freezes profile model/scheduling independently of prompt preset context and chat activity', () => {
   const base = { ...DEFAULT_PREFERENCES };
   const effective = resolveUnifiedProfilePolicy(profile, base, '', {

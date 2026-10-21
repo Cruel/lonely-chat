@@ -70,7 +70,7 @@ it('allows fast Chat to proceed while slow Vision finishes, then adopts eligible
   const chatter = adapter(async () => ({ raw: chat, normalized: chat }));
   const scheduled = new ScheduledSplitInference();
   const signal = new AbortController().signal;
-  let time = 0;
+  let time = 2000;
   const execute = (cycle: number) =>
     scheduled.execute(
       { ...input, cycle },
@@ -84,22 +84,22 @@ it('allows fast Chat to proceed while slow Vision finishes, then adopts eligible
   const first = await execute(1);
   expect(first?.observations).toEqual([]);
   expect(vision.complete).toHaveBeenCalledTimes(1);
-  time = 100;
+  time = 2100;
   const second = await execute(2);
   expect(second?.visionEvents).toEqual([]);
   finishVision(scene);
   await settle();
-  time = 200;
+  time = 2200;
   const third = await execute(3);
   expect(third?.observations[0].description).toBe('A racer crosses the line');
   expect(third?.visionEvents).toHaveLength(1);
   expect(JSON.stringify(vi.mocked(chatter.complete).mock.lastCall?.[0].content)).not.toContain(
     'data:image',
   );
-  time = 300;
+  time = 2300;
   const fourth = await execute(4);
   expect(fourth?.visionEvents).toHaveLength(0);
-  time = 701;
+  time = 2701;
   const expired = await execute(5);
   expect(expired?.observations).toEqual([]);
 });

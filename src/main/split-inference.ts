@@ -461,9 +461,13 @@ export class ScheduledSplitInference {
     const memory = this.memory.snapshot(now(), this.memoryPolicy);
     const visionInput = frozen({
       ...snapshot,
-      narrativeMemory: memory ?? undefined,
+      narrativeMemory:
+        work === 'chat' ? (snapshot.narrativeMemory ?? memory ?? undefined) : (memory ?? undefined),
       observations: [...(snapshot.observations ?? []), ...priorScene],
-      priorInterpretations: this.narrative.priorInterpretations(now(), policy.maximumAgeMs),
+      priorInterpretations:
+        work === 'chat' && snapshot.priorInterpretations?.length
+          ? snapshot.priorInterpretations
+          : this.narrative.priorInterpretations(now(), policy.maximumAgeMs),
     });
     const requests = splitRequests(visionInput, stages);
     let visionFailure: unknown = null;
@@ -605,7 +609,11 @@ export class ScheduledSplitInference {
         this.retryPayload?.input ??
         frozen({
           ...snapshot,
-          narrativeMemory: memory ?? undefined,
+          narrativeMemory:
+            work === 'chat'
+              ? (snapshot.narrativeMemory ?? memory ?? undefined)
+              : (memory ?? undefined),
+          priorInterpretations: visionInput.priorInterpretations,
           frames: chatFrames,
           videoWindow: chatFrames.length ? snapshot.videoWindow : undefined,
           recentEvents: [...(snapshot.recentEvents ?? []), ...events],

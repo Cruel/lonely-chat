@@ -113,7 +113,10 @@ export class SplitNarrative {
   }
 
   pending(now: number, maxAgeMs: number): readonly NarrativeEvent[] {
-    return this.history(now, maxAgeMs).filter((event) => !event.acknowledged);
+    return this.history(now, maxAgeMs).filter(
+      (event) =>
+        !event.acknowledged && now >= event.availableAt && now - event.observedAt <= maxAgeMs,
+    );
   }
 
   acknowledge(entries: readonly NarrativeEvent[]): void {
@@ -124,12 +127,14 @@ export class SplitNarrative {
   }
 
   currentScene(now: number, maxAgeMs: number): NarrativeScene | null {
-    return this.scene && now - this.scene.availableAt <= maxAgeMs ? { ...this.scene } : null;
+    return this.scene && now >= this.scene.availableAt && now - this.scene.observedAt <= maxAgeMs
+      ? { ...this.scene }
+      : null;
   }
 
   priorInterpretations(now: number, maxAgeMs: number) {
     return this.interpretations
-      .filter((item) => now - item.availableAt <= maxAgeMs)
+      .filter((item) => now >= item.availableAt && now - item.observedAt <= maxAgeMs)
       .map(({ text, observedAt, sourceModel }) => ({ text, observedAt, sourceModel }));
   }
 

@@ -830,7 +830,20 @@ export class NativeInference implements InferenceProvider {
     videoOptions?: NativeVideoPreferences,
   ): Promise<unknown> {
     await this.prepare(signal);
-    if ((input.frames?.length || videoToken) && !this.visionReady) {
+    const submittedMessages = (request as { messages?: readonly { content?: unknown }[] } | null)
+      ?.messages;
+    const hasImages = submittedMessages?.some(
+      (message) =>
+        Array.isArray(message.content) &&
+        message.content.some((part: unknown) =>
+          Boolean(
+            part &&
+            typeof part === 'object' &&
+            ['image_url', 'input_video'].includes((part as { type?: string }).type ?? ''),
+          ),
+        ),
+    );
+    if ((hasImages || videoToken) && !this.visionReady) {
       throw new Error(
         'Live video requires a model/projector pair verified as vision-capable by the pinned llama.cpp runtime. Install a matching projector or stop video for text-only inference.',
       );

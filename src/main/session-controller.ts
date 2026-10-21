@@ -1111,7 +1111,10 @@ export class SessionController {
         mode: ref?.kind === 'local' ? 'native' : 'remote',
         startedAt,
         input: privateStageMetadata(input),
-        settings: this.runPreferences,
+        settings: {
+          ...this.runPreferences,
+          ...profile?.values.stageDefaults[role === 'vision' ? 'observer' : role]?.settings,
+        },
         promptPreset: this.state.promptPreset ?? null,
         adaptation: {
           topology: profile?.values.topology,

@@ -437,13 +437,13 @@ export async function executeProfileExperiment(
                 },
               }
             : await make('chat'),
-        ...(request.mode !== 'chat' && profile.values.memory?.enabled && profile.values.roles.memory
+        ...(request.mode !== 'chat' && profile.values.memory?.enabled
           ? { memory: await make('memory') }
           : {}),
       };
       const injected = seededContext(prepared);
       if (request.mode === 'chat' && saved)
-        stage.seedVisionForExperiment(input, saved.sceneState, injected.events, performance.now());
+        stage.seedVisionForExperiment(input, saved.sceneState, injected.events, Date.now());
       const execute = (work: 'both' | 'vision' | 'chat') =>
         stage.execute(
           input,
@@ -452,7 +452,7 @@ export async function executeProfileExperiment(
           undefined,
           profile.values.stageDefaults,
           request.mode === 'chat' ? { ...policy, strictWait: false } : policy,
-          () => performance.now(),
+          () => Date.now(),
           work,
           capture,
         );

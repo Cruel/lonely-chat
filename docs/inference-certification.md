@@ -17,6 +17,8 @@ All of the following run with `pnpm test`. They require no model downloads, cred
 | Frozen Exact/Compact outcomes, causality, recorded replay and restricted archived evidence | `src/main/compact-inference-recorder.test.ts`, `src/main/run-replay.test.ts`, `src/main/saved-inference-cases.test.ts`, `src/main/portable-archives.test.ts` |
 | Current-only preferences and exact-case source evidence; reject old schemas rather than guessing | `src/main/preferences-store.test.ts`, `src/main/saved-inference-cases.test.ts` |
 
+Current profile validation permits per-stage `inferenceTimeoutMs` for Split/Hybrid local and remote transports; other per-stage SessionPreferences are rejected rather than reported as effective. Frame selection, context, prompts, output tokens and stage cadence use their dedicated profile policies. Memory without a dedicated model uses the pinned Chat model with its own scheduling priority and timeout. Unified narrative memory is not implemented: enabling it is rejected at profile validation rather than silently ignored.
+
 The private archive tests verify malformed fields and payloads fail before insertion. The recorded Split/Hybrid tests assert no Chat is published on the public overlay when the Run is private, and that only explicitly consented Hybrid profiles send images to Chat.
 
 ## Packaged desktop qualification

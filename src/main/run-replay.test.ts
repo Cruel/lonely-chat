@@ -82,6 +82,10 @@ const input = {
   recentEvents: [{ kind: 'reaction' as const, summary: 'Jump scare', observedAt: 1100 }],
   recentTranscripts: [{ sourceId: 'mic', source: 'mic', text: 'Whoa', observedAt: 1090 }],
   recentChat: [],
+  narrativeMemory: { version: 2, text: 'Memorable race history', updatedAt: 1090 },
+  priorInterpretations: [
+    { text: 'Uncertain interpretation', observedAt: 1090, sourceModel: 'vision' as const },
+  ],
   frames: [
     {
       sourceId: 'video',
@@ -235,6 +239,8 @@ describe('recorded stage replay and comparisons', () => {
       recentEvents: input.recentEvents,
       observations: input.observations,
       recentTranscripts: input.recentTranscripts,
+      narrativeMemory: input.narrativeMemory,
+      priorInterpretations: input.priorInterpretations,
       frames: [],
       chatFrames: [],
     });
@@ -268,6 +274,8 @@ describe('recorded stage replay and comparisons', () => {
     expect(roles).toEqual(['chat']);
     expect(experiment.result.accepted?.messages[0].text).toBe('Amazing');
     expect(JSON.stringify(requests)).toContain('Jump scare');
+    expect(JSON.stringify(requests)).toContain('Memorable race history');
+    expect(JSON.stringify(requests)).toContain('Uncertain interpretation');
     expect(JSON.stringify(requests)).not.toContain('data:image');
     const comparison = compareRecordedChat(fork.original, experiment.result);
     expect(comparison.changes).toMatchObject({

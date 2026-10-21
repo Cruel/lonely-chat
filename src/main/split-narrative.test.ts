@@ -28,7 +28,16 @@ it('keeps scene separate from events, deduplicates repeated frames and reconcile
   expect(narrative.pending(140, 1000)).toHaveLength(0);
   expect(narrative.history(140, 1000)).toHaveLength(2);
   expect(narrative.sceneObservation(140, 1000)[0].description).toBe('Racers at finish');
-  expect(narrative.sceneObservation(1201, 1000)).toEqual([]);
+  expect(narrative.sceneObservation(3001, 1000)).toEqual([]);
+});
+
+it('retains late historical evidence without treating stale frames as fresh reactions', () => {
+  const narrative = new SplitNarrative();
+  narrative.observeVision('Old race result', [finish], 2000, 10000, ['cam:2000']);
+  expect(narrative.history(10010, 500)).toHaveLength(1);
+  expect(narrative.pending(10010, 500)).toHaveLength(0);
+  expect(narrative.currentScene(10010, 500)).toBeNull();
+  expect(narrative.priorInterpretations(10010, 500)).toEqual([]);
 });
 
 it('rejects late Vision results without rolling scene backward and resets Run history', () => {

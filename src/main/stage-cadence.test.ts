@@ -20,17 +20,20 @@ describe('independent stage cadence', () => {
 
   it('retains only eligible, ordered, run-specific observations', () => {
     const latest = new LatestStageResult<string>();
-    latest.publish('newer', 2000, 1500, 'run1:mediaA');
+    latest.publish('newer', 2000, 1700, 'run1:mediaA');
     latest.publish('late-old', 2100, 1000, 'run1:mediaA');
     expect(latest.eligible(2100, 500, 'run1:mediaA')).toBe('newer');
     expect(latest.eligible(2100, 500, 'run2:mediaA')).toBeNull();
     // A different source has a distinct timestamp domain: it must replace
     // the old source, not lose to its larger historical observation time.
-    latest.publish('source-B', 2200, 250, 'run1:mediaB');
+    latest.publish('source-B', 2200, 2200, 'run1:mediaB');
     expect(latest.eligible(2200, 500, 'run1:mediaB')).toBe('source-B');
     expect(latest.eligible(2200, 500, 'run1:mediaA')).toBeNull();
     expect(latest.eligible(2701, 500, 'run1:mediaB')).toBeNull();
     latest.clear();
     expect(latest.eligible(2200, 500, 'run1:mediaA')).toBeNull();
+    // Slow completion cannot give a very old observation another reaction TTL.
+    latest.publish('slow-result', 10000, 2000, 'run1:mediaA');
+    expect(latest.eligible(10001, 500, 'run1:mediaA')).toBeNull();
   });
 });

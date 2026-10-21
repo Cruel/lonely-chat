@@ -305,6 +305,57 @@ describe('native llama.cpp adapter', () => {
     ).toThrow(/outside the configured roster/);
   });
 
+  it('uses submitted Chat media rather than original Vision frames for projector admission', async () => {
+    const observedRequests: unknown[] = [];
+    const provider = new NativeInference({
+      executable: process.execPath,
+      resolveModel: async () => ({ modelPath: '/managed/text-chat.gguf', projectorPath: null }),
+      launch: (_binary, args, options) =>
+        spawn(
+          process.execPath,
+          [
+            '--input-type=module',
+            '-e',
+            childScript,
+            args[args.indexOf('--port') + 1],
+            args[args.indexOf('--api-key') + 1],
+          ],
+          options,
+        ),
+      fetcher: async (url, options) => {
+        if (!String(url).endsWith('/v1/chat/completions')) return fetch(url, options);
+        observedRequests.push(JSON.parse(String(options?.body)));
+        return new Response(JSON.stringify({ choices: [{ message: { content: '{}' } }] }), {
+          status: 200,
+        });
+      },
+    });
+    providers.push(provider);
+    const input = {
+      context: 'Split Chat receives a text-only handoff',
+      cycle: 1,
+      frames: [
+        {
+          sourceId: 'camera',
+          observedAt: 2000,
+          dataUrl: 'data:image/jpeg;base64,AA==',
+          width: 1,
+          height: 1,
+        },
+      ],
+    };
+    const textRequest = nativeChatRequest({ ...input, frames: [] });
+    await expect(
+      provider.completeSimulationRequest(input, textRequest, new AbortController().signal),
+    ).resolves.toBeTruthy();
+    expect(observedRequests).toHaveLength(1);
+    const visualRequest = nativeChatRequest(input);
+    await expect(
+      provider.completeSimulationRequest(input, visualRequest, new AbortController().signal),
+    ).rejects.toThrow(/model\/projector pair/);
+    expect(observedRequests).toHaveLength(1);
+  });
+
   it('captures plaintext HTTP errors and invalid JSON with private transport status', async () => {
     const bodies = [
       new Response('private gateway error', { status: 503 }),
