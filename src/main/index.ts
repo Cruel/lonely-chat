@@ -18,6 +18,8 @@ import { OperationalLogger } from './operational-logger';
 import { serializeOperationalLogs } from './operational-log-export';
 import { validateRendererFailure } from '../shared/renderer-log-contract';
 import { PlaygroundService } from './playground-service';
+import type { ProfileAdapterFactory } from './profile-playground';
+import { llamaCppAdapter } from './unified-inference-adapters';
 import { PlaygroundVideoTools } from './playground-video-tools';
 import { canStartPausedSpeech } from './paused-speech-gate';
 import { RecordedResumeReservation } from './recorded-resume-reservation';
@@ -322,6 +324,9 @@ let nativeInference: NativeInference;
 let localModelPool: import('./local-model-pool').LocalModelPool | null = null;
 let localWarmIdleMs = 0;
 let playground: PlaygroundService;
+let stageExperimentFactory: ((
+  ...args: [...Parameters<ProfileAdapterFactory>, settings?: import('../shared/inference-profile-contract').InferenceStageDefaults['settings']]
+) => ReturnType<ProfileAdapterFactory>) | null = null;
 let speechTest: SpeechPlaygroundService;
 let audio: AudioService;
 let sessionMedia: SessionMedia | undefined;
@@ -485,6 +490,7 @@ function registerHandlers(): void {
         sessionStarting
       )
         throw new Error('Stop Simulation before running remote Playground.');
+      if (playground.busy) throw new Error('Another Playground experiment is running.');
       const selection = remoteStore.selected(modelId);
       const settings = session.getPreferences();
       return remotePlayground.run(
@@ -555,6 +561,59 @@ function registerHandlers(): void {
         content: request.content.map((part) => part.type === 'image' ? { ...part, dataUrl: '[image bytes redacted]' } : part),
       });
       return { vision: redact(built.vision), chat: redact(built.chat(events, observations)) };
+    },
+    'playground:profile:preview': async (
+      request: import('../shared/profile-playground-contract').ProfileExperimentRequest,
+    ) => {
+      const profile = await inferenceProfiles.resolve(request.profileId, request.profileRevision);
+      return playground.previewProfile(request, profile);
+    },
+    'playground:profile:run': async (
+      request: import('../shared/profile-playground-contract').ProfileExperimentRequest,
+    ) => {
+      if (remotePlayground.busy) throw new Error('Another remote Playground experiment is running.');
+      const profile = await inferenceProfiles.resolve(request.profileId, request.profileRevision);
+      // Serialise resident local stage execution: async remote stages may still
+      // overlap, but two independently created local workers must not compete for GPU.
+      let gpuQueue = Promise.resolve();
+      return playground.runProfile(request, profile, async (ref, role, input, signal) => {
+        if (signal.aborted) throw new DOMException('Experiment cancelled.', 'AbortError');
+        if (ref.kind === 'remote') {
+          const selected = remoteStore.selected(ref.modelId);
+          const settings = {
+            ...session.getPreferences(),
+            ...profile.values.stageDefaults[role]?.settings,
+          };
+          const adapter = selected.connection.credentialMode === 'chatgpt'
+            ? chatGPTUnifiedAdapter(selected, chatGPTAuth, {
+                roster: input.roster ?? [], timeoutMs: settings.inferenceTimeoutMs,
+              })
+            : remoteUnifiedAdapter(selected, {
+                roster: input.roster, timeoutMs: settings.inferenceTimeoutMs,
+              });
+          return { adapter, stop: async () => {} };
+        }
+        if (!stageExperimentFactory) throw new Error('Profile Playground adapters are unavailable.');
+        const owned = await stageExperimentFactory(ref, role, input, signal, profile.values.stageDefaults[role]?.settings);
+        const adapter = owned.adapter;
+        return {
+          adapter: {
+            ...adapter,
+            complete: async (submitted: Parameters<typeof adapter.complete>[0],
+              activeSignal: AbortSignal, observe?: Parameters<typeof adapter.complete>[2]) => {
+              const previous = gpuQueue;
+              let release!: () => void;
+              gpuQueue = new Promise<void>((resolve) => { release = resolve; });
+              await previous;
+              try {
+                if (activeSignal.aborted) throw new DOMException('Experiment cancelled.', 'AbortError');
+                return await adapter.complete(submitted, activeSignal, observe);
+              } finally { release(); }
+            },
+          },
+          stop: owned.stop,
+        };
+      });
     },
     'playground:simulation:preview': (
       request: import('../shared/playground-contract').SimulationExperimentRequest,
@@ -1720,6 +1779,31 @@ async function boot(): Promise<void> {
       privateWorkerLine: (worker, stream, line) =>
         diagnostics.recordWorkerLine(worker, stream, line),
     });
+  stageExperimentFactory = async (ref, role, input, signal, overrides) => {
+    if (ref.kind !== 'local') throw new Error('Only local models use the native stage worker.');
+    if (signal.aborted) throw new DOMException('Experiment cancelled.', 'AbortError');
+    const baseSettings = nativeWorkerSettings(session, 'playground');
+    const settings = () => ({ ...baseSettings(), ...overrides });
+    const provider = packageE2E ? certificationPlaygroundProvider() : buildNative(
+      async () => {
+        const files = await installs.visionFiles(ref.modelId);
+        if (role === 'observer' && input.frames?.length && !files.projectorPath)
+          throw new Error('Selected Vision model has no installed projector.');
+        return {
+          modelPath: files.modelPath,
+          projectorPath: role === 'observer' && input.frames?.length ? files.projectorPath : null,
+        };
+      },
+      settings,
+      undefined,
+      true,
+    );
+    if (!provider.completeSimulationRequest)
+      throw new Error('The selected stage worker cannot accept structured inference requests.');
+    return { adapter: llamaCppAdapter({
+      completeSimulationRequest: (...args) => provider.completeSimulationRequest!(...args),
+    }, input), stop: () => provider.stop() };
+  };
   nativeInference = buildNative(
     () => installs.activeVisionFiles(),
     nativeWorkerSettings(session, 'simulation'),
@@ -1747,6 +1831,7 @@ async function boot(): Promise<void> {
     () =>
       !quitting &&
       !resumeReservation.reserved &&
+      !remotePlayground.busy &&
       !sessionStarting &&
       !rosterRegenerating &&
       !speechSwitchBusy &&
@@ -1848,7 +1933,7 @@ async function boot(): Promise<void> {
     diagnostics,
     reportError,
   );
-  session.configureFrameResizer((frame, maxWidth, maxHeight) => {
+  const resizeStageFrame = (frame: import('../shared/video-contract').VideoFrame, maxWidth: number, maxHeight: number) => {
     const source = nativeImage.createFromDataURL(frame.dataUrl);
     const size = source.getSize();
     if (source.isEmpty() || size.width !== frame.width || size.height !== frame.height)
@@ -1860,7 +1945,9 @@ async function boot(): Promise<void> {
     const dataUrl = `data:image/jpeg;base64,${source.resize({ width, height }).toJPEG(85).toString('base64')}`;
     if (dataUrl.length > 2_700_000) throw new Error('Resized stage frame exceeds the media budget.');
     return { ...frame, width, height, dataUrl };
-  });
+  };
+  session.configureFrameResizer(resizeStageFrame);
+  playground.configureStageFrameResizer(resizeStageFrame);
   session.trace.attachRecorder(compactRecorder);
   await compactRecorder.loadLimits();
   audio = new AudioService(
@@ -2100,6 +2187,8 @@ app.on('will-quit', () => {
   ipcMain.removeHandler('playground:simulation:preview');
   ipcMain.removeHandler('profiles:preview-stages');
   ipcMain.removeHandler('playground:simulation:run');
+  ipcMain.removeHandler('playground:profile:preview');
+  ipcMain.removeHandler('playground:profile:run');
   ipcMain.removeHandler('speech-test:status');
   ipcMain.removeHandler('speech-test:start');
   ipcMain.removeHandler('speech-test:pcm');

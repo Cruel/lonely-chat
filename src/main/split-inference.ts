@@ -191,6 +191,7 @@ export class ScheduledSplitInference {
     attemptId?: string;
   }>();
   private visionTask: Promise<void> | null = null;
+  private memoryTask: Promise<unknown> | null = null;
   private visionRevision = 0;
   private chatVisionRevision = 0;
   private generation = 0;
@@ -229,6 +230,7 @@ export class ScheduledSplitInference {
     this.chatCadence = null;
     this.latest.clear();
     this.visionTask = null;
+    this.memoryTask = null;
     this.visionRevision = 0;
     this.chatVisionRevision = 0;
     this.serial = 0;
@@ -236,6 +238,28 @@ export class ScheduledSplitInference {
     this.narrative.reset();
     this.memory.reset();
     this.retryPayload = null;
+  }
+
+  /** Playground-only: seed a fresh, per-experiment coordinator with a validated
+   * prior Vision result. No worker is launched and no live Run state is touched. */
+  seedVisionForExperiment(
+    input: InferenceInput,
+    sceneState: string,
+    events: readonly InferredEvent[],
+    now: number,
+  ): void {
+    if (this.visionRevision || this.visionTask || this.retryPayload)
+      throw new Error('Cannot seed Vision after stage admission.');
+    const mediaIdentity = [...new Set((input.frames ?? []).map((frame) => frame.sourceId))]
+      .sort().join(',');
+    this.mediaIdentity = mediaIdentity;
+    const observedAt = input.frames?.at(-1)?.observedAt ?? input.boundary?.throughMs ?? now;
+    const identity = `${this.generation}:${this.mediaIdentity}`;
+    const observations: CapturedObservation[] = sceneState.trim()
+      ? [{ source: 'vision', kind: 'visual', description: sceneState.trim(), observedAt }] : [];
+    this.narrative.observeVision(sceneState, events, observedAt, now, []);
+    this.latest.publish({ events, observations, serial: ++this.serial }, now, observedAt, identity);
+    this.visionRevision++;
   }
 
   suspendMemory(): void { this.memory.suspend(); }
@@ -248,6 +272,8 @@ export class ScheduledSplitInference {
   }
 
   waitForVision(): Promise<void> { return this.visionTask ?? Promise.resolve(); }
+
+  async waitForMemory(): Promise<void> { await this.memoryTask; }
 
   hasUnconsumedVision(): boolean { return this.visionRevision > this.chatVisionRevision; }
 
@@ -450,9 +476,13 @@ export class ScheduledSplitInference {
       for (const event of freshChat) this.memory.observe(event.event.summary, event.observedAt);
       if (!signal.aborted && generation === this.generation) {
         // Memory updates happen after time-critical Chat publication, never on its critical path.
-        void this.memory.update(now(), this.memoryPolicy, adapters.memory ?? adapters.chat, signal,
+        const task = this.memory.update(now(), this.memoryPolicy, adapters.memory ?? adapters.chat, signal,
           capture ? (request) => capture('memory', chatInput, request, observedAt,
             [...dependsOn, ...(chatEvidence ? [chatEvidence.id] : [])]) : undefined);
+        this.memoryTask = task;
+        void task.finally(() => {
+          if (this.memoryTask === task) this.memoryTask = null;
+        });
       }
       return {
         visionEvents: events,

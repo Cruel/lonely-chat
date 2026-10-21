@@ -147,6 +147,8 @@ export interface DesktopInvocations {
   'playground:simulation:preview': { constructedRequest: unknown; submittedRequest: unknown };
   'profiles:preview-stages': unknown;
   'playground:simulation:run': SimulationExperimentResult;
+  'playground:profile:preview': import('./profile-playground-contract').ProfileExperimentPreview;
+  'playground:profile:run': import('./profile-playground-contract').ProfileExperimentResult;
   'speech-test:status': SpeechTestSnapshot;
   'speech-test:start': SpeechTestSnapshot;
   'speech-test:pcm': SpeechTestSnapshot;
@@ -299,6 +301,8 @@ export interface DesktopArguments {
   'playground:simulation:preview': [request: SimulationExperimentRequest];
   'profiles:preview-stages': [input: import('../main/fake-inference').InferenceInput, stages: InferenceProfileValues['stageDefaults'], events: import('../shared/session-contract').InferredEvent[], observations: import('../shared/session-contract').CapturedObservation[]];
   'playground:simulation:run': [request: SimulationExperimentRequest];
+  'playground:profile:preview': [request: import('./profile-playground-contract').ProfileExperimentRequest];
+  'playground:profile:run': [request: import('./profile-playground-contract').ProfileExperimentRequest];
   'speech-test:status': [];
   'speech-test:start': [config: SpeechTestStart];
   'speech-test:pcm': [samples: Float32Array, backpressure?: boolean];
@@ -467,6 +471,8 @@ export interface DesktopAPI {
   runSimulationExperiment(
     request: SimulationExperimentRequest,
   ): Promise<SimulationExperimentResult>;
+  previewProfileExperiment?(request: import('./profile-playground-contract').ProfileExperimentRequest): Promise<import('./profile-playground-contract').ProfileExperimentPreview>;
+  runProfileExperiment?(request: import('./profile-playground-contract').ProfileExperimentRequest): Promise<import('./profile-playground-contract').ProfileExperimentResult>;
   getSpeechTestStatus(): Promise<SpeechTestSnapshot>;
   startSpeechTest(config: SpeechTestStart): Promise<SpeechTestSnapshot>;
   submitSpeechTestPcm(samples: Float32Array, backpressure?: boolean): Promise<SpeechTestSnapshot>;

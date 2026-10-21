@@ -59,6 +59,7 @@ import { useUnreadLogErrors } from '../use-unread-log-errors';
 import { reportRendererFailure } from '../renderer-error-reporting';
 import { FreeformPlayground } from '@/components/freeform-playground';
 import { SimulationPlayground } from '@/components/simulation-playground';
+import { ProfileStagePlayground } from '@/components/profile-stage-playground';
 import { SpeechPlayground } from '@/components/speech-playground';
 import { SpeechCaptureControls } from '@/components/speech-capture-controls';
 import { AudioInput } from '@/components/audio-input';
@@ -157,7 +158,7 @@ export function DesktopPage() {
     setSection('logs');
   };
   const [caseFocus, setCaseFocus] = useState<string | null>(null);
-  const [playgroundTab, setPlaygroundTab] = useState<'freeform' | 'simulation' | 'speech'>(
+  const [playgroundTab, setPlaygroundTab] = useState<'freeform' | 'simulation' | 'stages' | 'speech'>(
     'freeform',
   );
   const [overlayStatus, setOverlayStatus] = useState<OverlayStatus>({
@@ -666,6 +667,12 @@ export function DesktopPage() {
                 Simulation one-shot
               </Button>
               <Button
+                variant={playgroundTab === 'stages' ? 'default' : 'secondary'}
+                onClick={() => setPlaygroundTab('stages')}
+              >
+                Profile stages
+              </Button>
+              <Button
                 variant={playgroundTab === 'speech' ? 'default' : 'secondary'}
                 onClick={() => setPlaygroundTab('speech')}
               >
@@ -689,6 +696,13 @@ export function DesktopPage() {
                 onViewLogs={(source) => openLogs(source)}
               />
             )}
+            <div hidden={playgroundTab !== 'stages'}>
+              <ProfileStagePlayground
+                simulationActive={
+                  (running && !session.status.playgroundAvailable) || session.busy || audience.busy
+                }
+              />
+            </div>
             {playgroundTab === 'speech' && (
               <SpeechPlayground
                 simulationActive={
