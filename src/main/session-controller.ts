@@ -148,6 +148,10 @@ export class SessionController {
         JSON.stringify(profile.values.roles) !== JSON.stringify(this.activeProfile.values.roles))
       throw new Error('Changing models, providers, or topology requires stopping the Run and an explicit transition.');
     const liveKeys = new Set(['cycleIntervalMs', 'historyMaxCount', 'historyMaxAgeMs', 'chatActivity']);
+    if (this.activeProfile.values.architecture?.execution !== profile.values.architecture?.execution ||
+        this.activeProfile.values.architecture?.hybridMaxImages !== profile.values.architecture?.hybridMaxImages ||
+        this.activeProfile.values.architecture?.remoteChatImagesConsent !== profile.values.architecture?.remoteChatImagesConsent)
+      throw new Error('Changing stage execution or media permissions requires a new Run.');
     const previousSettings = this.activeProfile.values.stageDefaults.unified?.settings ?? {};
     const nextSettings = profile.values.stageDefaults.unified?.settings ?? {};
     for (const key of new Set([...Object.keys(previousSettings), ...Object.keys(nextSettings)])) {
@@ -856,13 +860,13 @@ export class SessionController {
   /** Remote async Vision is sampled on its own clock, even while Chat is busy. */
   private startSplitVisionLoop(epoch: number): void {
     if (this.splitVisionAbort || !this.splitAdapters) return;
-    const policy = this.splitScheduling();
-    if (policy.execution !== 'asynchronous') return;
+    if (this.splitScheduling().execution !== 'asynchronous') return;
     const abort = new AbortController();
     this.splitVisionAbort = abort;
     const tick = () => {
       this.splitVisionTimer = null;
       if (!this.active(epoch) || abort.signal.aborted || this.eofRequested) return;
+      const policy = this.splitScheduling();
       if (this.pausedAt === null) {
         const cycle = this.state.cycle + 1;
         const now = this.observationNow();
