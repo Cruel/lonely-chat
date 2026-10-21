@@ -31,6 +31,8 @@ import {
 } from '@/components/desktop-sidebar';
 import { ModelManager } from '@/components/model-manager';
 import { RemoteConnectionsPanel } from '@/components/remote-connections-panel';
+import { InferenceProfileControls } from '@/components/inference-profile-controls';
+import type { InferenceProfile } from '../../shared/inference-profile-contract';
 import type { RemoteCatalog } from '../../shared/remote-inference-contract';
 import { NumericSettingCombobox } from '@/components/numeric-setting-combobox';
 import { VideoInput } from '@/components/video-input';
@@ -177,6 +179,15 @@ export function DesktopPage() {
     models: [],
   });
   const [remoteModelId, setRemoteModelId] = useState('');
+  const [selectedProfile, setSelectedProfile] = useState<InferenceProfile | null>(null);
+  const chooseProfile = (profile: InferenceProfile | null) => {
+    setSelectedProfile(profile);
+    const unified = profile?.values.roles.unified;
+    if (unified) {
+      setInferenceMode(unified.kind === 'remote' ? 'remote' : 'native');
+      if (unified.kind === 'remote') setRemoteModelId(unified.modelId);
+    }
+  };
   useEffect(() => {
     void window.lonelyChat
       ?.listRemoteConfigurations?.()
@@ -378,8 +389,14 @@ export function DesktopPage() {
       seed: configuredSeed ?? null,
       presetId: selectedPresetId || null,
       presetRevision: selectedPresetId ? selectedPresetRevision : null,
+      profileId: selectedProfile?.id ?? null,
+      profileRevision: selectedProfile?.revision ?? null,
+      profileSnapshot: selectedProfile,
       modelId: scenarioPolicy === 'saved' && scenarioId ? scenarioModelId : model,
-      settingsSnapshot: scenarioSettings ?? session.preferences,
+      settingsSnapshot: scenarioSettings ?? {
+        ...session.preferences,
+        ...selectedProfile?.values.stageDefaults.unified?.settings,
+      },
       settingsPolicy: scenarioPolicy,
     };
   };
@@ -425,6 +442,7 @@ export function DesktopPage() {
     setInferenceMode(scenario.config.mode);
     if (scenario.config.mode === 'remote') setRemoteModelId(scenario.config.modelId ?? '');
     setSelectedPresetId(scenario.config.presetId ?? '');
+    setSelectedProfile(scenario.config.profileSnapshot ?? null);
     setSelectedPresetRevision(scenario.config.presetRevision);
     setSessionSeedText(scenario.config.seed === null ? '' : String(scenario.config.seed));
     setTranscriptMode(scenario.config.transcriptMode);
@@ -486,6 +504,9 @@ export function DesktopPage() {
         : {}),
       ...(inferenceMode === 'remote' ? { remoteModelConfigurationId: remoteModelId } : {}),
       ...(configuredSeed === undefined ? {} : { seed: configuredSeed }),
+      ...(selectedProfile
+        ? { profileId: selectedProfile.id, profileRevision: selectedProfile.revision }
+        : {}),
       ...(selectedPresetId ? { presetId: selectedPresetId } : {}),
       ...(selectedPresetId && selectedPresetRevision
         ? { presetRevision: selectedPresetRevision }
@@ -734,7 +755,7 @@ export function DesktopPage() {
                 >
                   <SelectTrigger
                     id="inference-mode"
-                    disabled={running}
+                    disabled={running || Boolean(selectedProfile)}
                     className="mt-2 w-full text-sm"
                   >
                     <SelectValue />
@@ -752,7 +773,7 @@ export function DesktopPage() {
                       id="remote-simulation-model"
                       className="mt-2 w-full rounded-md border border-zinc-700 bg-zinc-900 p-2 text-sm"
                       value={remoteModelId}
-                      disabled={running}
+                      disabled={running || Boolean(selectedProfile)}
                       onChange={(e) => setRemoteModelId(e.target.value)}
                     >
                       <option value="">Select a saved remote model</option>
@@ -768,6 +789,13 @@ export function DesktopPage() {
                     </p>
                   </div>
                 )}
+                <InferenceProfileControls
+                  selectedId={selectedProfile?.id ?? ''}
+                  selectedRevision={selectedProfile?.revision ?? null}
+                  onSelect={chooseProfile}
+                  remoteCatalog={remoteCatalog}
+                  disabled={running}
+                />
                 <Label htmlFor="session-preset" className="mt-4 text-sm text-zinc-200">
                   Prompt preset
                 </Label>

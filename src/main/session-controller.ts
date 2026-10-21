@@ -238,6 +238,7 @@ export class SessionController {
       chatActivity: SessionPreferences['chatActivity'];
     },
     settingsOverride?: SessionPreferences,
+    profile?: import('../shared/inference-profile-contract').InferenceProfile | null,
   ): SessionSnapshot {
     if (this.switchBusy) throw new Error('Wait for model switching to finish before restarting.');
     if (
@@ -262,7 +263,15 @@ export class SessionController {
       (options.presetRevision !== undefined &&
         (!Number.isSafeInteger(options.presetRevision) ||
           options.presetRevision < 1 ||
-          !options.presetId))
+          !options.presetId)) ||
+      (options.profileId !== undefined &&
+        (typeof options.profileId !== 'string' ||
+          options.profileId.length > 100 ||
+          !options.profileId)) ||
+      (options.profileRevision !== undefined &&
+        (!Number.isSafeInteger(options.profileRevision) ||
+          options.profileRevision < 1 ||
+          !options.profileId))
     )
       throw new Error('Invalid simulation media options.');
     const context =
@@ -324,6 +333,14 @@ export class SessionController {
       retryAttempt: 0,
       sessionSeed,
       promptPreset: preset ? { id: preset.id, name: preset.name, revision: preset.revision } : null,
+      inferenceProfile: profile
+        ? {
+            id: profile.id,
+            name: profile.name,
+            revision: profile.revision,
+            topology: profile.values.topology,
+          }
+        : null,
       effectiveSeed: null,
       recentAttemptSeeds: [],
       error: null,

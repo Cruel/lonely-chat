@@ -61,6 +61,7 @@ import type {
   SimulationExperimentResult,
 } from './playground-contract';
 import type { PromptPreset } from './prompt-preset-contract';
+import type { InferenceProfile, InferenceProfileValues } from './inference-profile-contract';
 import type {
   RecordedScenario,
   RecordedScenarioConfig,
@@ -133,6 +134,10 @@ export interface DesktopInvocations {
   'video-tools:reset': VideoToolsStatus;
   'video-tools:preferences': VideoToolsStatus;
   'playground:video:choose': PlaygroundVideoSelection | null;
+  'profiles:list': InferenceProfile[];
+  'profiles:revisions': InferenceProfile[];
+  'profiles:save': InferenceProfile;
+  'profiles:delete': void;
   'presets:list': PromptPreset[];
   'presets:revisions': PromptPreset[];
   'presets:save': PromptPreset;
@@ -277,6 +282,10 @@ export interface DesktopArguments {
   'video-tools:reset': [];
   'video-tools:preferences': [preferences: NativeVideoPreferences];
   'playground:video:choose': [preferences?: NativeVideoPreferences];
+  'profiles:list': [];
+  'profiles:revisions': [id: string];
+  'profiles:save': [input: { id?: string; name: string; values: InferenceProfileValues }];
+  'profiles:delete': [id: string];
   'presets:list': [];
   'presets:revisions': [id: string];
   'presets:save': [input: { id?: string; name: string; values: SimulationExperimentValues }];
@@ -425,6 +434,14 @@ export interface DesktopAPI {
   choosePlaygroundVideo(
     preferences?: NativeVideoPreferences,
   ): Promise<PlaygroundVideoSelection | null>;
+  listInferenceProfiles(): Promise<InferenceProfile[]>;
+  listInferenceProfileRevisions(id: string): Promise<InferenceProfile[]>;
+  saveInferenceProfile(input: {
+    id?: string;
+    name: string;
+    values: InferenceProfileValues;
+  }): Promise<InferenceProfile>;
+  deleteInferenceProfile(id: string): Promise<void>;
   listPromptPresets(): Promise<PromptPreset[]>;
   listPromptPresetRevisions(id: string): Promise<PromptPreset[]>;
   savePromptPreset(input: {

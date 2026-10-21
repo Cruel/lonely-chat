@@ -124,6 +124,12 @@ const modelsAPI = {
   exportCapturedSpeech: async () => false,
   onSpeechCaptureChange: () => () => {},
   getPlaygroundStatus: async () => ({ busy: false }),
+  listInferenceProfiles: async () => [],
+  listInferenceProfileRevisions: async () => [],
+  saveInferenceProfile: async () => {
+    throw new Error('Not configured');
+  },
+  deleteInferenceProfile: async () => {},
   listPromptPresets: async () => [],
   listPromptPresetRevisions: async () => [],
   savePromptPreset: async () => {

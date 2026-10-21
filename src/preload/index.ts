@@ -42,6 +42,10 @@ const api: DesktopAPI = {
     return () => ipcRenderer.removeListener('video-tools:change', receive);
   },
   choosePlaygroundVideo: (preferences) => invoke('playground:video:choose', preferences),
+  listInferenceProfiles: () => invoke('profiles:list'),
+  listInferenceProfileRevisions: (id) => invoke('profiles:revisions', id),
+  saveInferenceProfile: (input) => invoke('profiles:save', input),
+  deleteInferenceProfile: (id) => invoke('profiles:delete', id),
   listPromptPresets: () => invoke('presets:list'),
   listPromptPresetRevisions: (id) => invoke('presets:revisions', id),
   savePromptPreset: (input) => invoke('presets:save', input),

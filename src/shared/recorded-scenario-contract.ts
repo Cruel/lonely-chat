@@ -1,4 +1,5 @@
 import type { InferenceMode, SessionPreferences } from './session-contract';
+import type { InferenceProfile } from './inference-profile-contract';
 import type { RecordedTranscriptMode } from './recorded-transcript-cache';
 import type { RecordedSegment } from '../renderer/recorded-preview-timeline';
 
@@ -24,6 +25,9 @@ export interface RecordedScenarioConfig {
   readonly seed: number | null;
   readonly presetId: string | null;
   readonly presetRevision: number | null;
+  readonly profileId?: string | null;
+  readonly profileRevision?: number | null;
+  readonly profileSnapshot?: InferenceProfile | null;
   readonly modelId: string | null;
   /** The saved snapshot is immutable unless the user explicitly saves a revised Scenario. */
   readonly settingsSnapshot: SessionPreferences;
@@ -52,6 +56,7 @@ export interface RecordedRun {
   readonly error: string | null;
   readonly effective: RecordedScenarioConfig;
   readonly effectiveSettings: SessionPreferences;
+  readonly effectiveProfile?: InferenceProfile | null;
   readonly effectiveModelId: string | null;
   readonly effectivePreset: {
     readonly id: string;

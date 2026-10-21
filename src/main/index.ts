@@ -21,6 +21,8 @@ import { PlaygroundVideoTools } from './playground-video-tools';
 import { canStartPausedSpeech } from './paused-speech-gate';
 import { RecordedResumeReservation } from './recorded-resume-reservation';
 import { PromptPresetStore } from './prompt-preset-store';
+import { InferenceProfileStore } from './inference-profile-store';
+import { resolveUnifiedProfilePolicy } from '../shared/inference-profile-contract';
 import { SpeechPlaygroundService } from './speech-playground-service';
 import { SpeechSegmentCapture } from './speech-segment-capture';
 import { installElectronSmoke } from './electron-smoke';
@@ -215,6 +217,18 @@ const chatGPTAuth = new ChatGPTAuth(
 );
 const remotePlayground = new RemoteInferencePlayground();
 const promptPresets = new PromptPresetStore(app.getPath('userData'));
+const inferenceProfiles = new InferenceProfileStore(app.getPath('userData'), (ref, role) =>
+  ref.kind === 'remote'
+    ? remoteStore
+        .list()
+        .models.some((model) => model.id === ref.modelId && (role !== 'observer' || model.images))
+    : installs
+        .snapshot()
+        .installations.some(
+          (model) =>
+            model.id === ref.modelId && !model.projectorOnly && model.role === 'vision-language',
+        ),
+);
 const audioConfig = new AudioConfigStore(app.getPath('userData'));
 const transcriptCache = new RecordedTranscriptCache(app.getPath('userData'));
 const speechCapture = new SpeechSegmentCapture(app.getPath('userData'), (error) =>
@@ -505,6 +519,11 @@ function registerHandlers(): void {
       if (selection.canceled || !selection.filePaths[0]) return null;
       return videoTools.select(selection.filePaths[0], preferences);
     },
+    'profiles:list': () => inferenceProfiles.list(),
+    'profiles:revisions': (id: string) => inferenceProfiles.revisions(id),
+    'profiles:save': (input: Parameters<InferenceProfileStore['save']>[0]) =>
+      inferenceProfiles.save(input),
+    'profiles:delete': (id: string) => inferenceProfiles.delete(id),
     'presets:list': () => promptPresets.list(),
     'presets:revisions': (id: string) => promptPresets.revisions(id),
     'presets:save': (input: {
@@ -881,6 +900,20 @@ function registerHandlers(): void {
         } else {
           throw new Error('Unknown simulation media mode.');
         }
+        const profileId = recordedConfig?.profileId ?? options?.profileId;
+        const profileRevision = recordedConfig?.profileRevision ?? options?.profileRevision;
+        const profile = profileId
+          ? await inferenceProfiles.resolve(profileId, profileRevision ?? undefined)
+          : null;
+        if (profile && profile.values.topology !== 'unified')
+          throw new Error(
+            `${profile.values.topology} inference requires the staged inference executor (#53).`,
+          );
+        const unifiedRole = profile?.values.roles.unified;
+        if (unifiedRole && mode !== (unifiedRole.kind === 'local' ? 'native' : 'remote'))
+          throw new Error(
+            'The selected Inference Profile role does not match the simulation provider.',
+          );
         const presetId = recordedConfig?.presetId ?? options?.presetId;
         const presetRevision = recordedConfig?.presetRevision ?? options?.presetRevision;
         const preset = presetId
@@ -896,7 +929,8 @@ function registerHandlers(): void {
           : undefined;
         if (presetId && !preset) throw new Error('Selected prompt preset was not found.');
         const activeModel =
-          mode === 'remote'
+          unifiedRole?.modelId ??
+          (mode === 'remote'
             ? recordedConfig?.settingsPolicy === 'saved'
               ? recordedConfig.modelId
               : (options?.remoteModelConfigurationId ?? null)
@@ -904,17 +938,30 @@ function registerHandlers(): void {
               ? packageE2E
                 ? 'cert-worker'
                 : installs.snapshot().active['vision-language']
-              : null;
+              : null);
         if (
           recordedConfig?.settingsPolicy === 'saved' &&
           mode === 'native' &&
           recordedConfig.modelId !== activeModel
         )
           throw new Error('Activate the model saved in this Scenario before starting the Run.');
-        const effectiveSettings =
+        if (
+          unifiedRole?.kind === 'local' &&
+          !packageE2E &&
+          installs.snapshot().active['vision-language'] !== unifiedRole.modelId
+        )
+          throw new Error(
+            'Activate the local Model Configuration selected by this Inference Profile before starting.',
+          );
+        const effectivePolicy = resolveUnifiedProfilePolicy(
+          profile,
           recordedConfig?.settingsPolicy === 'saved'
             ? recordedConfig.settingsSnapshot
-            : session.getPreferences();
+            : session.getPreferences(),
+          recordedConfig?.context ?? context,
+          preset?.values,
+        );
+        const effectiveSettings = effectivePolicy.settings;
         if (remotePlayground.busy)
           throw new Error('Stop remote Playground before starting Simulation.');
         // Audience size is managed outside SessionController; align it with the
@@ -937,6 +984,8 @@ function registerHandlers(): void {
                 : { seed: recordedConfig.seed }),
               presetId: presetId ?? undefined,
               presetRevision: presetRevision ?? undefined,
+              profileId: profile?.id,
+              profileRevision: profile?.revision,
             }
           : options;
         // Playground may own an idle warm worker even though it is not busy.
@@ -958,7 +1007,7 @@ function registerHandlers(): void {
           );
         }
         const started = session.start(
-          preset ? preset.values.context : (recordedConfig?.context ?? context),
+          effectivePolicy.context,
           mode,
           activeModel,
           effectiveOptions,
@@ -970,7 +1019,8 @@ function registerHandlers(): void {
                 chatActivity: preset.values.chatActivity,
               }
             : undefined,
-          recordedConfig ? effectiveSettings : undefined,
+          profile || recordedConfig ? effectiveSettings : undefined,
+          profile,
         );
         if (recordedConfig) {
           try {
@@ -985,10 +1035,11 @@ function registerHandlers(): void {
               sessionRunId: started.runId!,
               effective: recordedConfig,
               effectiveSettings: session.getRunPreferences(),
+              effectiveProfile: profile,
               effectiveModelId: activeModel,
               effectivePreset: started.promptPreset ?? null,
               effectivePrompt: {
-                context: preset ? preset.values.context : recordedConfig.context,
+                context: effectivePolicy.context,
                 chatActivity:
                   preset?.values.chatActivity ?? session.getRunPreferences().chatActivity,
               },
@@ -1842,6 +1893,10 @@ app.on('will-quit', () => {
     'chatgpt:select',
     'chatgpt:signout',
     'chatgpt:models',
+    'profiles:list',
+    'profiles:revisions',
+    'profiles:save',
+    'profiles:delete',
     'remote:list',
     'remote:connection:save',
     'remote:connection:delete',

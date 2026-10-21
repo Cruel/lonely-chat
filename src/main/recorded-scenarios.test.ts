@@ -57,6 +57,53 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { force: true, recursive: true })));
 });
 
+it('freezes a selected profile revision in Scenario and Run evidence without credentials', async () => {
+  const { root, store, video, audio } = await setup();
+  const profile = {
+    id: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa',
+    name: 'Local production',
+    revision: 2,
+    values: {
+      topology: 'unified' as const,
+      roles: { unified: { kind: 'local' as const, modelId: 'installed-vlm' } },
+      stageDefaults: { unified: { settings: { cycleIntervalMs: 5000 } } },
+    },
+  };
+  const config = {
+    ...sample(video, audio),
+    profileId: profile.id,
+    profileRevision: 2,
+    profileSnapshot: profile,
+  };
+  const scenario = await store.save('Profiled scene', config);
+  const run = await store.begin({
+    scenarioId: scenario.id,
+    name: 'Profiled run',
+    sessionRunId: 1,
+    effective: scenario.config,
+    effectiveSettings: scenario.config.settingsSnapshot,
+    effectiveProfile: profile,
+    effectiveModelId: 'installed-vlm',
+    effectivePreset: null,
+    effectivePrompt: { context: scenario.config.context, chatActivity: 'normal' },
+    effectiveSeed: 42,
+  });
+  await store.delete(scenario.id);
+  const restarted = new RecordedScenarioStore(root);
+  const [reloaded] = await restarted.runs();
+  expect(reloaded.effectiveProfile).toEqual(profile);
+  expect(reloaded.effective.profileSnapshot).toEqual(profile);
+  expect(reloaded.effectiveProfile?.revision).toBe(2);
+  expect(run.effectiveProfile).toEqual(profile);
+  expect(() =>
+    validateScenarioConfig({
+      ...config,
+      profileSnapshot: { ...profile, apiKey: 'private' },
+    }),
+  ).toThrow(/saved profile field/);
+  expect(() => validateScenarioConfig({ ...config, profileRevision: 3 })).toThrow(/does not match/);
+});
+
 it('saves and reloads named Scenarios with exact media paths, audio offsets and explicit embedded audio selection', async () => {
   const { root, store, video, audio } = await setup();
   const config = sample(video, audio);

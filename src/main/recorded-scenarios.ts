@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { validatePreferences } from '../shared/session-contract';
+import { validateProfileSnapshot } from '../shared/inference-profile-contract';
 import { supportedRecordedMediaPath } from './recorded-media-access';
 import type {
   RecordedRun,
@@ -43,9 +44,27 @@ export function validateScenarioConfig(value: unknown): RecordedScenarioConfig {
     (config.presetRevision !== null &&
       (!integer(config.presetRevision, 1, 1000000) || config.presetId === null)) ||
     (config.modelId !== null && (!text(config.modelId, 200) || config.modelId === '')) ||
+    (config.profileId !== undefined &&
+      config.profileId !== null &&
+      (!text(config.profileId, 100) || !config.profileId)) ||
+    (config.profileRevision !== undefined &&
+      config.profileRevision !== null &&
+      (!integer(config.profileRevision, 1, 1000000) || !config.profileId)) ||
+    (config.profileSnapshot !== undefined &&
+      config.profileSnapshot !== null &&
+      !config.profileId) ||
     (config.settingsPolicy !== 'saved' && config.settingsPolicy !== 'current')
   )
     throw new Error('Invalid recorded Scenario configuration.');
+  const profileSnapshot =
+    config.profileSnapshot === undefined || config.profileSnapshot === null
+      ? (config.profileSnapshot as null | undefined)
+      : validateProfileSnapshot(config.profileSnapshot);
+  if (
+    profileSnapshot &&
+    (profileSnapshot.id !== config.profileId || profileSnapshot.revision !== config.profileRevision)
+  )
+    throw new Error('Scenario Inference Profile snapshot does not match its selected revision.');
   const seen = new Set<string>();
   for (const item of config.audio) {
     const track = object(item);
@@ -104,6 +123,11 @@ export function validateScenarioConfig(value: unknown): RecordedScenarioConfig {
     seed: config.seed as number | null,
     presetId: config.presetId as string | null,
     presetRevision: config.presetRevision as number | null,
+    ...(config.profileId !== undefined ? { profileId: config.profileId as string | null } : {}),
+    ...(config.profileRevision !== undefined
+      ? { profileRevision: config.profileRevision as number | null }
+      : {}),
+    ...(config.profileSnapshot !== undefined ? { profileSnapshot: profileSnapshot ?? null } : {}),
     modelId: config.modelId as string | null,
     settingsSnapshot: validatePreferences(config.settingsSnapshot),
     settingsPolicy: config.settingsPolicy as RecordedScenarioConfig['settingsPolicy'],
@@ -210,6 +234,14 @@ export class RecordedScenarioStore {
         throw new Error('Invalid frozen Run prompt.');
       return {
         ...value,
+        ...(value.effectiveProfile !== undefined
+          ? {
+              effectiveProfile:
+                value.effectiveProfile === null
+                  ? null
+                  : validateProfileSnapshot(value.effectiveProfile),
+            }
+          : {}),
         effective: validateScenarioConfig(value.effective),
         effectiveSettings: validatePreferences(value.effectiveSettings),
       } as unknown as RecordedRun;

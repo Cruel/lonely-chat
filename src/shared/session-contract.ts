@@ -14,6 +14,8 @@ export interface SimulationInputOptions {
   /** Revision resolved atomically by main at Start; never follow subsequent edits. */
   readonly presetId?: string;
   readonly presetRevision?: number;
+  readonly profileId?: string;
+  readonly profileRevision?: number;
   /** Desktop-only frozen source selections; absent for legacy/manual invocations. */
   readonly recordedConfig?: RecordedScenarioConfig;
   readonly recordedScenarioId?: string;
@@ -65,6 +67,12 @@ export interface SessionSnapshot {
   readonly retryAttempt: number;
   /** Base seed for this session (whether user-supplied or generated). */
   readonly sessionSeed?: number | null;
+  readonly inferenceProfile?: {
+    readonly id: string;
+    readonly name: string;
+    readonly revision: number;
+    readonly topology: import('./inference-profile-contract').InferenceTopology;
+  } | null;
   readonly promptPreset?: {
     readonly id: string;
     readonly name: string;
