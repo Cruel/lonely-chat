@@ -707,6 +707,24 @@ export function RemoteConnectionsPanel({
                 />
                 I explicitly authorize sending selected image frames to this model's remote endpoint
               </label>
+              <section className="space-y-2 rounded-md border border-zinc-700 p-3" aria-label="Remote privacy and usage limits">
+                <h5 className="text-sm font-medium">Privacy and usage guards</h5>
+                <p className="text-xs text-zinc-400">Remote inference transmits selected transcript, chat history, scene/event text and prompt context to the configured endpoint. Images leave this machine only with the separate image permission above. No local-to-cloud failover occurs automatically.</p>
+                <p className="text-xs text-zinc-400">Limits apply across scheduled Vision, Chat and Memory requests sharing this model during a Run. Token limits use conservative estimates and available provider usage, not guaranteed billing caps. ChatGPT subscription allowances are separate from paid API charges; exhaustion of plan allowance never triggers API billing.</p>
+                {([
+                  ['maxRequestsPerMinute', 'Requests per 60 seconds'],
+                  ['maxRequestsPerRun', 'Requests per Run'],
+                  ['maxTokensPerRun', 'Estimated tokens per Run'],
+                  ['inputUsdPerMillion', 'Estimated input USD / 1M tokens'],
+                  ['outputUsdPerMillion', 'Estimated output USD / 1M tokens'],
+                ] as const).map(([key, label]) => (
+                  <label key={key} className={smallLabel}>{label}
+                    <Input className="mt-1" type="number" min={key.includes('Usd') ? 0 : 1} step={key.includes('Usd') ? 'any' : 1} placeholder="No limit / estimate" value={model[key] ?? ''}
+                      onChange={(e) => setModel({ ...model, [key]: e.target.value === '' ? undefined : Number(e.target.value) })} />
+                  </label>
+                ))}
+                <p className="text-xs text-zinc-400">Price fields are manually entered estimates, not provider-advertised prices. Provider token usage is reported separately where available. Operational logs omit full prompts, media and credentials; private diagnostics require separate opt-in.</p>
+              </section>
               <section
                 className="space-y-2 rounded-md border border-zinc-700 p-3"
                 aria-label="Model capabilities"

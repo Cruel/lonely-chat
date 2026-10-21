@@ -65,6 +65,7 @@ import {
 } from './remote-inference-adapter';
 import { remoteConnectionKey } from '../shared/remote-inference-contract';
 import { RemoteInferencePlayground } from './remote-inference-playground';
+import { RemoteUsageGuard } from './remote-usage-guard';
 import {
   DEFAULT_PREFERENCES,
   validatePreferences,
@@ -1030,6 +1031,7 @@ function registerHandlers(): void {
           localWarmIdleMs = profile?.values.architecture?.warmIdleMs ?? 0;
           await localModelPool!.reserve(localSplitModels.map((ref) => ref!.modelId));
         }
+        const remoteUsage = new RemoteUsageGuard();
         if (splitRoles) {
           // Pin the resolved provider/model configuration for this entire Run.
           const pinnedRemote = {
@@ -1059,7 +1061,7 @@ function registerHandlers(): void {
                     role === 'observer' && profile?.values.stageDefaults.observer?.videoInput === 'native',
                   );
             const selected = pinnedRemote[role]!;
-            return selected.connection.credentialMode === 'chatgpt'
+            return remoteUsage.wrap(selected.model, selected.connection.credentialMode === 'chatgpt'
               ? chatGPTUnifiedAdapter(selected, chatGPTAuth, {
                   timeoutMs: effectiveSettings.inferenceTimeoutMs,
                   roster: input.roster ?? [],
@@ -1067,7 +1069,7 @@ function registerHandlers(): void {
               : remoteUnifiedAdapter(selected, {
                   timeoutMs: effectiveSettings.inferenceTimeoutMs,
                   roster: input.roster,
-                });
+                }));
           };
           session.configureSplit(
             (input) => ({
@@ -1087,7 +1089,7 @@ function registerHandlers(): void {
           if (!activeModel) throw new Error('Select a remote Model Configuration.');
           const selected = remoteStore.selected(activeModel);
           session.configureRemote((input) =>
-            selected.connection.credentialMode === 'chatgpt'
+            remoteUsage.wrap(selected.model, selected.connection.credentialMode === 'chatgpt'
               ? chatGPTUnifiedAdapter(selected, chatGPTAuth, {
                   timeoutMs: effectiveSettings.inferenceTimeoutMs,
                   roster: input.roster ?? [],
@@ -1095,7 +1097,7 @@ function registerHandlers(): void {
               : remoteUnifiedAdapter(selected, {
                   timeoutMs: effectiveSettings.inferenceTimeoutMs,
                   roster: input.roster,
-                }),
+                })),
           );
         }
         const started = session.start(

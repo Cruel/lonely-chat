@@ -151,6 +151,14 @@ export interface RemoteModelConfiguration {
   readonly outputFormat: RemoteOutputFormat;
   /** Requires explicit permission to transmit screenshots over this Connection. */
   readonly allowRemoteImages: boolean;
+  /** Optional conservative per-run request guard shared by all stages using this model. */
+  readonly maxRequestsPerMinute?: number;
+  readonly maxRequestsPerRun?: number;
+  /** Optional estimated token-volume guard; unknown provider usage is not a billing guarantee. */
+  readonly maxTokensPerRun?: number;
+  /** User-supplied estimates in USD per million tokens, not provider billing data. */
+  readonly inputUsdPerMillion?: number;
+  readonly outputUsdPerMillion?: number;
   /** Manual compatibility overrides, distinct from the model's chosen output format. */
   readonly capabilityOverrides?: RemoteCapabilityFlags;
   readonly capabilityEvidence?: RemoteCapabilityEvidence;
@@ -280,6 +288,11 @@ export function validateRemoteModel(value: unknown): RemoteModelConfiguration {
     'images',
     'outputFormat',
     'allowRemoteImages',
+    'maxRequestsPerMinute',
+    'maxRequestsPerRun',
+    'maxTokensPerRun',
+    'inputUsdPerMillion',
+    'outputUsdPerMillion',
     'capabilityOverrides',
     'capabilityEvidence',
   ]);
@@ -289,6 +302,16 @@ export function validateRemoteModel(value: unknown): RemoteModelConfiguration {
     throw new Error('Invalid remote output format.');
   if (v.allowRemoteImages && !v.images)
     throw new Error('Image permission requires an image-capable model.');
+  for (const field of ['maxRequestsPerMinute', 'maxRequestsPerRun', 'maxTokensPerRun'] as const) {
+    const entry = v[field];
+    if (entry !== undefined && (typeof entry !== 'number' || !Number.isSafeInteger(entry) || entry < 1 || entry > 1_000_000_000))
+      throw new Error(`Invalid remote ${field} limit.`);
+  }
+  for (const field of ['inputUsdPerMillion', 'outputUsdPerMillion'] as const) {
+    const entry = v[field];
+    if (entry !== undefined && (typeof entry !== 'number' || !Number.isFinite(entry) || entry < 0 || entry > 1_000_000))
+      throw new Error(`Invalid remote ${field} price estimate.`);
+  }
   let evidence: RemoteCapabilityEvidence | undefined;
   if (v.capabilityEvidence !== undefined) {
     const e = object(v.capabilityEvidence);
@@ -332,6 +355,7 @@ export function validateRemoteModel(value: unknown): RemoteModelConfiguration {
     images: v.images,
     outputFormat: v.outputFormat as RemoteOutputFormat,
     allowRemoteImages: v.allowRemoteImages,
+    ...Object.fromEntries(['maxRequestsPerMinute', 'maxRequestsPerRun', 'maxTokensPerRun', 'inputUsdPerMillion', 'outputUsdPerMillion'].filter((field) => v[field] !== undefined).map((field) => [field, v[field]])),
     ...(v.capabilityOverrides === undefined
       ? {}
       : { capabilityOverrides: validateCapabilityFlags(v.capabilityOverrides) }),
