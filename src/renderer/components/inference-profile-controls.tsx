@@ -15,6 +15,8 @@ interface Props {
   onSelect: (profile: InferenceProfile | null) => void;
   remoteCatalog: RemoteCatalog;
   disabled: boolean;
+  runningProfile?: { id: string; revision: number } | null;
+  pendingRevision?: number | null;
 }
 
 const required: Record<InferenceTopology, InferenceRole[]> = {
@@ -29,6 +31,8 @@ export function InferenceProfileControls({
   onSelect,
   remoteCatalog,
   disabled,
+  runningProfile,
+  pendingRevision,
 }: Props) {
   const [profiles, setProfiles] = useState<InferenceProfile[]>([]);
   const [revisions, setRevisions] = useState<InferenceProfile[]>([]);
@@ -208,7 +212,14 @@ export function InferenceProfileControls({
           </option>
         ))}
       </select>
-      {selectedId && (
+      {runningProfile && (
+        <div className="rounded border border-zinc-700 p-2 text-xs text-zinc-300">
+          Effective Run profile: {runningProfile.id === selectedId ? name : runningProfile.id},
+          revision {runningProfile.revision}.
+          {pendingRevision != null && <> Pending admission: revision {pendingRevision}.</>}
+        </div>
+      )}
+      {runningProfile && selectedId && (
         <div className="rounded border border-zinc-700 p-2 text-xs text-zinc-300">
           Editing or saving a profile never changes an active Run automatically. Only a compatible newer revision can be explicitly queued; model/provider changes require a new Run.
           <button type="button" className="ml-2 underline" onClick={async () => {

@@ -77,3 +77,16 @@ it('resolves Unified prompt templates and sampling from an admission snapshot', 
   expect(base.instructions).not.toBe(captured.instructions);
   expect(base.sampling.maxTokens).not.toBe(512);
 });
+
+it('reconfigures a stage cadence without dropping the in-flight ownership', async () => {
+  const { StageCadence } = await import('./stage-cadence');
+  const cadence = new StageCadence(3000);
+  expect(cadence.start(1000)).toBe(true);
+  cadence.configure(6000);
+  expect(cadence.nextDelay(4000)).toBe(Infinity);
+  cadence.finish();
+  expect(cadence.nextDelay(4000)).toBe(3000);
+  expect(cadence.start(6999)).toBe(false);
+  expect(cadence.start(7000)).toBe(true);
+  cadence.finish();
+});
