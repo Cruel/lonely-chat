@@ -9,6 +9,7 @@ import {
 import { acceptSimulationExecution } from './simulation-execution';
 import type { InferredEvent, CapturedObservation } from '../shared/session-contract';
 import { SplitNarrative } from './split-narrative';
+import { DEFAULT_CHAT_PROMPT, DEFAULT_VISION_PROMPT, resolveStageContext, resolveStageTemplate } from './stage-context';
 import type { InferenceProfileValues } from '../shared/inference-profile-contract';
 
 /** Sequential stage execution shares one immutable media snapshot and one abort authority. */
@@ -46,16 +47,25 @@ export function splitRequests(
   ) => UnifiedInferenceRequest;
 } {
   const base = buildUnifiedInferenceRequest(input);
+  const visionContext = resolveStageContext(input, stages.observer);
+  const visionBase = buildUnifiedInferenceRequest({
+    ...input, recentEvents: visionContext.data.events as InferenceInput['recentEvents'],
+    recentTranscripts: visionContext.data.transcripts as InferenceInput['recentTranscripts'],
+    recentChat: visionContext.data.chat as InferenceInput['recentChat'],
+    observations: [...(visionContext.data.scene as NonNullable<InferenceInput['observations']>),
+      ...(visionContext.data.observations as NonNullable<InferenceInput['observations']>)],
+  });
+  const visionOutput = stages.observer?.visionOutput ?? 'both';
   return {
     vision: frozen({
-      ...base,
+      ...visionBase,
       role: 'vision',
+      sampling: { ...visionBase.sampling, maxTokens: stages.observer?.maxResponseTokens ?? visionBase.sampling.maxTokens },
       instructions:
-        stages.observer?.systemPrompt ??
-        'You are a visual observation stage. Analyze the ordered timestamped frames in narrative context. Return JSON matching the schema. Put persistent scene information in sceneState (empty string if nothing is known) and discrete changes in events. Output no chat messages. Do not invent events from timestamps alone.',
+        resolveStageTemplate(stages.observer?.systemPrompt ?? `${DEFAULT_VISION_PROMPT} Output selection: ${visionOutput}. Always return events, messages (empty) and sceneState (empty if disabled).`, visionContext.data),
       content: stages.observer?.userPrompt
-        ? [{ type: 'text' as const, text: stages.observer.userPrompt }, ...base.content]
-        : base.content,
+        ? [{ type: 'text' as const, text: resolveStageTemplate(stages.observer.userPrompt, visionContext.data) }, ...visionBase.content]
+        : visionBase.content,
       response: {
         ...base.response,
         schema: {
@@ -65,28 +75,34 @@ export function splitRequests(
             ...base.response.schema.properties,
             messages: { ...base.response.schema.properties.messages, maxItems: 0 },
             sceneState: { type: 'string', maxLength: 2000 },
+            ...(stages.observer?.visionOptionalFields?.includes('confidence')
+              ? { confidence: { type: 'number', minimum: 0, maximum: 1 } } : {}),
+            ...(stages.observer?.visionOptionalFields?.includes('notes')
+              ? { notes: { type: 'string', maxLength: 1000 } } : {}),
           },
         },
       },
     } as unknown as UnifiedInferenceRequest),
     chat: (events, observations) => {
+      const selectedContext = resolveStageContext({ ...input, recentEvents: [...(input.recentEvents ?? []), ...events], observations: [...(input.observations ?? []), ...observations] }, stages.chat);
       const textOnly = buildUnifiedInferenceRequest({
         ...input,
         frames: [],
         videoWindow: undefined,
-        recentEvents: [...(input.recentEvents ?? []), ...events],
-        observations: [...(input.observations ?? []), ...observations],
+        recentEvents: selectedContext.data.events as InferenceInput['recentEvents'],
+        recentTranscripts: selectedContext.data.transcripts as InferenceInput['recentTranscripts'],
+        recentChat: selectedContext.data.chat as InferenceInput['recentChat'],
+        observations: [...(selectedContext.data.scene as NonNullable<InferenceInput['observations']>), ...(selectedContext.data.observations as NonNullable<InferenceInput['observations']>)],
       });
       return frozen({
         ...textOnly,
         role: 'chat' as const,
+        sampling: { ...textOnly.sampling, maxTokens: stages.chat?.maxResponseTokens ?? textOnly.sampling.maxTokens },
         content: stages.chat?.userPrompt
-          ? [{ type: 'text' as const, text: stages.chat.userPrompt }, ...textOnly.content]
+          ? [{ type: 'text' as const, text: resolveStageTemplate(stages.chat.userPrompt, selectedContext.data) }, ...textOnly.content]
           : textOnly.content,
         instructions:
-          stages.chat?.systemPrompt ??
-          'You are the audience chat stage. Use the supplied timestamped text observations and events to produce validated chat and optional text-derived events. No raw screenshots are available. ' +
-            textOnly.instructions,
+          resolveStageTemplate(stages.chat?.systemPrompt ?? `${DEFAULT_CHAT_PROMPT} ${textOnly.instructions}`, selectedContext.data),
       } as unknown as UnifiedInferenceRequest);
     },
   };
@@ -168,7 +184,12 @@ export class ScheduledSplitInference {
       .join(',');
     if (mediaIdentity) this.mediaIdentity = mediaIdentity;
     const identity = `${generation}:${this.mediaIdentity}`;
-    const requests = splitRequests(snapshot, stages);
+    const priorScene = this.narrative.sceneObservation(now(), policy.maximumAgeMs);
+    const visionInput = frozen({
+      ...snapshot,
+      observations: [...(snapshot.observations ?? []), ...priorScene],
+    });
+    const requests = splitRequests(visionInput, stages);
     let visionFailure: unknown = null;
     const observedAt = snapshot.frames?.at(-1)?.observedAt ?? snapshot.boundary?.throughMs ?? 0;
     if (this.visionCadence.start(now())) {
@@ -196,10 +217,20 @@ export class ScheduledSplitInference {
                 !Array.isArray(fields.messages) ||
                 fields.messages.length !== 0 ||
                 Object.keys(fields).some(
-                  (key) => !['events', 'messages', 'sceneState'].includes(key),
+                  (key) => !['events', 'messages', 'sceneState', ...(stages.observer?.visionOptionalFields ?? [])].includes(key),
                 )
               )
                 throw new Error('Invalid Vision stage schema.');
+              const choice = stages.observer?.visionOutput ?? 'both';
+              if (choice === 'events' && fields.sceneState !== '')
+                throw new Error('Vision output must omit scene state in Events-only mode.');
+              if (choice === 'scene' && Array.isArray(fields.events) && fields.events.length)
+                throw new Error('Vision output must omit Events in Scene-only mode.');
+              if ((fields.confidence !== undefined && (typeof fields.confidence !== 'number' ||
+                  fields.confidence < 0 || fields.confidence > 1)) ||
+                  (fields.notes !== undefined && (typeof fields.notes !== 'string' ||
+                  fields.notes.length > 1000)))
+                throw new Error('Invalid optional Vision field.');
               sceneState = fields.sceneState;
               return { ...result, normalized: { events: fields.events, messages: [] } };
             },
@@ -345,8 +376,18 @@ export class SequentialSplitInference {
           throw new Error('Vision stage returned an invalid scene state.');
         if (!Array.isArray(payload.messages) || payload.messages.length !== 0)
           throw new Error('Vision stage must not generate chat messages.');
-        if (Object.keys(payload).some((key) => !['sceneState', 'events', 'messages'].includes(key)))
+        if (Object.keys(payload).some((key) => !['sceneState', 'events', 'messages', ...(stages.observer?.visionOptionalFields ?? [])].includes(key)))
           throw new Error('Vision stage returned unexpected fields.');
+        const choice = stages.observer?.visionOutput ?? 'both';
+        if (choice === 'events' && payload.sceneState !== '')
+          throw new Error('Vision output must omit scene state in Events-only mode.');
+        if (choice === 'scene' && Array.isArray(payload.events) && payload.events.length)
+          throw new Error('Vision output must omit Events in Scene-only mode.');
+        if ((payload.confidence !== undefined && (typeof payload.confidence !== 'number' ||
+            payload.confidence < 0 || payload.confidence > 1)) ||
+            (payload.notes !== undefined && (typeof payload.notes !== 'string' ||
+            payload.notes.length > 1000)))
+          throw new Error('Invalid optional Vision field.');
         sceneState = payload.sceneState;
         return { ...result, normalized: { events: payload.events, messages: [] } };
       },

@@ -130,6 +130,33 @@ it('pins ordered frame evidence and role-specific prompts in immutable stage req
   expect(source.frames).toEqual(frames);
 });
 
+it('resolves bounded stage templates, selected optional Vision fields and response budgets', async () => {
+  const vision = adapter({ sceneState: '', events: visionOutput.events, messages: [], confidence: 0.9 }, true);
+  const chat = adapter(chatOutput, false);
+  await new SequentialSplitInference().execute(
+    { ...input, recentEvents: [{ kind: 'context', summary: 'Old', observedAt: 10 },
+      { kind: 'reaction', summary: 'New', observedAt: 2900 }] },
+    { vision, chat },
+    new AbortController().signal,
+    undefined,
+    {
+      observer: {
+        systemPrompt: 'Scene: {{context}} Events: {{events}}',
+        visionOutput: 'events', visionOptionalFields: ['confidence'],
+        maxResponseTokens: 512,
+        contextPolicy: { maxAgeMs: 1000, maxCount: 2, maxCharacters: 2048, sources: ['events'] },
+      },
+      chat: { systemPrompt: 'Respond to {{events}}', maxResponseTokens: 768 },
+    },
+  );
+  const visionRequest = vi.mocked(vision.complete).mock.calls[0][0];
+  expect(visionRequest.instructions).toContain('New');
+  expect(visionRequest.instructions).not.toContain('Old');
+  expect(visionRequest.sampling.maxTokens).toBe(512);
+  expect(visionRequest.response.schema.properties).toHaveProperty('confidence');
+  expect(vi.mocked(chat.complete).mock.calls[0][0].sampling.maxTokens).toBe(768);
+});
+
 it('rejects invalid Vision output without calling Chat', async () => {
   const chat = adapter(chatOutput, false);
   await expect(

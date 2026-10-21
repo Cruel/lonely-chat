@@ -15,6 +15,17 @@ export interface InferenceStageDefaults {
   readonly settings?: Partial<SessionPreferences>;
   readonly systemPrompt?: string;
   readonly userPrompt?: string;
+  /** Optional bounded context independently applied to this stage. */
+  readonly contextPolicy?: {
+    readonly maxAgeMs: number;
+    readonly maxCount: number;
+    readonly maxCharacters: number;
+    readonly sources: readonly ('events' | 'transcripts' | 'chat' | 'scene' | 'observations' | 'narrative')[];
+  };
+  /** Vision must always emit protocol-required fields; disabled outputs are empty. */
+  readonly visionOutput?: 'scene' | 'events' | 'both';
+  readonly maxResponseTokens?: number;
+  readonly visionOptionalFields?: readonly ('confidence' | 'notes')[];
 }
 export interface InferenceProfileValues {
   readonly topology: InferenceTopology;
@@ -59,8 +70,12 @@ function exact(value: Record<string, unknown>, allowed: readonly string[], label
   if (Object.keys(value).some((key) => !allowed.includes(key)))
     throw new Error(`Unexpected ${label} field.`);
 }
+const variables = new Set(['context', 'cycle', 'events', 'transcripts', 'chat', 'scene', 'observations', 'narrative']);
 function safePrompt(value: unknown) {
-  return typeof value === 'string' && value.length <= 12000;
+  if (typeof value !== 'string' || value.length > 12000) return false;
+  const stripped = value.replace(/{{\s*([^{}]+?)\s*}}/g, (_part, key: string) =>
+    variables.has(key) ? '' : '__invalid__');
+  return !stripped.includes('__invalid__') && !stripped.includes('{{') && !stripped.includes('}}');
 }
 
 export function validateProfileValues(
@@ -106,7 +121,35 @@ export function validateProfileValues(
   const stages: Partial<Record<InferenceRole, InferenceStageDefaults>> = {};
   for (const [role, raw] of Object.entries(defaults)) {
     const stage = object(raw, `${role} stage defaults`);
-    exact(stage, ['settings', 'systemPrompt', 'userPrompt'], `${role} stage default`);
+    exact(stage, ['settings', 'systemPrompt', 'userPrompt', 'contextPolicy', 'visionOutput', 'maxResponseTokens', 'visionOptionalFields'], `${role} stage default`);
+    if (stage.visionOutput !== undefined &&
+      (role !== 'observer' || !['scene', 'events', 'both'].includes(String(stage.visionOutput))))
+      throw new Error('Invalid Vision output selection.');
+    if (stage.visionOptionalFields !== undefined &&
+      (role !== 'observer' || !Array.isArray(stage.visionOptionalFields) ||
+        stage.visionOptionalFields.some((v: unknown) => v !== 'confidence' && v !== 'notes') ||
+        new Set(stage.visionOptionalFields).size !== stage.visionOptionalFields.length))
+      throw new Error('Invalid optional Vision fields.');
+    if (stage.maxResponseTokens !== undefined &&
+      (!Number.isSafeInteger(stage.maxResponseTokens) || (stage.maxResponseTokens as number) < 128 ||
+        (stage.maxResponseTokens as number) > 8192))
+      throw new Error('Invalid stage response token budget.');
+    let contextPolicy: InferenceStageDefaults['contextPolicy'];
+    if (stage.contextPolicy !== undefined) {
+      const policy = object(stage.contextPolicy, 'stage context policy');
+      exact(policy, ['maxAgeMs', 'maxCount', 'maxCharacters', 'sources'], 'stage context policy');
+      if (!Number.isSafeInteger(policy.maxAgeMs) || (policy.maxAgeMs as number) < 1000 ||
+          (policy.maxAgeMs as number) > 3600000 ||
+          !Number.isSafeInteger(policy.maxCount) || (policy.maxCount as number) < 0 ||
+          (policy.maxCount as number) > 256 ||
+          !Number.isSafeInteger(policy.maxCharacters) || (policy.maxCharacters as number) < 512 ||
+          (policy.maxCharacters as number) > 100000 ||
+          !Array.isArray(policy.sources) ||
+          policy.sources.some((source: unknown) => !['events','transcripts','chat','scene','observations','narrative'].includes(String(source))) ||
+          new Set(policy.sources).size !== policy.sources.length)
+        throw new Error('Invalid stage context policy.');
+      contextPolicy = policy as unknown as NonNullable<InferenceStageDefaults['contextPolicy']>;
+    }
     if (
       (stage.systemPrompt !== undefined && !safePrompt(stage.systemPrompt)) ||
       (stage.userPrompt !== undefined && !safePrompt(stage.userPrompt))
@@ -123,6 +166,10 @@ export function validateProfileValues(
       ...(settings ? { settings } : {}),
       ...(stage.systemPrompt !== undefined ? { systemPrompt: stage.systemPrompt as string } : {}),
       ...(stage.userPrompt !== undefined ? { userPrompt: stage.userPrompt as string } : {}),
+      ...(contextPolicy ? { contextPolicy } : {}),
+      ...(stage.maxResponseTokens !== undefined ? { maxResponseTokens: stage.maxResponseTokens as number } : {}),
+      ...(stage.visionOutput !== undefined ? { visionOutput: stage.visionOutput as 'scene' | 'events' | 'both' } : {}),
+      ...(stage.visionOptionalFields !== undefined ? { visionOptionalFields: stage.visionOptionalFields as ('confidence' | 'notes')[] } : {}),
     };
   }
   let contextDefaults: InferenceProfileValues['contextDefaults'];

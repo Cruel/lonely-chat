@@ -7,6 +7,7 @@ import type {
   ProfileModelReference,
 } from '../../shared/inference-profile-contract';
 import type { RemoteCatalog } from '../../shared/remote-inference-contract';
+import { resolveStageContext, resolveStageTemplate, DEFAULT_CHAT_PROMPT, DEFAULT_VISION_PROMPT } from '../../main/stage-context';
 
 interface Props {
   selectedId: string;
@@ -37,6 +38,39 @@ export function InferenceProfileControls({
   const [topology, setTopology] = useState<InferenceTopology>('unified');
   const [roles, setRoles] = useState<InferenceProfileValues['roles']>({});
   const [defaults, setDefaults] = useState('{}');
+  const [showStagePreview, setShowStagePreview] = useState(false);
+  const stagePreview = (() => {
+    try {
+      const parsed = JSON.parse(defaults) as InferenceProfileValues['stageDefaults'];
+      return required[topology].map((role) => {
+        const stage = parsed[role];
+        const sample = resolveStageContext({
+          context: 'Example stream narrative', cycle: 1,
+          boundary: { fromSequence: 0, throughSequence: 1, fromMs: 0, throughMs: 1000 },
+          frames: role === 'observer' ? [{
+            sourceId: 'example-camera', observedAt: 1000, width: 320, height: 180, dataUrl: 'data:image/jpeg;base64,'
+          }] : [],
+          recentEvents: [{ kind: 'reaction', summary: 'An example event', observedAt: 900 }],
+          observations: [{ source: 'vision', kind: 'visual', description: 'Example scene', observedAt: 950 }],
+        }, stage);
+        return {
+          role,
+          exampleOnly: true,
+          instructions: resolveStageTemplate(stage?.systemPrompt ??
+            (role === 'observer' ? DEFAULT_VISION_PROMPT : DEFAULT_CHAT_PROMPT), sample.data),
+          userText: resolveStageTemplate(stage?.userPrompt ?? '{{context}}', sample.data),
+          includedContext: sample.data,
+          omissions: sample.omitted,
+          contextCharacters: sample.characters,
+          responseTokenLimit: stage?.maxResponseTokens ?? 2048,
+          mediaReferences: role === 'observer' ? [{ sourceId: 'example-camera', observedAt: 1000, type: 'image' }] : [],
+          visionOutput: role === 'observer' ? stage?.visionOutput ?? 'both' : undefined,
+        };
+      });
+    } catch {
+      return null;
+    }
+  })();
   const [contextDefaults, setContextDefaults] = useState('{}');
   const [execution, setExecution] = useState<'sequential' | 'asynchronous'>('sequential');
   const [hybridMaxImages, setHybridMaxImages] = useState(0);
@@ -387,7 +421,7 @@ export function InferenceProfileControls({
             />
           </label>
           <label className="block">
-            Stage defaults by role (JSON: settings, systemPrompt, userPrompt; no credentials)
+            Stage defaults by role (JSON: settings, systemPrompt, userPrompt, contextPolicy, maxResponseTokens, visionOutput, visionOptionalFields; no credentials)
             <textarea
               aria-label="Profile stage defaults"
               disabled={disabled}
@@ -397,6 +431,41 @@ export function InferenceProfileControls({
               rows={3}
             />
           </label>
+          {topology !== 'unified' && (
+            <div className="space-y-2 rounded border border-zinc-700 p-2">
+              <p className="text-xs text-zinc-400">
+                Prompt variables: {'{{context}}'}, {'{{cycle}}'}, {'{{events}}'},
+                {' {{transcripts}}'}, {' {{chat}}'}, {' {{scene}}'},
+                {' {{observations}}'}, {' {{narrative}}'}. Unknown variables are rejected.
+                Context policy: maxAgeMs, maxCount, maxCharacters and sources (events, transcripts,
+                chat, scene, observations, narrative). maxResponseTokens: 128–8192. Vision output:
+                scene, events or both; optional fields: confidence, notes. Previous model interpretations are context,
+                not direct captured evidence. Required instructions and structured response schema
+                remain separate from the bounded context. Oldest history is omitted first.
+              </p>
+              <div className="flex gap-2">
+                <button type="button" disabled={disabled} className="rounded border border-zinc-600 px-2 py-1"
+                  onClick={() => {
+                    try {
+                      const stages = JSON.parse(defaults) as InferenceProfileValues['stageDefaults'];
+                      for (const role of required[topology]) {
+                        stages[role] = { ...stages[role], systemPrompt: undefined, userPrompt: undefined };
+                      }
+                      setDefaults(JSON.stringify(stages, null, 2));
+                    } catch { setError('Invalid stage JSON.'); }
+                  }}>
+                  Restore default prompts
+                </button>
+                <button type="button" onClick={() => setShowStagePreview((value) => !value)}
+                  className="rounded border border-zinc-600 px-2 py-1">
+                  {showStagePreview ? 'Hide stage preview' : 'Preview stage configuration'}
+                </button>
+              </div>
+              {showStagePreview && <pre aria-label="Stage request preview" className="max-h-64 overflow-auto whitespace-pre-wrap text-xs">
+                {stagePreview ? JSON.stringify(stagePreview, null, 2) : 'Invalid stage JSON.'}
+              </pre>}
+            </div>
+          )}
           <div className="flex gap-2">
             <button
               type="button"
