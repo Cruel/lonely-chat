@@ -32,7 +32,11 @@ it('rejects late Vision results without rolling scene backward and resets Run hi
   narrative.observeVision('Old scene', [{ ...finish, summary: 'Late event' }], 2000, 200, ['cam:2000']);
   expect(narrative.currentScene(200, 1000)?.text).toBe('New scene');
   expect(narrative.history(200, 1000)).toHaveLength(1);
+  expect(narrative.priorInterpretations(200, 1000)).toEqual([
+    expect.objectContaining({ text: 'New scene', sourceModel: 'vision' }),
+  ]);
   narrative.reset();
+  expect(narrative.priorInterpretations(200, 1000)).toEqual([]);
   expect(narrative.history(200, 1000)).toEqual([]);
   expect(narrative.currentScene(200, 1000)).toBeNull();
 });

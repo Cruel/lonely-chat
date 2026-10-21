@@ -115,11 +115,15 @@ it('retries unacknowledged Vision events after Chat fails without creating dupli
       () => time,
     );
   await expect(execute(1)).rejects.toThrow('Chat connection failed');
+  const initialRequest = vi.mocked(chatter.complete).mock.calls[0][0];
   time = 1000;
   const retry = await execute(2);
   expect(retry?.visionEvents).toHaveLength(1);
   expect(retry?.accepted.events).toHaveLength(1);
   expect(retry?.observations[0].description).toBe(scene.sceneState);
+  const retryRequest = vi.mocked(chatter.complete).mock.calls[1][0];
+  expect(retryRequest).toEqual(initialRequest);
+  expect(Object.isFrozen(retryRequest)).toBe(true);
   time = 1100;
   const next = await execute(3);
   expect(next?.visionEvents).toHaveLength(1);

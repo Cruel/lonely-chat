@@ -66,6 +66,19 @@ export function splitRequests(
       content: stages.observer?.userPrompt
         ? [{ type: 'text' as const, text: resolveStageTemplate(stages.observer.userPrompt, visionContext.data) }, ...visionBase.content]
         : visionBase.content,
+      // Retained summaries and prior interpretations aren't part of the legacy
+      // unified JSON context; supply them explicitly as uncertain context.
+      ...((visionContext.data.significantEvents as unknown[]).length > 0 || (visionContext.data.interpretations as unknown[]).length > 0
+        ? { content: [
+            ...(stages.observer?.userPrompt
+              ? [{ type: 'text' as const, text: resolveStageTemplate(stages.observer.userPrompt, visionContext.data) }]
+              : []),
+            { type: 'text' as const, text: JSON.stringify({
+              significantHistoricalSummaries: visionContext.data.significantEvents,
+              uncertainPriorInterpretations: visionContext.data.interpretations,
+            }) },
+            ...visionBase.content,
+          ] } : {}),
       response: {
         ...base.response,
         schema: {
@@ -101,6 +114,17 @@ export function splitRequests(
         content: stages.chat?.userPrompt
           ? [{ type: 'text' as const, text: resolveStageTemplate(stages.chat.userPrompt, selectedContext.data) }, ...textOnly.content]
           : textOnly.content,
+        ...((selectedContext.data.significantEvents as unknown[]).length > 0 || (selectedContext.data.interpretations as unknown[]).length > 0
+          ? { content: [
+              ...(stages.chat?.userPrompt
+                ? [{ type: 'text' as const, text: resolveStageTemplate(stages.chat.userPrompt, selectedContext.data) }]
+                : []),
+              { type: 'text' as const, text: JSON.stringify({
+                significantHistoricalSummaries: selectedContext.data.significantEvents,
+                uncertainPriorInterpretations: selectedContext.data.interpretations,
+              }) },
+              ...textOnly.content,
+            ] } : {}),
         instructions:
           resolveStageTemplate(stages.chat?.systemPrompt ?? `${DEFAULT_CHAT_PROMPT} ${textOnly.instructions}`, selectedContext.data),
       } as unknown as UnifiedInferenceRequest);
@@ -136,6 +160,8 @@ export class ScheduledSplitInference {
   private retryPayload: {
     events: readonly ReturnType<SplitNarrative['pending']>[number][];
     observations: readonly CapturedObservation[];
+    request: UnifiedInferenceRequest;
+    input: InferenceInput;
   } | null = null;
 
   reset(): void {
@@ -188,6 +214,7 @@ export class ScheduledSplitInference {
     const visionInput = frozen({
       ...snapshot,
       observations: [...(snapshot.observations ?? []), ...priorScene],
+      priorInterpretations: this.narrative.priorInterpretations(now(), policy.maximumAgeMs),
     });
     const requests = splitRequests(visionInput, stages);
     let visionFailure: unknown = null;
@@ -294,22 +321,23 @@ export class ScheduledSplitInference {
       // acknowledgement; newer Vision completions remain queued for the next Chat cycle.
       const pending = this.retryPayload?.events ?? this.narrative.pending(now(), policy.maximumAgeMs);
       const observations = this.retryPayload?.observations ?? this.narrative.sceneObservation(now(), policy.maximumAgeMs);
-      this.retryPayload ??= { events: pending, observations };
       const events = pending.map((entry) => entry.event);
-      const chatRequest = requests.chat(events, observations);
+      const chatRequest = this.retryPayload?.request ?? requests.chat(events, observations);
+      const chatInput = this.retryPayload?.input ?? frozen({
+        ...snapshot,
+        frames: [],
+        videoWindow: undefined,
+        recentEvents: [...(snapshot.recentEvents ?? []), ...events],
+        observations: [...(snapshot.observations ?? []), ...observations],
+      });
+      this.retryPayload ??= { events: pending, observations, request: chatRequest, input: chatInput };
       const adapter: UnifiedInferenceAdapter = {
         ...adapters.chat,
         complete: (_request, activeSignal, observer) =>
           adapters.chat.complete(chatRequest, activeSignal, observer),
       };
       const output = await this.chatCoordinator.execute(
-        {
-          ...snapshot,
-          frames: [],
-          videoWindow: undefined,
-          recentEvents: [...(snapshot.recentEvents ?? []), ...events],
-          observations: [...(snapshot.observations ?? []), ...observations],
-        },
+        chatInput,
         adapter,
         { signal, beforeAccept },
       );

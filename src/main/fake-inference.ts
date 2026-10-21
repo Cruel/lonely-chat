@@ -16,6 +16,10 @@ export interface InferenceInput {
   readonly cycle: number;
   readonly playbackWindowMs?: number;
   readonly recentEvents?: readonly InferredEvent[];
+  /** Durable user-approved historical summaries, not newly observed events. */
+  readonly significantEvents?: readonly { summary: string; observedAt: number }[];
+  /** Previous model interpretations are uncertain context, not capture evidence. */
+  readonly priorInterpretations?: readonly { text: string; observedAt: number; sourceModel: 'vision' | 'chat' }[];
   readonly recentTranscripts?: readonly LabeledTranscript[];
   readonly observations?: readonly CapturedObservation[];
   readonly frames?: readonly VideoFrame[];

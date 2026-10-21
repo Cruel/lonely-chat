@@ -157,6 +157,21 @@ it('resolves bounded stage templates, selected optional Vision fields and respon
   expect(vi.mocked(chat.complete).mock.calls[0][0].sampling.maxTokens).toBe(768);
 });
 
+it('includes retained significant history and uncertain prior interpretations in real stage text', async () => {
+  const vision = adapter(visionOutput, true);
+  const chat = adapter(chatOutput, false);
+  await new SequentialSplitInference().execute({
+    ...input,
+    significantEvents: [{ observedAt: -100000, summary: 'The families reunited long ago' }],
+    priorInterpretations: [{ observedAt: 1500, text: 'Might be a family member', sourceModel: 'vision' }],
+  }, { vision, chat }, new AbortController().signal);
+  const request = vi.mocked(vision.complete).mock.calls[0][0];
+  const parts = JSON.stringify(request.content);
+  expect(parts).toContain('The families reunited long ago');
+  expect(parts).toContain('uncertainPriorInterpretations');
+  expect(parts).toContain('Might be a family member');
+});
+
 it('rejects invalid Vision output without calling Chat', async () => {
   const chat = adapter(chatOutput, false);
   await expect(

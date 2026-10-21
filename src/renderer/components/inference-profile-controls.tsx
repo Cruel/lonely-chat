@@ -39,6 +39,7 @@ export function InferenceProfileControls({
   const [roles, setRoles] = useState<InferenceProfileValues['roles']>({});
   const [defaults, setDefaults] = useState('{}');
   const [showStagePreview, setShowStagePreview] = useState(false);
+  const [actualRequestPreview, setActualRequestPreview] = useState<string | null>(null);
   const stagePreview = (() => {
     try {
       const parsed = JSON.parse(defaults) as InferenceProfileValues['stageDefaults'];
@@ -61,6 +62,7 @@ export function InferenceProfileControls({
           userText: resolveStageTemplate(stage?.userPrompt ?? '{{context}}', sample.data),
           includedContext: sample.data,
           omissions: sample.omitted,
+          omittedBySource: sample.omittedBySource,
           contextCharacters: sample.characters,
           responseTokenLimit: stage?.maxResponseTokens ?? 2048,
           mediaReferences: role === 'observer' ? [{ sourceId: 'example-camera', observedAt: 1000, type: 'image' }] : [],
@@ -436,9 +438,11 @@ export function InferenceProfileControls({
               <p className="text-xs text-zinc-400">
                 Prompt variables: {'{{context}}'}, {'{{cycle}}'}, {'{{events}}'},
                 {' {{transcripts}}'}, {' {{chat}}'}, {' {{scene}}'},
-                {' {{observations}}'}, {' {{narrative}}'}. Unknown variables are rejected.
+                {' {{observations}}'}, {' {{narrative}}'}, {' {{interpretations}}'},
+                {' {{significantEvents}}'}. Unknown variables are rejected.
                 Context policy: maxAgeMs, maxCount, maxCharacters and sources (events, transcripts,
-                chat, scene, observations, narrative). maxResponseTokens: 128–8192. Vision output:
+                chat, scene, observations, narrative, interpretations, significantEvents).
+                maxResponseTokens: 128–8192. Vision output:
                 scene, events or both; optional fields: confidence, notes. Previous model interpretations are context,
                 not direct captured evidence. Required instructions and structured response schema
                 remain separate from the bounded context. Oldest history is omitted first.
@@ -456,11 +460,32 @@ export function InferenceProfileControls({
                   }}>
                   Restore default prompts
                 </button>
+                <button type="button" onClick={() => {
+                  void (async () => {
+                    try {
+                      const listing = await window.lonelyChat!.listInferenceTraces();
+                      const recent = listing.attempts.at(-1);
+                      const attempt = recent && await window.lonelyChat!.getInferenceTrace(recent.id);
+                      setActualRequestPreview(attempt?.request
+                        ? JSON.stringify(attempt.request, (_key, value: unknown) =>
+                            typeof value === 'string' && value.startsWith('data:image/')
+                              ? '[image bytes omitted; see request media reference]' : value, 2)
+                        : 'No retained submitted request is available. Start a Run and inspect its trace.');
+                    } catch (reason) {
+                      setActualRequestPreview(String(reason));
+                    }
+                  })();
+                }} className="rounded border border-zinc-600 px-2 py-1">
+                  Last actual Run request
+                </button>
                 <button type="button" onClick={() => setShowStagePreview((value) => !value)}
                   className="rounded border border-zinc-600 px-2 py-1">
                   {showStagePreview ? 'Hide stage preview' : 'Preview stage configuration'}
                 </button>
               </div>
+              {actualRequestPreview && <pre aria-label="Actual submitted request" className="max-h-64 overflow-auto whitespace-pre-wrap text-xs">
+                {actualRequestPreview}
+              </pre>}
               {showStagePreview && <pre aria-label="Stage request preview" className="max-h-64 overflow-auto whitespace-pre-wrap text-xs">
                 {stagePreview ? JSON.stringify(stagePreview, null, 2) : 'Invalid stage JSON.'}
               </pre>}

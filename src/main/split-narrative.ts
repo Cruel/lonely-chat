@@ -21,11 +21,13 @@ export interface NarrativeScene {
 export class SplitNarrative {
   private events: NarrativeEvent[] = [];
   private scene: NarrativeScene | null = null;
+  private interpretations: NarrativeScene[] = [];
   private lastVisionAt = -Infinity;
 
   reset(): void {
     this.events = [];
     this.scene = null;
+    this.interpretations = [];
     this.lastVisionAt = -Infinity;
   }
 
@@ -47,6 +49,10 @@ export class SplitNarrative {
     const trimmed = text.trim();
     if (trimmed && (!sameFrame || !this.scene)) {
       this.scene = { text: trimmed, sourceModel: 'vision', frameIds: [...frameIds], observedAt, availableAt };
+      if (this.interpretations.at(-1)?.text !== trimmed) {
+        this.interpretations.push(this.scene);
+        this.interpretations = this.interpretations.slice(-256);
+      }
     }
     this.merge(events, 'vision', availableAt, frameIds);
   }
@@ -99,6 +105,12 @@ export class SplitNarrative {
 
   currentScene(now: number, maxAgeMs: number): NarrativeScene | null {
     return this.scene && now - this.scene.availableAt <= maxAgeMs ? { ...this.scene } : null;
+  }
+
+  priorInterpretations(now: number, maxAgeMs: number) {
+    return this.interpretations
+      .filter((item) => now - item.availableAt <= maxAgeMs)
+      .map(({ text, observedAt, sourceModel }) => ({ text, observedAt, sourceModel }));
   }
 
   sceneObservation(now: number, maxAgeMs: number): CapturedObservation[] {

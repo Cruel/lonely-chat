@@ -20,7 +20,7 @@ export interface InferenceStageDefaults {
     readonly maxAgeMs: number;
     readonly maxCount: number;
     readonly maxCharacters: number;
-    readonly sources: readonly ('events' | 'transcripts' | 'chat' | 'scene' | 'observations' | 'narrative')[];
+    readonly sources: readonly ('events' | 'transcripts' | 'chat' | 'scene' | 'observations' | 'narrative' | 'interpretations' | 'significantEvents')[];
   };
   /** Vision must always emit protocol-required fields; disabled outputs are empty. */
   readonly visionOutput?: 'scene' | 'events' | 'both';
@@ -70,7 +70,7 @@ function exact(value: Record<string, unknown>, allowed: readonly string[], label
   if (Object.keys(value).some((key) => !allowed.includes(key)))
     throw new Error(`Unexpected ${label} field.`);
 }
-const variables = new Set(['context', 'cycle', 'events', 'transcripts', 'chat', 'scene', 'observations', 'narrative']);
+const variables = new Set(['context', 'cycle', 'events', 'transcripts', 'chat', 'scene', 'observations', 'narrative', 'interpretations', 'significantEvents']);
 function safePrompt(value: unknown) {
   if (typeof value !== 'string' || value.length > 12000) return false;
   const stripped = value.replace(/{{\s*([^{}]+?)\s*}}/g, (_part, key: string) =>
@@ -145,7 +145,7 @@ export function validateProfileValues(
           !Number.isSafeInteger(policy.maxCharacters) || (policy.maxCharacters as number) < 512 ||
           (policy.maxCharacters as number) > 100000 ||
           !Array.isArray(policy.sources) ||
-          policy.sources.some((source: unknown) => !['events','transcripts','chat','scene','observations','narrative'].includes(String(source))) ||
+          policy.sources.some((source: unknown) => !['events','transcripts','chat','scene','observations','narrative','interpretations','significantEvents'].includes(String(source))) ||
           new Set(policy.sources).size !== policy.sources.length)
         throw new Error('Invalid stage context policy.');
       contextPolicy = policy as unknown as NonNullable<InferenceStageDefaults['contextPolicy']>;

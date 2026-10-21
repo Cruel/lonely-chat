@@ -39,6 +39,36 @@ it('preserves recent evidence when evicting oldest history within a character bu
   expect(selected.data.context).toBe('A race');
 });
 
+it('keeps significant historical summaries beyond the recent window', () => {
+  const result = resolveStageContext({
+    ...input,
+    significantEvents: [{ summary: 'The rivals reunited a year ago', observedAt: -1000000 }],
+    priorInterpretations: [{ text: 'Possibly a rivalry', sourceModel: 'vision', observedAt: 199999 }],
+  }, { contextPolicy: {
+    maxAgeMs: 1000, maxCount: 10, maxCharacters: 4096,
+    sources: ['significantEvents', 'interpretations', 'observations'],
+  } });
+  expect(JSON.stringify(result.data.significantEvents)).toContain('rivals reunited');
+  expect(JSON.stringify(result.data.interpretations)).toContain('model-interpretation');
+  expect(result.data.events).toEqual([]);
+});
+
+it('evicts uncertain history ahead of newest captured observations with visible omissions', () => {
+  const observed = { source: 'mic', kind: 'audio' as const, description: 'new gunshot'.repeat(10), observedAt: 200000 };
+  const result = resolveStageContext({
+    ...input, observations: [observed],
+    recentChat: Array.from({ length: 15 }, (_, i) => ({
+      author: 'viewer', text: 'older chatter'.repeat(5), presentedAt: 199000 + i,
+    })),
+  }, { contextPolicy: {
+    maxAgeMs: 10000, maxCount: 20, maxCharacters: 512,
+    sources: ['chat', 'observations'],
+  } });
+  expect(JSON.stringify(result.data.observations)).toContain('new gunshot');
+  expect(result.omittedBySource.chat).toBeGreaterThan(0);
+  expect(result.characters).toBeLessThanOrEqual(512);
+});
+
 it('supports empty sources and safely rejects malformed template variables', () => {
   const selected = resolveStageContext({ ...input, observations: [], recentEvents: [] }, {
     contextPolicy: { maxAgeMs: 1000, maxCount: 0, maxCharacters: 512, sources: [] },
