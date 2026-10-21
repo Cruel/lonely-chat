@@ -1,4 +1,5 @@
 import type { InferenceInput } from './fake-inference';
+import type { UnifiedInferenceRequest } from './unified-inference-request';
 import type { InferenceStageDefaults } from '../shared/inference-profile-contract';
 
 export const STAGE_VARIABLES = ['context', 'cycle', 'events', 'transcripts', 'chat', 'scene', 'observations', 'narrative', 'interpretations', 'significantEvents'] as const;
@@ -57,4 +58,26 @@ export function resolveStageTemplate(template: string, data: Record<Source, unkn
   });
   if (resolved.includes('{{') || resolved.includes('}}')) throw new Error('Invalid stage template syntax.');
   return resolved;
+}
+
+/** Resolve one immutable Unified prompt against its admitted input, not mutable profile state. */
+export function resolveUnifiedStageRequest(
+  request: UnifiedInferenceRequest,
+  input: InferenceInput,
+  stage: InferenceStageDefaults | undefined,
+): UnifiedInferenceRequest {
+  if (!stage) return request;
+  const context = resolveStageContext(input, stage).data;
+  return {
+    ...request,
+    instructions: stage.systemPrompt === undefined
+      ? request.instructions : resolveStageTemplate(stage.systemPrompt, context),
+    content: stage.userPrompt === undefined ? request.content : [
+      { type: 'text', text: resolveStageTemplate(stage.userPrompt, context) }, ...request.content,
+    ],
+    sampling: {
+      ...request.sampling,
+      maxTokens: stage.maxResponseTokens ?? request.sampling.maxTokens,
+    },
+  };
 }

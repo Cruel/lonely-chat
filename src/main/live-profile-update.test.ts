@@ -62,3 +62,18 @@ describe('live profile admission', () => {
     controller.stop();
   });
 });
+
+it('resolves Unified prompt templates and sampling from an admission snapshot', async () => {
+  const { resolveUnifiedStageRequest } = await import('./stage-context');
+  const { buildUnifiedInferenceRequest } = await import('./unified-inference-request');
+  const input = { context: 'arena', cycle: 5 };
+  const base = buildUnifiedInferenceRequest(input);
+  const stage = { systemPrompt: 'Observe {{context}} in cycle {{cycle}}',
+    userPrompt: 'History {{events}}', maxResponseTokens: 512 };
+  const captured = resolveUnifiedStageRequest(base, input, stage);
+  expect(captured.instructions).toBe('Observe arena in cycle 5');
+  expect(captured.content[0]).toEqual({ type: 'text', text: 'History []' });
+  expect(captured.sampling.maxTokens).toBe(512);
+  expect(base.instructions).not.toBe(captured.instructions);
+  expect(base.sampling.maxTokens).not.toBe(512);
+});

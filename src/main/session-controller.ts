@@ -15,6 +15,7 @@ import { fixtureInferenceAdapter, llamaCppAdapter } from './unified-inference-ad
 import { InferenceHistory, type CycleInput } from './inference-history';
 import { VideoFrameBuffer } from './video-frame-buffer';
 import { selectContinuousVideoWindow, type ContinuousVideoWindow } from './continuous-video-window';
+import { resolveUnifiedStageRequest } from './stage-context';
 import { PrivateInferenceError } from './private-inference-error';
 import { InferenceTrace, traceFailureStage, traceUsage } from './inference-trace';
 import { deriveInferenceSeed, randomInferenceSeed, validInferenceSeed } from './inference-seeds';
@@ -1148,7 +1149,14 @@ export class SessionController {
             parsed: { ...result.parsed, events: [...result.visionEvents, ...result.parsed.events] },
           };
         }
-        return this.coordinator.execute(effectiveInput, adapter, {
+        const unifiedStage = attemptProfile?.values.stageDefaults.unified;
+        const effectiveAdapter: UnifiedInferenceAdapter = unifiedStage ? {
+          ...adapter,
+          complete: (request, signal, observe) => adapter.complete(
+            resolveUnifiedStageRequest(request, effectiveInput, unifiedStage), signal, observe,
+          ),
+        } : adapter;
+        return this.coordinator.execute(effectiveInput, effectiveAdapter, {
           signal: abort.signal,
           ...(videoIdentity ? { nativeVideoRef: videoIdentity } : {}),
           enforceAudience: Boolean(this.audience),
