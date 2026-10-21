@@ -1,4 +1,5 @@
 import type { InferenceInput } from './fake-inference';
+import { StageCadence, LatestStageResult } from './stage-cadence';
 import type { UnifiedInferenceAdapter } from './inference-coordinator';
 import { InferenceCoordinator } from './inference-coordinator';
 import {
@@ -88,6 +89,200 @@ export function splitRequests(
       } as unknown as UnifiedInferenceRequest);
     },
   };
+}
+
+export interface SplitScheduling {
+  readonly execution: 'sequential' | 'asynchronous';
+  readonly visionIntervalMs: number;
+  readonly chatIntervalMs: number;
+  readonly maximumWaitMs: number;
+  readonly maximumAgeMs: number;
+  readonly strictWait: boolean;
+}
+
+/** Per-Run stage authority: Vision can outlive the Chat window, but never the Run. */
+export class ScheduledSplitInference {
+  private visionCadence: StageCadence | null = null;
+  private chatCadence: StageCadence | null = null;
+  private visionCoordinator = new InferenceCoordinator();
+  private chatCoordinator = new InferenceCoordinator();
+  private latest = new LatestStageResult<{
+    events: readonly InferredEvent[];
+    observations: readonly CapturedObservation[];
+    serial: number;
+  }>();
+  private visionTask: Promise<void> | null = null;
+  private generation = 0;
+  private serial = 0;
+  private consumedSerial = 0;
+  private mediaIdentity = '';
+
+  reset(): void {
+    this.cancelActive();
+    this.visionCadence = null;
+    this.chatCadence = null;
+    this.latest.clear();
+    this.visionTask = null;
+    this.serial = 0;
+    this.consumedSerial = 0;
+    this.mediaIdentity = '';
+  }
+
+  nextChatDelay(now: number): number {
+    return this.chatCadence?.nextDelay(now) ?? 0;
+  }
+
+  cancelActive(): void {
+    this.generation++;
+    this.visionCoordinator.cancelActive();
+    this.chatCoordinator.cancelActive();
+  }
+
+  async execute(
+    input: InferenceInput,
+    adapters: SplitAdapters,
+    signal: AbortSignal,
+    beforeAccept: (() => Promise<void>) | undefined,
+    stages: InferenceProfileValues['stageDefaults'],
+    policy: SplitScheduling,
+    now: () => number = () => performance.now(),
+    visionOnly = false,
+  ): Promise<SplitResult | null> {
+    this.visionCadence ??= new StageCadence(policy.visionIntervalMs);
+    this.chatCadence ??= new StageCadence(policy.chatIntervalMs);
+    const generation = this.generation;
+    const snapshot = frozen({
+      ...input,
+      frames: input.frames
+        ?.slice()
+        .sort((a, b) => a.observedAt - b.observedAt || a.sourceId.localeCompare(b.sourceId)),
+    });
+    const mediaIdentity = [...new Set(snapshot.frames?.map((frame) => frame.sourceId) ?? [])]
+      .sort()
+      .join(',');
+    if (mediaIdentity) this.mediaIdentity = mediaIdentity;
+    const identity = `${generation}:${this.mediaIdentity}`;
+    const requests = splitRequests(snapshot, stages);
+    let visionFailure: unknown = null;
+    const observedAt = snapshot.frames?.at(-1)?.observedAt ?? snapshot.boundary?.throughMs ?? 0;
+    if (this.visionCadence.start(now())) {
+      const cadence = this.visionCadence;
+      const task = (async () => {
+        try {
+          if (snapshot.frames?.length && !adapters.vision.capabilities.images)
+            throw new Error('Selected Vision model cannot accept image frames.');
+          let sceneState = '';
+          const adapter: UnifiedInferenceAdapter = {
+            ...adapters.vision,
+            complete: async (_request, activeSignal, observer) => {
+              const result = await adapters.vision.complete(
+                requests.vision,
+                activeSignal,
+                observer,
+              );
+              const payload = result.normalized;
+              if (!payload || typeof payload !== 'object' || Array.isArray(payload))
+                throw new Error('Invalid Vision stage output.');
+              const fields = payload as Record<string, unknown>;
+              if (
+                typeof fields.sceneState !== 'string' ||
+                fields.sceneState.length > 2000 ||
+                !Array.isArray(fields.messages) ||
+                fields.messages.length !== 0 ||
+                Object.keys(fields).some(
+                  (key) => !['events', 'messages', 'sceneState'].includes(key),
+                )
+              )
+                throw new Error('Invalid Vision stage schema.');
+              sceneState = fields.sceneState;
+              return { ...result, normalized: { events: fields.events, messages: [] } };
+            },
+          };
+          const output = await this.visionCoordinator.execute(snapshot, adapter, {
+            signal,
+            enforceAudience: false,
+            beforeAccept,
+          });
+          if (signal.aborted || generation !== this.generation) return;
+          const observations: CapturedObservation[] = sceneState.trim()
+            ? [{ source: 'vision', kind: 'visual', description: sceneState.trim(), observedAt }]
+            : [];
+          this.latest.publish(
+            {
+              events: output.accepted.events,
+              observations,
+              serial: ++this.serial,
+            },
+            now(),
+            observedAt,
+            identity,
+          );
+        } catch (error) {
+          visionFailure = error;
+          // A failed Vision attempt is not an accepted observation. Chat may
+          // consume a still-eligible earlier result, according to policy.
+        } finally {
+          cadence.finish();
+        }
+      })();
+      this.visionTask = task;
+      void task.finally(() => {
+        if (this.visionTask === task) this.visionTask = null;
+      });
+    }
+
+    if (visionOnly || !this.chatCadence.start(now())) return null;
+    try {
+      if (policy.execution === 'sequential' && this.visionTask) {
+        if (policy.strictWait) {
+          await this.visionTask;
+        } else if (policy.maximumWaitMs > 0) {
+          await Promise.race([
+            this.visionTask,
+            new Promise<void>((resolve) => setTimeout(resolve, policy.maximumWaitMs)),
+          ]);
+        }
+      }
+      if (signal.aborted || generation !== this.generation) return null;
+      const selected = this.latest.eligible(now(), policy.maximumAgeMs, identity);
+      if (policy.strictWait && !selected) {
+        if (visionFailure) throw visionFailure;
+        return null;
+      }
+      const events = selected?.serial !== this.consumedSerial ? (selected?.events ?? []) : [];
+      const observations = selected?.observations ?? [];
+      const chatRequest = requests.chat(events, observations);
+      const adapter: UnifiedInferenceAdapter = {
+        ...adapters.chat,
+        complete: (_request, activeSignal, observer) =>
+          adapters.chat.complete(chatRequest, activeSignal, observer),
+      };
+      const output = await this.chatCoordinator.execute(
+        {
+          ...snapshot,
+          frames: [],
+          videoWindow: undefined,
+          recentEvents: [...(snapshot.recentEvents ?? []), ...events],
+          observations: [...(snapshot.observations ?? []), ...observations],
+        },
+        adapter,
+        { signal, beforeAccept },
+      );
+      if (signal.aborted || generation !== this.generation) return null;
+      if (selected) this.consumedSerial = selected.serial;
+      return {
+        visionEvents: events,
+        observations,
+        parsed: output.parsed,
+        accepted: {
+          events: [...events, ...output.accepted.events],
+          messages: output.accepted.messages,
+        },
+      };
+    } finally {
+      this.chatCadence.finish();
+    }
+  }
 }
 
 export class SequentialSplitInference {

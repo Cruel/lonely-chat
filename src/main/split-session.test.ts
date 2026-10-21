@@ -73,6 +73,67 @@ async function run(kind: 'live' | 'recorded', failure?: 'vision' | 'chat') {
   await flushMicrotasks();
   return { session, clock, messages, observer, chatter };
 }
+it('runs remote asynchronous Vision independently while Chat is still busy', async () => {
+  const clock = new FakeClock();
+  const session = new SessionController(new ChatService(), undefined, clock, {
+    cycleIntervalMs: 1500,
+  });
+  let finishChat!: (output: typeof chat) => void;
+  const chatPending = new Promise<typeof chat>((resolve) => {
+    finishChat = resolve;
+  });
+  const observer = transport(visual);
+  const chatter: UnifiedInferenceAdapter = {
+    capabilities: { images: false },
+    complete: vi.fn(async () => {
+      const result = await chatPending;
+      return { raw: result, normalized: result };
+    }),
+  };
+  session.configureSplit(() => ({ vision: observer, chat: chatter }), false);
+  session.start(
+    'Watch',
+    'remote',
+    'chat',
+    { inputMode: 'live', publishToOverlay: true },
+    undefined,
+    undefined,
+    {
+      ...profile,
+      values: {
+        ...profile.values,
+        architecture: {
+          execution: 'asynchronous',
+          hybridMaxImages: 0,
+          visionIntervalMs: 100,
+          chatIntervalMs: 1500,
+          maximumWaitMs: 0,
+          maximumAgeMs: 5000,
+          strictWait: false,
+        },
+      },
+    },
+  );
+  await flushMicrotasks();
+  expect(chatter.complete).toHaveBeenCalledTimes(1);
+  expect(observer.complete).toHaveBeenCalledTimes(1);
+  clock.advance(100);
+  await flushMicrotasks();
+  expect(observer.complete).toHaveBeenCalledTimes(2);
+  clock.advance(100);
+  await flushMicrotasks();
+  clock.advance(100);
+  await flushMicrotasks();
+  expect(observer.complete).toHaveBeenCalledTimes(4);
+  expect(chatter.complete).toHaveBeenCalledTimes(1);
+  finishChat(chat);
+  await flushMicrotasks();
+  session.stop();
+  clock.advance(10000);
+  await flushMicrotasks();
+  expect(observer.complete).toHaveBeenCalledTimes(4);
+});
+
 for (const kind of ['live', 'recorded'] as const) {
   it(`executes the validated sequential Split pipeline for ${kind} runs`, async () => {
     const result = await run(kind);

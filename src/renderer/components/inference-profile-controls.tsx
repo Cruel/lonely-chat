@@ -40,6 +40,21 @@ export function InferenceProfileControls({
   const [contextDefaults, setContextDefaults] = useState('{}');
   const [execution, setExecution] = useState<'sequential' | 'asynchronous'>('sequential');
   const [hybridMaxImages, setHybridMaxImages] = useState(0);
+  const [scheduling, setScheduling] = useState({
+    visionIntervalMs: 1500,
+    chatIntervalMs: 1500,
+    maximumWaitMs: 10000,
+    maximumAgeMs: 30000,
+    strictWait: true,
+  });
+  const loadScheduling = (architecture: InferenceProfileValues['architecture']) =>
+    setScheduling({
+      visionIntervalMs: architecture?.visionIntervalMs ?? 1500,
+      chatIntervalMs: architecture?.chatIntervalMs ?? 1500,
+      maximumWaitMs: architecture?.maximumWaitMs ?? 10000,
+      maximumAgeMs: architecture?.maximumAgeMs ?? 30000,
+      strictWait: architecture?.strictWait ?? architecture?.execution !== 'asynchronous',
+    });
   const [error, setError] = useState<string | null>(null);
 
   const reload = async () => {
@@ -80,6 +95,7 @@ export function InferenceProfileControls({
     setContextDefaults(JSON.stringify(selected.values.contextDefaults ?? {}, null, 2));
     setExecution(selected.values.architecture?.execution ?? 'sequential');
     setHybridMaxImages(selected.values.architecture?.hybridMaxImages ?? 0);
+    loadScheduling(selected.values.architecture);
   }, [selectedId, selectedRevision, revisions]);
 
   const load = (profile: InferenceProfile | null) => {
@@ -92,6 +108,7 @@ export function InferenceProfileControls({
       setContextDefaults(JSON.stringify(profile.values.contextDefaults ?? {}, null, 2));
       setExecution(profile.values.architecture?.execution ?? 'sequential');
       setHybridMaxImages(profile.values.architecture?.hybridMaxImages ?? 0);
+      loadScheduling(profile.values.architecture);
     }
   };
   const save = async () => {
@@ -102,7 +119,11 @@ export function InferenceProfileControls({
         topology,
         roles: Object.fromEntries(required[topology].map((role) => [role, roles[role]])),
         stageDefaults: JSON.parse(defaults) as InferenceProfileValues['stageDefaults'],
-        architecture: { execution, hybridMaxImages: topology === 'hybrid' ? hybridMaxImages : 0 },
+        architecture: {
+          execution,
+          hybridMaxImages: topology === 'hybrid' ? hybridMaxImages : 0,
+          ...scheduling,
+        },
         contextDefaults: JSON.parse(contextDefaults) as InferenceProfileValues['contextDefaults'],
       };
       const result = await api.saveInferenceProfile({
@@ -199,6 +220,7 @@ export function InferenceProfileControls({
               setContextDefaults('{}');
               setExecution('sequential');
               setHybridMaxImages(0);
+              loadScheduling(undefined);
             }}
             className="rounded border border-zinc-600 px-2 py-1"
           >
@@ -224,7 +246,7 @@ export function InferenceProfileControls({
               className="mt-1 w-full rounded border border-zinc-600 bg-zinc-900 p-2"
             >
               <option value="unified">Unified</option>
-              <option value="split">Split (vision → chat, sequential)</option>
+              <option value="split">Split (Vision → Chat)</option>
               <option value="hybrid">Hybrid (role-based, staged)</option>
             </select>
           </label>
@@ -235,13 +257,65 @@ export function InferenceProfileControls({
                 aria-label="Stage execution"
                 disabled={disabled}
                 value={execution}
-                onChange={(e) => setExecution(e.target.value as typeof execution)}
+                onChange={(e) => {
+                  setExecution(e.target.value as typeof execution);
+                  setScheduling((current) => ({
+                    ...current,
+                    strictWait: e.target.value === 'sequential',
+                  }));
+                }}
                 className="mt-1 w-full rounded border border-zinc-600 bg-zinc-900 p-2"
               >
                 <option value="sequential">Sequential</option>
                 <option value="asynchronous">Asynchronous</option>
               </select>
             </label>
+          )}
+          {topology === 'split' && (
+            <div className="space-y-2 rounded border border-zinc-700 p-2">
+              {(
+                [
+                  ['visionIntervalMs', 'Vision minimum interval (ms)'],
+                  ['chatIntervalMs', 'Chat minimum interval (ms)'],
+                  ['maximumWaitMs', 'Maximum Vision wait (ms)'],
+                  ['maximumAgeMs', 'Completed Vision maximum age (ms)'],
+                ] as const
+              ).map(([key, label]) => (
+                <label className="block" key={key}>
+                  {label}
+                  <input
+                    aria-label={label}
+                    type="number"
+                    min={0}
+                    max={600000}
+                    disabled={disabled}
+                    value={scheduling[key]}
+                    onChange={(e) =>
+                      setScheduling((current) => ({
+                        ...current,
+                        [key]: Number(e.target.value),
+                      }))
+                    }
+                    className="mt-1 w-full rounded border border-zinc-600 bg-zinc-900 p-2"
+                  />
+                </label>
+              ))}
+              <label className="flex items-center gap-2">
+                <input
+                  aria-label="Strict Vision wait"
+                  type="checkbox"
+                  disabled={disabled}
+                  checked={scheduling.strictWait}
+                  onChange={(e) =>
+                    setScheduling((current) => ({
+                      ...current,
+                      strictWait: e.target.checked,
+                    }))
+                  }
+                />
+                Require eligible Vision result before Chat
+              </label>
+            </div>
           )}
           {topology === 'hybrid' && (
             <label className="block">

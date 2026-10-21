@@ -27,6 +27,11 @@ export interface InferenceProfileValues {
   readonly architecture?: {
     readonly execution: 'sequential' | 'asynchronous';
     readonly hybridMaxImages: number;
+    readonly visionIntervalMs?: number;
+    readonly chatIntervalMs?: number;
+    readonly maximumWaitMs?: number;
+    readonly maximumAgeMs?: number;
+    readonly strictWait?: boolean;
   };
 }
 export interface InferenceProfile {
@@ -135,7 +140,36 @@ export function validateProfileValues(
   let architecture: InferenceProfileValues['architecture'];
   if (value.architecture !== undefined) {
     const config = object(value.architecture, 'Inference Profile architecture');
-    exact(config, ['execution', 'hybridMaxImages'], 'architecture');
+    exact(
+      config,
+      [
+        'execution',
+        'hybridMaxImages',
+        'visionIntervalMs',
+        'chatIntervalMs',
+        'maximumWaitMs',
+        'maximumAgeMs',
+        'strictWait',
+      ],
+      'architecture',
+    );
+    for (const key of [
+      'visionIntervalMs',
+      'chatIntervalMs',
+      'maximumWaitMs',
+      'maximumAgeMs',
+    ] as const) {
+      if (
+        config[key] !== undefined &&
+        (typeof config[key] !== 'number' ||
+          !Number.isSafeInteger(config[key]) ||
+          (config[key] as number) < 0 ||
+          (config[key] as number) > 600000)
+      )
+        throw new Error(`Invalid ${key} stage scheduling limit.`);
+    }
+    if (config.strictWait !== undefined && typeof config.strictWait !== 'boolean')
+      throw new Error('Invalid strict-wait policy.');
     if (
       (config.execution !== 'sequential' && config.execution !== 'asynchronous') ||
       typeof config.hybridMaxImages !== 'number' ||
@@ -148,6 +182,17 @@ export function validateProfileValues(
     architecture = {
       execution: config.execution,
       hybridMaxImages: config.hybridMaxImages,
+      ...(config.visionIntervalMs !== undefined
+        ? { visionIntervalMs: config.visionIntervalMs as number }
+        : {}),
+      ...(config.chatIntervalMs !== undefined
+        ? { chatIntervalMs: config.chatIntervalMs as number }
+        : {}),
+      ...(config.maximumWaitMs !== undefined
+        ? { maximumWaitMs: config.maximumWaitMs as number }
+        : {}),
+      ...(config.maximumAgeMs !== undefined ? { maximumAgeMs: config.maximumAgeMs as number } : {}),
+      ...(config.strictWait !== undefined ? { strictWait: config.strictWait as boolean } : {}),
     };
   }
   return {

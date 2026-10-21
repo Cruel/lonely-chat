@@ -6,7 +6,11 @@ import { FakeInference, type InferenceInput, type InferenceProvider } from './fa
 import { clipSimulationWindow } from './simulation-cycle';
 import { SimulationExecutionError } from './simulation-execution';
 import { InferenceCoordinator, type UnifiedInferenceAdapter } from './inference-coordinator';
-import { SequentialSplitInference, type SplitAdapters } from './split-inference';
+import {
+  ScheduledSplitInference,
+  type SplitAdapters,
+  type SplitScheduling,
+} from './split-inference';
 import { fixtureInferenceAdapter, llamaCppAdapter } from './unified-inference-adapters';
 import { InferenceHistory, type CycleInput } from './inference-history';
 import { VideoFrameBuffer } from './video-frame-buffer';
@@ -60,7 +64,9 @@ export class SessionController {
   private splitUsesLocal = false;
   private activeProfile: import('../shared/inference-profile-contract').InferenceProfile | null =
     null;
-  private readonly splitCoordinator = new SequentialSplitInference();
+  private readonly splitCoordinator = new ScheduledSplitInference();
+  private splitVisionTimer: unknown = null;
+  private splitVisionAbort: AbortController | null = null;
   private readonly scheduler: ChatScheduler;
   private readonly history: InferenceHistory;
   private readonly video: VideoFrameBuffer;
@@ -337,6 +343,8 @@ export class SessionController {
     this.video.configure(this.runPreferences, this.clock.wallNow());
     this.trace.closePresentation(this.runId);
     this.epoch++;
+    this.stopSplitVisionLoop();
+    this.splitCoordinator.reset();
     this.runId++;
     this.history.reset(this.clock.wallNow());
     this.chatStartSequence = this.chat.snapshot().sequence;
@@ -533,6 +541,8 @@ export class SessionController {
     }
     if (this.scheduler.pendingCount !== 0) return;
     this.trace.closePresentation(this.runId);
+    this.stopSplitVisionLoop();
+    this.splitCoordinator.cancelActive();
     this.setState({ phase: 'stopped', recordedPlayback: 'completed', retryAttempt: 0 });
     this.scheduler.stop();
     this.shutdownPromise = this.stopProvider(this.activeInference);
@@ -555,6 +565,7 @@ export class SessionController {
     this.switchAbort = null;
     this.abort?.abort();
     this.coordinator.cancelActive();
+    this.stopSplitVisionLoop();
     this.splitCoordinator.cancelActive();
     const provider = this.activeInference;
     this.shutdownPromise = this.stopProvider(provider);
@@ -745,6 +756,97 @@ export class SessionController {
     );
   }
 
+  private splitScheduling(): SplitScheduling {
+    const architecture = this.activeProfile?.values.architecture;
+    const execution = this.splitUsesLocal
+      ? 'sequential'
+      : (architecture?.execution ?? 'sequential');
+    return {
+      execution,
+      visionIntervalMs: architecture?.visionIntervalMs ?? this.runPreferences.cycleIntervalMs,
+      chatIntervalMs: architecture?.chatIntervalMs ?? this.runPreferences.cycleIntervalMs,
+      maximumWaitMs: architecture?.maximumWaitMs ?? 10000,
+      maximumAgeMs: architecture?.maximumAgeMs ?? 30000,
+      strictWait: this.splitUsesLocal || (architecture?.strictWait ?? execution === 'sequential'),
+    };
+  }
+
+  private stopSplitVisionLoop(): void {
+    this.splitVisionAbort?.abort();
+    this.splitVisionAbort = null;
+    if (this.splitVisionTimer !== null) this.clock.clearTimeout(this.splitVisionTimer);
+    this.splitVisionTimer = null;
+  }
+
+  /** Remote async Vision is sampled on its own clock, even while Chat is busy. */
+  private startSplitVisionLoop(epoch: number): void {
+    if (this.splitVisionAbort || !this.splitAdapters) return;
+    const policy = this.splitScheduling();
+    if (policy.execution !== 'asynchronous') return;
+    const abort = new AbortController();
+    this.splitVisionAbort = abort;
+    const tick = () => {
+      this.splitVisionTimer = null;
+      if (!this.active(epoch) || abort.signal.aborted || this.eofRequested) return;
+      if (this.pausedAt === null) {
+        const cycle = this.state.cycle + 1;
+        const now = this.observationNow();
+        const chat = this.chat
+          .snapshot()
+          .messages.filter(
+            (message) => Number(message.id.slice('chat-'.length)) > this.chatStartSequence,
+          )
+          .map((message) => ({
+            ...message,
+            presentedAt: this.observationTime(message.presentedAt),
+          }));
+        const snapshot = this.history.snapshot(
+          this.context,
+          cycle,
+          now,
+          this.playbackWindow(),
+          chat,
+          this.audience?.snapshot().members,
+        );
+        const media = this.video.sample(
+          snapshot.boundary.fromMs,
+          now,
+          cycle === 1,
+          this.runPreferences.videoMaxFrames,
+        );
+        const input: CycleInput = {
+          ...snapshot,
+          captureSelection: {
+            ...snapshot.captureSelection!,
+            frames: media.frames.map(
+              (frame, index) => `${frame.sourceId}:${frame.observedAt}:${index}`,
+            ),
+          },
+          chatActivity: this.runPreferences.chatActivity,
+          frames: media.frames,
+          videoWindow: {
+            fromMs: media.fromMs,
+            throughMs: media.throughMs,
+            truncated: media.truncated,
+          },
+          seed: deriveInferenceSeed(this.state.sessionSeed!, 'cycle', cycle, 1),
+        };
+        void this.splitCoordinator.execute(
+          input,
+          this.splitAdapters!(input),
+          abort.signal,
+          () => this.waitUntilResumed(),
+          this.activeProfile?.values.stageDefaults ?? {},
+          policy,
+          () => this.clock.now(),
+          true,
+        );
+      }
+      this.splitVisionTimer = this.clock.setTimeout(tick, Math.max(50, policy.visionIntervalMs));
+    };
+    tick();
+  }
+
   private runCycle(epoch: number): void {
     if (!this.active(epoch)) return;
     if (this.pausedAt !== null) return;
@@ -798,7 +900,11 @@ export class SessionController {
       warning: null,
       adaptiveFrameLimit: this.state.mode === 'native' ? plan.frameLimit : null,
       effectiveCycleMs:
-        this.state.mode === 'native' ? plan.minimumIntervalMs : this.runPreferences.cycleIntervalMs,
+        this.state.inferenceProfile?.topology === 'split'
+          ? this.splitScheduling().chatIntervalMs
+          : this.state.mode === 'native'
+            ? plan.minimumIntervalMs
+            : this.runPreferences.cycleIntervalMs,
       adaptationReason: this.state.mode === 'native' ? plan.reason : null,
     });
     const cycleStarted = this.clock.now();
@@ -885,6 +991,7 @@ export class SessionController {
         await this.waitUntilResumed();
         if (!this.active(epoch) || abort.signal.aborted) return undefined;
         if (this.state.phase === 'starting') this.setState({ phase: 'running' });
+        if (this.state.inferenceProfile?.topology === 'split') this.startSplitVisionLoop(epoch);
         inferenceStarted = this.clock.now();
         this.setState({
           effectiveSeed: seed,
@@ -924,8 +1031,11 @@ export class SessionController {
             this.splitAdapters(effectiveInput),
             abort.signal,
             () => this.waitUntilResumed(),
-            this.activeProfile?.values.stageDefaults,
+            this.activeProfile?.values.stageDefaults ?? {},
+            this.splitScheduling(),
+            () => this.clock.now(),
           );
+          if (!result) return undefined;
           inferenceCompleted = this.clock.now();
           receivedOutput = true;
           rawOutput = result.parsed;
@@ -953,7 +1063,24 @@ export class SessionController {
       .then(async (execution) => {
         await this.waitUntilResumed();
         if (!this.active(epoch) || abort.signal.aborted) return;
-        if (!execution) return;
+        if (!execution) {
+          this.trace.update(traceId, {
+            stage: 'cancelled',
+            durationMs: Math.max(0, this.clock.now() - traceStarted),
+          });
+          this.abort = null;
+          this.attemptInFlight = false;
+          if (this.eofRequested) this.advanceRecordedEof();
+          else
+            this.scheduleCycle(
+              epoch,
+              this.state.inferenceProfile?.topology === 'split'
+                ? this.splitScheduling().chatIntervalMs
+                : this.runPreferences.cycleIntervalMs,
+              () => this.runCycle(epoch),
+            );
+          return;
+        }
         const { parsed: result, accepted } = execution;
         this.trace.update(traceId, { stage: 'accepted', accepted });
         const resolved = accepted.messages;
@@ -1023,9 +1150,11 @@ export class SessionController {
         }
         const delayMs = Math.max(
           0,
-          (this.state.mode === 'native'
-            ? nextPlan.minimumIntervalMs
-            : this.runPreferences.cycleIntervalMs) -
+          (this.state.inferenceProfile?.topology === 'split'
+            ? this.splitScheduling().chatIntervalMs
+            : this.state.mode === 'native'
+              ? nextPlan.minimumIntervalMs
+              : this.runPreferences.cycleIntervalMs) -
             (this.clock.now() - cycleStarted),
         );
         if (this.eofRequested) this.advanceRecordedEof();
@@ -1091,7 +1220,11 @@ export class SessionController {
           this.runAttempt(epoch, input, cycleStarted, attempt + 1, diagnosticToken);
         this.attemptInFlight = true; // Retry is accepted work, including during EOF draining.
         this.retryWork = retry;
-        this.scheduleCycle(epoch, RETRY_BASE_MS * 2 ** (attempt - 1), () => {
+        const stageDelay =
+          this.state.inferenceProfile?.topology === 'split'
+            ? this.splitCoordinator.nextChatDelay(this.clock.now())
+            : 0;
+        this.scheduleCycle(epoch, Math.max(RETRY_BASE_MS * 2 ** (attempt - 1), stageDelay), () => {
           this.retryWork = null;
           retry();
         });
