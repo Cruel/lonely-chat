@@ -41,7 +41,7 @@ interface Manifest {
   request: unknown;
   input: unknown;
   frames: StoredFrame[];
-  sourceResult?: SavedCaseSourceResult;
+  sourceResult: SavedCaseSourceResult;
 }
 function obj(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value))
@@ -218,6 +218,11 @@ function validateManifest(value: unknown): Manifest {
   const record = obj(value);
   if (record.version !== VERSION || !Array.isArray(record.frames) || record.frames.length > 32)
     throw new Error('Unsupported saved inference case format.');
+  // Imported evidence is never a bag for arbitrary local, connection or
+  // credential metadata. Fail closed rather than persisting unknown fields.
+  if (Object.keys(record).some((key) =>
+    !['version', 'summary', 'request', 'input', 'frames', 'sourceResult'].includes(key)))
+    throw new Error('Unsupported saved case metadata field.');
   const summary = obj(record.summary);
   validId(summary.id);
   validateModel(summary.modelId);
@@ -244,8 +249,20 @@ function validateManifest(value: unknown): Manifest {
   const input = obj(record.input);
   if (typeof input.context !== 'string' || !Number.isSafeInteger(input.cycle))
     throw new Error('Saved case original input is incomplete.');
-  if (record.sourceResult !== undefined) {
+  {
+    // Canonical exact cases always carry the source attempt outcome. Missing
+    // evidence is corruption, never an inferred successful empty response.
+    if (record.sourceResult === undefined)
+      throw new Error('Missing saved case source result.');
     const evidence = obj(record.sourceResult);
+    if (Object.keys(evidence).some((key) => ![
+      'stage', 'errorStage', 'error', 'durationMs', 'usage',
+      'role', 'profileRevision', 'observedAt', 'availableAt', 'dependsOn',
+      'sourceFrameIds', 'observationRefs', 'presentationClosed', 'requestProvenance',
+      'rawNativeOutput', 'normalizedResult', 'parsedResult', 'accepted',
+      'scheduled', 'presented', 'transportError', 'omitted',
+    ].includes(key)))
+      throw new Error('Unsupported saved case outcome evidence field.');
     if (
       (evidence.role !== undefined && !['unified', 'vision', 'chat', 'memory'].includes(String(evidence.role))) ||
       (evidence.profileRevision !== undefined && evidence.profileRevision !== null &&
@@ -322,6 +339,48 @@ function validateManifest(value: unknown): Manifest {
   )
     throw new Error('Corrupt case frame references or seed.');
   return value as Manifest;
+}
+
+/** Child experiments use one current evidence shape. Incomplete historical
+ * children are unavailable rather than silently interpreted as empty output. */
+function validateStoredChild(value: unknown, parentId: string, frameCount: number): SavedCaseChild {
+  const child = obj(value);
+  validId(child.id);
+  if (
+    Object.keys(child).some((key) => ![
+      'id', 'parentCaseId', 'createdAt', 'modelId', 'seed', 'errorStage', 'error',
+      'durationMs', 'frameIndices', 'outcome',
+    ].includes(key)) ||
+    child.parentCaseId !== parentId ||
+    typeof child.createdAt !== 'string' ||
+    !Number.isFinite(Date.parse(child.createdAt)) ||
+    typeof child.modelId !== 'string' || !child.modelId || child.modelId.length > 200 ||
+    !Number.isSafeInteger(child.seed) || (child.seed as number) < 0 ||
+    (child.seed as number) > 2147483647 ||
+    !Number.isFinite(child.durationMs) || (child.durationMs as number) < 0 ||
+    (child.error !== null && typeof child.error !== 'string') ||
+    (child.errorStage !== null &&
+      !['transport', 'normalization', 'validation'].includes(String(child.errorStage))) ||
+    !Array.isArray(child.frameIndices) || child.frameIndices.length > 32 ||
+    child.frameIndices.some((index: unknown) =>
+      !Number.isSafeInteger(index) || (index as number) < 0 || (index as number) >= frameCount) ||
+    new Set(child.frameIndices).size !== child.frameIndices.length
+  )
+    throw new Error('Corrupt imported case child.');
+  if (!child.outcome) throw new Error('Corrupt imported case child.');
+  const outcome = obj(child.outcome);
+  if (
+    Object.keys(outcome).some((key) => ![
+      'submittedRequest', 'rawNativeOutput', 'normalizedResult', 'parsedResult',
+      'accepted', 'usage', 'omitted',
+    ].includes(key)) ||
+    ['submittedRequest', 'rawNativeOutput', 'normalizedResult', 'parsedResult', 'accepted', 'usage']
+      .some((key) => !Object.hasOwn(outcome, key)) ||
+    (outcome.omitted !== undefined && typeof outcome.omitted !== 'string') ||
+    Buffer.byteLength(json(outcome)) > 2 * 1024 * 1024 + 1024
+  )
+    throw new Error('Invalid imported child request or evidence.');
+  return child as unknown as SavedCaseChild;
 }
 
 export class SavedInferenceCases {
@@ -469,7 +528,7 @@ export class SavedInferenceCases {
   async get(id: string): Promise<SavedCaseDetail> {
     const manifest = await this.read(id);
     const blobs = await this.loadImages(manifest);
-    const children = await this.children(id);
+    const children = await this.children(id, manifest.frames.length);
     const frames: SavedCaseFrame[] = manifest.frames.map((frame) => ({
       ...frame,
       dataUrl: 'data:image/jpeg;base64,' + blobs.get(frame.ref.slice(12))!.toString('base64'),
@@ -480,12 +539,11 @@ export class SavedInferenceCases {
       input: structuredClone(manifest.input),
       frames,
       children,
-      ...(manifest.sourceResult === undefined
-        ? {}
-        : { sourceResult: structuredClone(manifest.sourceResult) }),
+      sourceResult: structuredClone(manifest.sourceResult),
     };
   }
-  async children(id: string): Promise<SavedCaseChild[]> {
+  async children(id: string, frameCount?: number): Promise<SavedCaseChild[]> {
+    const totalFrames = frameCount ?? (await this.read(id)).frames.length;
     const entries = await readdir(this.file(id)).catch((error: NodeJS.ErrnoException) => {
       if (error.code === 'ENOENT') return [];
       throw error;
@@ -496,8 +554,8 @@ export class SavedInferenceCases {
       try {
         const bytes = await readFile(path.join(this.file(id), name));
         if (bytes.length > 3 * 1024 * 1024) continue;
-        const child = JSON.parse(bytes.toString('utf8')) as SavedCaseChild;
-        if (child.parentCaseId === id && ID.test(child.id)) list.push(child);
+        const child = validateStoredChild(JSON.parse(bytes.toString('utf8')), id, totalFrames);
+        list.push(child);
       } catch {
         /* A torn child write must not hide the original immutable case. */
       }
@@ -600,7 +658,7 @@ export class SavedInferenceCases {
     if (entries.length >= MAX_CHILDREN)
       throw new Error('Saved case child experiment limit reached.');
     const body = obj(result.submittedRequest);
-    const child: SavedCaseChild = {
+    const child: Omit<SavedCaseChild, 'outcome'> = {
       id: randomUUID(),
       parentCaseId: id,
       createdAt: new Date().toISOString(),
@@ -697,42 +755,14 @@ export class SavedInferenceCases {
       throw new Error('Invalid imported case child list.');
     const seenChildren = new Set<string>();
     const children: SavedCaseChild[] = childrenRaw.map((item) => {
-      const child = obj(item);
-      validId(child.id);
-      if (
-        seenChildren.has(child.id) ||
-        child.parentCaseId !== original.id ||
-        typeof child.createdAt !== 'string' ||
-        typeof child.modelId !== 'string' ||
-        child.modelId.length > 200 ||
-        !Number.isSafeInteger(child.seed) ||
-        !Number.isFinite(child.durationMs) ||
-        (child.durationMs as number) < 0 ||
-        (child.error !== null && typeof child.error !== 'string') ||
-        (child.errorStage !== null && typeof child.errorStage !== 'string') ||
-        (child.frameIndices !== undefined &&
-          (!Array.isArray(child.frameIndices) ||
-            child.frameIndices.some(
-              (index: unknown) =>
-                !Number.isInteger(index) ||
-                (index as number) < 0 ||
-                (index as number) >= manifest.frames.length,
-            )))
-      )
-        throw new Error('Corrupt imported case child.');
-      if (child.outcome !== undefined) {
-        const outcome = obj(child.outcome);
-        if (
-          Buffer.byteLength(json(outcome)) > 2 * 1024 * 1024 + 1024 ||
-          !Object.hasOwn(outcome, 'submittedRequest') ||
-          imageUrls(outcome.submittedRequest).some(
-            (ref) => !REF.test(ref) || !blobs.has(ref.slice(12)),
-          )
-        )
-          throw new Error('Invalid imported child request or evidence.');
-      }
-      seenChildren.add(child.id as string);
-      return { ...child, id: randomUUID(), parentCaseId: nextId } as unknown as SavedCaseChild;
+      const child = validateStoredChild(item, original.id, manifest.frames.length);
+      if (seenChildren.has(child.id)) throw new Error('Corrupt imported case child.');
+      if (imageUrls(child.outcome.submittedRequest).some(
+        (ref) => !REF.test(ref) || !blobs.has(ref.slice(12)),
+      ))
+        throw new Error('Invalid imported child request or evidence.');
+      seenChildren.add(child.id);
+      return { ...child, id: randomUUID(), parentCaseId: nextId };
     });
     return this.commit(
       {

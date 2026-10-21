@@ -24,53 +24,15 @@ export class PreferencesStore {
         throw new Error('Invalid preferences document.');
       }
       const document = raw as Record<string, unknown>;
-      if (document.version === 1) {
-        // Migrate existing cycle-only settings without losing the user's selected pace.
-        const legacy = document.simulation as Record<string, unknown>;
-        if (!legacy || Object.keys(legacy).length !== 1) {
-          throw new Error('Invalid legacy simulation preferences.');
-        }
-        return validatePreferences(legacy);
-      }
-      if (![2, 3, 4, 5, 6, 7, 8, VERSION].includes(document.version as number)) {
+      if (document.version !== VERSION) {
         throw new Error('Unsupported preferences version.');
       }
       const validated = validatePreferences(document.simulation);
-      // Historical versions require their entire original schema, with no newer fields.
-      // Migrations append only new defaults and preserve all existing customized values.
-      const fields = [
-        'cycleIntervalMs',
-        'baselineMs',
-        'historyMaxCount',
-        'historyMaxAgeMs',
-        ...(Number(document.version) >= 3 ? ['reasoningEnabled'] : []),
-        ...(Number(document.version) >= 4 ? ['inferenceTimeoutMs'] : []),
-        ...(Number(document.version) >= 5
-          ? [
-              'videoCaptureIntervalMs',
-              'videoCoverageMs',
-              'videoMinFrames',
-              'videoMaxFrames',
-              'videoSamplingStrategy',
-            ]
-          : []),
-        ...(Number(document.version) >= 6 ? ['audienceCount', 'chatActivity'] : []),
-        ...(Number(document.version) >= 7
-          ? [
-              'ramBudgetMiB',
-              'vramBudgetMiB',
-              'gpuComputeTargetPercent',
-              'computeBackend',
-              'cpuThreads',
-              'contextTokens',
-              'gpuOffloadLayers',
-            ]
-          : []),
-        ...(Number(document.version) >= 8 ? ['imageMaxTokens'] : []),
-        ...(Number(document.version) >= 9 ? ['videoCaptureMaxWidth', 'videoCaptureMaxHeight'] : []),
-      ];
-      const keys = Object.keys(document.simulation as Record<string, unknown>);
-      if (keys.length !== fields.length || fields.some((field) => !keys.includes(field))) {
+      // Persisted state must be a complete current snapshot, not a partial
+      // renderer edit or an obsolete schema silently filled with defaults.
+      const actual = Object.keys(document.simulation as Record<string, unknown>);
+      const required = Object.keys(DEFAULT_PREFERENCES);
+      if (actual.length !== required.length || required.some((key) => !actual.includes(key))) {
         throw new Error('Incomplete simulation preferences.');
       }
       return validated;

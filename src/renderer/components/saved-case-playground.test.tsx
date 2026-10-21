@@ -51,6 +51,12 @@ const original: SavedCaseDetail = {
     response_format: { type: 'json_object', schema: { type: 'object' } },
   },
   children: [],
+  sourceResult: {
+    stage: 'accepted', errorStage: null, error: null, durationMs: 25, usage: null,
+    rawNativeOutput: null, normalizedResult: null, parsedResult: null,
+    accepted: { events: [], messages: [] }, scheduled: null, presented: null,
+    transportError: null,
+  },
 };
 
 it('opens saved case in Simulation Playground and forks editable content without altering source', async () => {
@@ -184,10 +190,12 @@ it('reopens persisted child outcomes without requiring a running model', async (
         durationMs: 12,
         errorStage: null,
         error: null,
+        frameIndices: [],
         outcome: {
           submittedRequest: { seed: 41 },
           rawNativeOutput: { response: 'saved reply' },
           normalizedResult: {},
+          parsedResult: null,
           accepted: { events: [], messages: [] },
           usage: null,
         },

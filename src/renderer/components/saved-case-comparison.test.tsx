@@ -104,6 +104,7 @@ const fixture: SavedCaseDetail = {
         submittedRequest: request(6, 'broken input', []),
         rawNativeOutput: { choices: [{ message: { content: 'not json' } }] },
         normalizedResult: null,
+        parsedResult: null,
         accepted: null,
         usage: null,
       },
@@ -188,10 +189,15 @@ it('automatically compares the first child created while a case is open', async 
   );
 });
 
-it('identifies unavailable original outcomes from old saved cases, and explicitly omitted child output', () => {
+it('distinguishes explicitly omitted source and child output from successful responses', () => {
   const oldCase: SavedCaseDetail = {
     ...fixture,
-    sourceResult: undefined,
+    sourceResult: {
+      ...fixture.sourceResult,
+      omitted: 'Original outcome exceeded the 2 MiB evidence storage limit.',
+      rawNativeOutput: null, normalizedResult: null, parsedResult: null,
+      accepted: null,
+    },
     children: [
       {
         ...fixture.children[0],
@@ -207,6 +213,6 @@ it('identifies unavailable original outcomes from old saved cases, and explicitl
     ],
   };
   render(<SavedCaseComparison source={oldCase} />);
-  expect(screen.getByText(/Original outcome was not recorded/)).toBeTruthy();
+  expect(screen.getByText(/2 MiB evidence storage limit/)).toBeTruthy();
   expect(screen.getByText(/2 MiB persistence limit/)).toBeTruthy();
 });

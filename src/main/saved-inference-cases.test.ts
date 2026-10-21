@@ -175,14 +175,31 @@ describe('immutable exact inference cases', () => {
     expect((await cases.get(copy.id)).frames[0].dataUrl).toEqual(large);
   });
 
-  it('still opens legacy saved cases with no original outcome rather than inventing one', async () => {
+  it('rejects injected private fields in exact case imports without changing existing evidence', async () => {
+    const { cases } = await setup();
+    const saved = await cases.save(attempt);
+    const archive = JSON.parse(await cases.exportPortable(saved.id));
+    archive.manifest.sourceResult.privateCredential = 'must-never-persist';
+    await expect(cases.importPortable(JSON.stringify(archive))).rejects.toThrow(
+      /Unsupported saved case outcome evidence field/,
+    );
+    delete archive.manifest.sourceResult.privateCredential;
+    archive.manifest.remoteConnection = { token: 'must-never-persist' };
+    await expect(cases.importPortable(JSON.stringify(archive))).rejects.toThrow(
+      /Unsupported saved case metadata field/,
+    );
+    expect((await cases.get(saved.id)).sourceResult.stage).toBe(attempt.stage);
+    expect(await cases.list()).toHaveLength(1);
+  });
+
+  it('rejects obsolete saved cases missing required original outcome evidence', async () => {
     const { root, cases } = await setup();
     const saved = await cases.save(attempt);
     const file = path.join(root, 'saved-inference-cases', saved.id, 'case.json');
     const manifest = JSON.parse(await readFile(file, 'utf8'));
     delete manifest.sourceResult;
     await writeFile(file, JSON.stringify(manifest));
-    expect((await new SavedInferenceCases(root).get(saved.id)).sourceResult).toBeUndefined();
+    await expect(new SavedInferenceCases(root).get(saved.id)).rejects.toThrow(/source result/i);
   });
 
   it('executes a fork with exact captured input and edited seed/prompt/schema while preserving immutable original', async () => {
@@ -386,6 +403,26 @@ describe('immutable exact inference cases', () => {
     expect((await cases.get(original.id)).children[0].id).toBe(child.id);
     const tampered = JSON.parse(archive);
     tampered.children[0].parentCaseId = '../other';
+    await expect(cases.importPortable(JSON.stringify(tampered))).rejects.toThrow(
+      /Corrupt imported case child/,
+    );
+    tampered.children[0].parentCaseId = original.id;
+    delete tampered.children[0].outcome;
+    await expect(cases.importPortable(JSON.stringify(tampered))).rejects.toThrow(
+      /Corrupt imported case child|Invalid imported child/,
+    );
+    tampered.children[0].outcome = child.outcome;
+    delete tampered.children[0].frameIndices;
+    await expect(cases.importPortable(JSON.stringify(tampered))).rejects.toThrow(
+      /Corrupt imported case child/,
+    );
+    tampered.children[0].frameIndices = [0];
+    tampered.children[0].connectionSecret = 'private-token';
+    await expect(cases.importPortable(JSON.stringify(tampered))).rejects.toThrow(
+      /Corrupt imported case child/,
+    );
+    delete tampered.children[0].connectionSecret;
+    tampered.children[0].errorStage = 'unknown';
     await expect(cases.importPortable(JSON.stringify(tampered))).rejects.toThrow(
       /Corrupt imported case child/,
     );

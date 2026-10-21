@@ -27,8 +27,6 @@ type Trial = {
     totalTokens: number | null;
   } | null;
   omitted?: string;
-  missing?: string;
-  missingParsed?: boolean;
 };
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -87,25 +85,24 @@ function requestParts(value: unknown) {
 
 function trialFor(source: SavedCaseDetail, id: string): Trial {
   if (id === 'source') {
-    const result: SavedCaseSourceResult | undefined = source.sourceResult;
+    const result: SavedCaseSourceResult = source.sourceResult;
     return {
       id,
       label: 'Immutable source attempt',
       modelId: source.summary.modelId,
       seed: source.summary.seed,
-      durationMs: result?.durationMs ?? null,
-      stage: result?.stage ?? 'unavailable',
-      errorStage: result?.errorStage ?? null,
-      error: result?.error ?? null,
+      durationMs: result.durationMs,
+      stage: result.stage,
+      errorStage: result.errorStage,
+      error: result.error,
       request: source.request,
       frameIndices: source.frames.map((frame) => frame.index),
-      raw: result?.rawNativeOutput ?? null,
-      normalized: result?.normalizedResult ?? null,
-      parsed: result?.parsedResult ?? null,
-      accepted: result?.accepted ?? null,
-      usage: result?.usage ?? null,
-      omitted: result?.omitted,
-      ...(result ? {} : { missing: 'Original outcome was not recorded for this saved case.' }),
+      raw: result.rawNativeOutput,
+      normalized: result.normalizedResult,
+      parsed: result.parsedResult,
+      accepted: result.accepted,
+      usage: result.usage,
+      omitted: result.omitted,
     };
   }
   const child: SavedCaseChild | undefined = source.children.find((entry) => entry.id === id);
@@ -120,16 +117,14 @@ function trialFor(source: SavedCaseDetail, id: string): Trial {
     stage: child.errorStage ? 'failed' : 'accepted',
     errorStage: child.errorStage,
     error: child.error,
-    request: outcome?.submittedRequest ?? null,
+    request: outcome.submittedRequest,
     frameIndices: child.frameIndices,
-    raw: outcome?.rawNativeOutput ?? null,
-    normalized: outcome?.normalizedResult ?? null,
-    parsed: outcome?.parsedResult ?? null,
-    accepted: outcome?.accepted ?? null,
-    usage: outcome?.usage ?? null,
-    omitted: outcome?.omitted,
-    missingParsed: !!outcome && !Object.hasOwn(outcome, 'parsedResult'),
-    ...(outcome ? {} : { missing: 'Child outcome was not persisted.' }),
+    raw: outcome.rawNativeOutput,
+    normalized: outcome.normalizedResult,
+    parsed: outcome.parsedResult,
+    accepted: outcome.accepted,
+    usage: outcome.usage,
+    omitted: outcome.omitted,
   };
 }
 
@@ -260,13 +255,7 @@ function TrialDetails({
           {trial.errorStage ?? 'Error'}: {trial.error}
         </p>
       )}
-      {trial.missing && <p className="text-xs text-amber-300">{trial.missing}</p>}
       {trial.omitted && <p className="text-xs text-amber-300">{trial.omitted}</p>}
-      {trial.missingParsed && (
-        <p className="text-xs text-amber-300">
-          Parsed result was not stored by this older child experiment.
-        </p>
-      )}
       <p className="text-xs text-zinc-400">
         Tokens:{' '}
         {trial.usage
