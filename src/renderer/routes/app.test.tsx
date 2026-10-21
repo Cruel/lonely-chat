@@ -203,6 +203,7 @@ const modelsAPI = {
   onFloatingChatChange: () => () => {},
   retrySession: async () => ({ ...emptyStatus }),
   getNativeStatus: async () => ({ revision: 0, phase: 'stopped' as const, error: null }),
+  unloadLocalModels: async () => {},
   onNativeChange: () => () => {},
   retryAudio: async () => ({ revision: 0, sources: [], transcripts: [] }),
   getAudience: async () => ({

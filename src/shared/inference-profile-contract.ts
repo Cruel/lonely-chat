@@ -32,6 +32,7 @@ export interface InferenceProfileValues {
     readonly maximumWaitMs?: number;
     readonly maximumAgeMs?: number;
     readonly strictWait?: boolean;
+    readonly warmIdleMs?: number;
   };
 }
 export interface InferenceProfile {
@@ -150,6 +151,7 @@ export function validateProfileValues(
         'maximumWaitMs',
         'maximumAgeMs',
         'strictWait',
+        'warmIdleMs',
       ],
       'architecture',
     );
@@ -158,6 +160,7 @@ export function validateProfileValues(
       'chatIntervalMs',
       'maximumWaitMs',
       'maximumAgeMs',
+      'warmIdleMs',
     ] as const) {
       if (
         config[key] !== undefined &&
@@ -193,6 +196,7 @@ export function validateProfileValues(
         : {}),
       ...(config.maximumAgeMs !== undefined ? { maximumAgeMs: config.maximumAgeMs as number } : {}),
       ...(config.strictWait !== undefined ? { strictWait: config.strictWait as boolean } : {}),
+      ...(config.warmIdleMs !== undefined ? { warmIdleMs: config.warmIdleMs as number } : {}),
     };
   }
   return {

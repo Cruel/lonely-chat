@@ -62,6 +62,7 @@ export class SessionController {
   private remoteAdapter: ((input: InferenceInput) => UnifiedInferenceAdapter) | null = null;
   private splitAdapters: ((input: InferenceInput) => SplitAdapters) | null = null;
   private splitUsesLocal = false;
+  private splitRosterProvider: InferenceProvider | null = null;
   private activeProfile: import('../shared/inference-profile-contract').InferenceProfile | null =
     null;
   private readonly splitCoordinator = new ScheduledSplitInference();
@@ -162,11 +163,16 @@ export class SessionController {
     );
   }
 
-  configureSplit(adapters: (input: InferenceInput) => SplitAdapters, usesLocal: boolean): void {
+  configureSplit(
+    adapters: (input: InferenceInput) => SplitAdapters,
+    usesLocal: boolean,
+    rosterProvider: InferenceProvider | null = null,
+  ): void {
     if (['running', 'starting', 'switching'].includes(this.state.phase))
       throw new Error('Stop the current Run before changing Split models.');
     this.splitAdapters = adapters;
     this.splitUsesLocal = usesLocal;
+    this.splitRosterProvider = rosterProvider;
   }
 
   canExecutePausedPlayground(): boolean {
@@ -330,7 +336,10 @@ export class SessionController {
       throw new Error('The native inference runtime is not configured.');
     }
     const sessionSeed = options.seed ?? randomInferenceSeed();
-    this.activeInference = mode === 'native' ? this.nativeInference! : this.inference;
+    this.activeInference =
+      mode === 'native' && profile?.values.topology !== 'split'
+        ? this.nativeInference!
+        : this.inference;
     this.activeProfile = profile ? structuredClone(profile) : null;
     this.context = context;
     this.runPreferences = {
@@ -758,16 +767,14 @@ export class SessionController {
 
   private splitScheduling(): SplitScheduling {
     const architecture = this.activeProfile?.values.architecture;
-    const execution = this.splitUsesLocal
-      ? 'sequential'
-      : (architecture?.execution ?? 'sequential');
+    const execution = architecture?.execution ?? 'sequential';
     return {
       execution,
       visionIntervalMs: architecture?.visionIntervalMs ?? this.runPreferences.cycleIntervalMs,
       chatIntervalMs: architecture?.chatIntervalMs ?? this.runPreferences.cycleIntervalMs,
       maximumWaitMs: architecture?.maximumWaitMs ?? 10000,
       maximumAgeMs: architecture?.maximumAgeMs ?? 30000,
-      strictWait: this.splitUsesLocal || (architecture?.strictWait ?? execution === 'sequential'),
+      strictWait: architecture?.strictWait ?? execution === 'sequential',
     };
   }
 
@@ -969,7 +976,9 @@ export class SessionController {
         if (!this.active(epoch) || abort.signal.aborted) return undefined;
         if (this.audience) {
           await this.audience.ensure(
-            provider,
+            this.state.inferenceProfile?.topology === 'split'
+              ? (this.splitRosterProvider ?? provider)
+              : provider,
             abort.signal,
             false,
             // A manual retry advances the cycle, so it must not replay the
@@ -980,13 +989,6 @@ export class SessionController {
           this.trace.update(traceId, { input: effectiveInput });
         }
         if (!this.active(epoch) || abort.signal.aborted) return undefined;
-        if (
-          this.state.inferenceProfile?.topology === 'split' &&
-          this.splitUsesLocal &&
-          this.state.mode !== 'native' &&
-          this.nativeInference
-        )
-          await this.nativeInference.prepare?.(abort.signal);
         await provider.prepare?.(abort.signal);
         await this.waitUntilResumed();
         if (!this.active(epoch) || abort.signal.aborted) return undefined;

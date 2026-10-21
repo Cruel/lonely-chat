@@ -197,6 +197,7 @@ export interface DesktopInvocations {
   'session:recorded:eof': SessionSnapshot;
   'session:retry': SessionSnapshot;
   'native:status': NativeServiceStatus;
+  'local-models:unload': void;
   'preferences:get': SessionPreferences;
   'preferences:set': SessionPreferences;
   'audience:get': AudienceSnapshot;
@@ -345,6 +346,7 @@ export interface DesktopArguments {
   'session:recorded:eof': [];
   'session:retry': [];
   'native:status': [];
+  'local-models:unload': [];
   'preferences:get': [];
   'preferences:set': [preferences: SessionPreferences];
   'audience:get': [];
@@ -533,6 +535,7 @@ export interface DesktopAPI {
   onMediaStop(listener: () => void): () => void;
   retrySession(): Promise<SessionSnapshot>;
   getNativeStatus(): Promise<NativeServiceStatus>;
+  unloadLocalModels(): Promise<void>;
   onNativeChange(listener: (status: NativeServiceStatus) => void): () => void;
   getPreferences(): Promise<SessionPreferences>;
   setPreferences(preferences: SessionPreferences): Promise<SessionPreferences>;

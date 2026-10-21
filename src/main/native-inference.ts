@@ -293,6 +293,7 @@ interface NativeOptions {
   /** Evaluated per request so saved changes apply without restarting the model. */
   readonly inferenceTimeoutMs?: () => number;
   readonly resourcePreferences?: () => SessionPreferences;
+  readonly forbidCpuFallback?: boolean;
   /** Optional host FFmpeg directory for llama.cpp native video decoding. */
   readonly videoFfmpegDir?: () => string | null;
   readonly videoPreferences?: NativeVideoPreferences;
@@ -457,6 +458,10 @@ export class NativeInference implements InferenceProvider {
         ? 'cpu'
         : settings.computeBackend;
     const selection = chooseBackend(this.fallbackToCpu ? 'cpu' : requested, detected);
+    if (this.options.forbidCpuFallback && requested !== 'cpu' && selection.selected === 'cpu')
+      throw new Error(
+        `The selected ${requested} backend is unavailable. Explicitly select CPU or another model before retrying.`,
+      );
     let diagnostic = selection.warning;
     if (this.fallbackToCpu)
       diagnostic = 'The selected GPU worker failed; retrying with CPU fallback.';
@@ -574,7 +579,8 @@ export class NativeInference implements InferenceProvider {
     child.once('error', (error) => {
       worker.launchError(error);
       if (this.child !== child) return;
-      if (this.resources?.backend !== 'cpu') this.fallbackToCpu = true;
+      if (this.resources?.backend !== 'cpu' && !this.options.forbidCpuFallback)
+        this.fallbackToCpu = true;
       this.failure = new Error(`Unable to launch bundled llama.cpp: ${error.message}`);
       this.publish('failed', this.failure.message);
       this.lifecycle?.abort();
@@ -582,7 +588,8 @@ export class NativeInference implements InferenceProvider {
     child.once('exit', (code, termination) => {
       exited = { code, signal: termination };
       if (this.child !== child) return;
-      if (this.resources?.backend !== 'cpu') this.fallbackToCpu = true;
+      if (this.resources?.backend !== 'cpu' && !this.options.forbidCpuFallback)
+        this.fallbackToCpu = true;
       this.failure = new Error(
         `llama.cpp exited (${termination ?? code ?? 'unknown'}). See Logs for worker diagnostics.`,
       );

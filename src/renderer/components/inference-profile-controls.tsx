@@ -46,6 +46,7 @@ export function InferenceProfileControls({
     maximumWaitMs: 10000,
     maximumAgeMs: 30000,
     strictWait: true,
+    warmIdleMs: 0,
   });
   const loadScheduling = (architecture: InferenceProfileValues['architecture']) =>
     setScheduling({
@@ -54,6 +55,7 @@ export function InferenceProfileControls({
       maximumWaitMs: architecture?.maximumWaitMs ?? 10000,
       maximumAgeMs: architecture?.maximumAgeMs ?? 30000,
       strictWait: architecture?.strictWait ?? architecture?.execution !== 'asynchronous',
+      warmIdleMs: architecture?.warmIdleMs ?? 0,
     });
   const [error, setError] = useState<string | null>(null);
 
@@ -279,6 +281,7 @@ export function InferenceProfileControls({
                   ['chatIntervalMs', 'Chat minimum interval (ms)'],
                   ['maximumWaitMs', 'Maximum Vision wait (ms)'],
                   ['maximumAgeMs', 'Completed Vision maximum age (ms)'],
+                  ['warmIdleMs', 'Local worker warm retention after Stop (ms)'],
                 ] as const
               ).map(([key, label]) => (
                 <label className="block" key={key}>
@@ -315,6 +318,22 @@ export function InferenceProfileControls({
                 />
                 Require eligible Vision result before Chat
               </label>
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() => {
+                  void window.lonelyChat
+                    ?.unloadLocalModels()
+                    .catch((reason: unknown) => setError(String(reason)));
+                }}
+                className="rounded border border-zinc-600 px-2 py-1"
+              >
+                Unload idle local models
+              </button>
+              <p className="text-xs text-zinc-400">
+                Local models share GPU execution. Worker retention applies only after Stop; use
+                Unload to release idle model memory immediately.
+              </p>
             </div>
           )}
           {topology === 'hybrid' && (

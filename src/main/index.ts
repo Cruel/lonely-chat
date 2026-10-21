@@ -313,6 +313,8 @@ const videoTools = new PlaygroundVideoTools(app.getPath('userData'));
 let session: SessionController;
 let audience: AudienceService;
 let nativeInference: NativeInference;
+let localModelPool: import('./local-model-pool').LocalModelPool | null = null;
+let localWarmIdleMs = 0;
 let playground: PlaygroundService;
 let speechTest: SpeechPlaygroundService;
 let audio: AudioService;
@@ -334,6 +336,7 @@ const resumeReservation = new RecordedResumeReservation();
 /** Both desktop and tray Stop retire every producer, not only the VLM. */
 function stopSession() {
   resumeReservation.cancel();
+  if (localModelPool) void localModelPool.release();
   return sessionMedia ? sessionMedia.stop() : session?.stop();
 }
 
@@ -911,11 +914,6 @@ function registerHandlers(): void {
           : null;
         if (profile?.values.topology === 'hybrid')
           throw new Error('Hybrid execution is not yet available.');
-        if (
-          profile?.values.topology === 'split' &&
-          profile.values.architecture?.execution === 'asynchronous'
-        )
-          throw new Error('Asynchronous Split execution is provided by #54.');
         const unifiedRole = profile?.values.roles.unified;
         if (unifiedRole && mode !== (unifiedRole.kind === 'local' ? 'native' : 'remote'))
           throw new Error(
@@ -969,17 +967,8 @@ function registerHandlers(): void {
         const localSplitModels = splitRoles
           ? [splitRoles.observer, splitRoles.chat].filter((ref) => ref?.kind === 'local')
           : [];
-        if (localSplitModels.length) {
-          if (new Set(localSplitModels.map((ref) => ref?.modelId)).size !== 1)
-            throw new Error(
-              'Distinct simultaneous local models require the resident scheduler (#55).',
-            );
-          if (
-            !packageE2E &&
-            installs.snapshot().active['vision-language'] !== localSplitModels[0]?.modelId
-          )
-            throw new Error('Activate the local Split Model Configuration before starting.');
-        }
+        if (localSplitModels.length && !localModelPool && !packageE2E)
+          throw new Error('Local Split model pool is unavailable.');
         const effectivePolicy = resolveUnifiedProfilePolicy(
           profile,
           recordedConfig?.settingsPolicy === 'saved'
@@ -1018,6 +1007,10 @@ function registerHandlers(): void {
         // Playground may own an idle warm worker even though it is not busy.
         // The start reservation prevents another Playground request during this await.
         await playground.stop();
+        if (localSplitModels.length && !packageE2E) {
+          localWarmIdleMs = profile?.values.architecture?.warmIdleMs ?? 0;
+          await localModelPool!.reserve(localSplitModels.map((ref) => ref!.modelId));
+        }
         if (splitRoles) {
           // Pin the resolved provider/model configuration for this entire Run.
           const pinnedRemote = {
@@ -1035,7 +1028,10 @@ function registerHandlers(): void {
             input: import('./fake-inference').InferenceInput,
           ) => {
             const ref = splitRoles[role]!;
-            if (ref.kind === 'local') return session.createLocalSplitAdapter(input);
+            if (ref.kind === 'local')
+              return packageE2E
+                ? session.createLocalSplitAdapter(input)
+                : localModelPool!.adapter(ref.modelId, role, input);
             const selected = pinnedRemote[role]!;
             return selected.connection.credentialMode === 'chatgpt'
               ? chatGPTUnifiedAdapter(selected, chatGPTAuth, {
@@ -1053,6 +1049,11 @@ function registerHandlers(): void {
               chat: make('chat', input),
             }),
             localSplitModels.length > 0,
+            splitChat?.kind === 'local'
+              ? packageE2E
+                ? nativeInference
+                : localModelPool!.rosterProvider(splitChat.modelId)
+              : null,
           );
         }
         if (mode === 'remote' && !splitRoles) {
@@ -1166,6 +1167,11 @@ function registerHandlers(): void {
       }
     },
     'native:status': () => nativeInference.snapshot(),
+    'local-models:unload': async () => {
+      if (!['stopped', 'error'].includes(session.snapshot().phase) || sessionStarting)
+        throw new Error('Stop the active Simulation before unloading local models.');
+      await localModelPool?.unload();
+    },
     'preferences:get': () => session.getPreferences(),
     'preferences:set': async (
       preferences: import('../shared/session-contract').SessionPreferences,
@@ -1234,6 +1240,12 @@ function registerHandlers(): void {
       await playground.stop();
       const current = session.snapshot();
       if (
+        current.inferenceProfile?.topology === 'split' &&
+        ['starting', 'running', 'error'].includes(current.phase)
+      )
+        throw new Error('Stop the Split Run before changing a pinned projector.');
+      await localModelPool?.unload();
+      if (
         current.mode === 'native' &&
         ['starting', 'running', 'error'].includes(current.phase) &&
         installs.snapshot().active['vision-language'] === id
@@ -1258,6 +1270,12 @@ function registerHandlers(): void {
       const projector = await installs.prepareProjector(id, source, candidateId);
       await playground.stop();
       const current = session.snapshot();
+      if (
+        current.inferenceProfile?.topology === 'split' &&
+        ['starting', 'running', 'error'].includes(current.phase)
+      )
+        throw new Error('Stop the Split Run before changing a pinned projector.');
+      await localModelPool?.unload();
       if (
         current.mode === 'native' &&
         ['starting', 'running', 'error'].includes(current.phase) &&
@@ -1294,7 +1312,15 @@ function registerHandlers(): void {
       }
       const current = installs.snapshot().active[role];
       if (current === id) return installs.snapshot();
-      if (role === 'vision-language') await playground.stop();
+      if (role === 'vision-language') {
+        if (
+          session.snapshot().inferenceProfile?.topology === 'split' &&
+          ['running', 'starting', 'switching', 'error'].includes(session.snapshot().phase)
+        )
+          throw new Error('Stop the Split Run before changing its pinned local models.');
+        await playground.stop();
+        await localModelPool?.unload();
+      }
       if (
         role === 'vision-language' &&
         session.snapshot().mode === 'native' &&
@@ -1358,6 +1384,7 @@ function registerHandlers(): void {
       }
       await session.awaitShutdown();
       await playground.stop();
+      await localModelPool?.unload();
       return installs.remove(id);
     },
     'video:clock': () => observationNow(),
@@ -1620,6 +1647,7 @@ async function boot(): Promise<void> {
     resolveModel: () => Promise<{ modelPath: string; projectorPath: string | null }>,
     settings: () => import('../shared/session-contract').SessionPreferences,
     videoOptions?: import('../shared/video-tools-contract').NativeVideoPreferences,
+    forbidCpuFallback = false,
   ) =>
     new NativeInference({
       executable: bundledLlamaServer(app.getAppPath(), app.isPackaged, process.resourcesPath),
@@ -1641,6 +1669,7 @@ async function boot(): Promise<void> {
       reasoningEnabled: () => settings().reasoningEnabled,
       inferenceTimeoutMs: () => settings().inferenceTimeoutMs,
       resourcePreferences: settings,
+      forbidCpuFallback,
       videoFfmpegDir: () => videoTools.directory,
       videoPreferences: videoOptions,
       resolveVideo: (token, preferences) => videoTools.encoded(token, preferences),
@@ -1652,6 +1681,21 @@ async function boot(): Promise<void> {
     () => installs.activeVisionFiles(),
     nativeWorkerSettings(session, 'simulation'),
   );
+  localModelPool = new (await import('./local-model-pool')).LocalModelPool({
+    files: (id) => installs.visionFiles(id),
+    create: (id) =>
+      buildNative(
+        () => installs.visionFiles(id),
+        nativeWorkerSettings(session, 'simulation'),
+        undefined,
+        true,
+      ),
+    ramBudgetMiB: () => session.getPreferences().ramBudgetMiB,
+    vramBudgetMiB: () => session.getPreferences().vramBudgetMiB,
+    computeBackend: () => session.getPreferences().computeBackend,
+    timeoutMs: () => session.getPreferences().inferenceTimeoutMs,
+    warmIdleMs: () => localWarmIdleMs,
+  });
   await videoTools.open();
   playground = new PlaygroundService(
     () =>
@@ -1832,6 +1876,8 @@ async function boot(): Promise<void> {
         );
     }
     if (status.phase !== previousSessionPhase) {
+      if (status.phase === 'error') void localModelPool?.unload();
+      else if (status.phase === 'stopped') void localModelPool?.release();
       previousSessionPhase = status.phase;
       if (status.phase === 'error') logger.error('session', 'Simulation entered error state');
       else logger.info('session', 'Simulation phase changed', { phase: status.phase });
@@ -1915,6 +1961,7 @@ const shutdown = new ManagedShutdown(
     () => session?.terminate() ?? Promise.resolve(),
     () => audio?.terminate() ?? Promise.resolve(),
     () => nativeInference?.stop() ?? Promise.resolve(),
+    () => localModelPool?.unload() ?? Promise.resolve(),
     () => playground?.stop() ?? Promise.resolve(),
     () => speechTest?.stop().then(() => {}) ?? Promise.resolve(),
     () => overlay.stop(),
@@ -2061,6 +2108,7 @@ app.on('will-quit', () => {
   ipcMain.removeHandler('session:recorded:eof');
   ipcMain.removeHandler('session:retry');
   ipcMain.removeHandler('native:status');
+  ipcMain.removeHandler('local-models:unload');
   ipcMain.removeHandler('preferences:get');
   ipcMain.removeHandler('preferences:set');
   ipcMain.removeHandler('audience:get');

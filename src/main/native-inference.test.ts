@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -557,6 +557,28 @@ describe('native llama.cpp adapter', () => {
     expect(provider.snapshot().phase).toBe('ready');
     expect(transitions).toEqual(['loading', 'ready', 'stopped', 'loading', 'ready']);
     await provider.stop();
+  });
+
+  it('refuses implicit CPU fallback for pinned local Split workers', async () => {
+    const launch = vi.fn();
+    const provider = new NativeInference({
+      executable: process.execPath,
+      resolveModel: async () => ({ modelPath: '/fixture.gguf', projectorPath: null }),
+      resourcePreferences: () => ({
+        ...DEFAULT_PREFERENCES,
+        computeBackend: 'cuda',
+        gpuOffloadLayers: 16,
+        vramBudgetMiB: 4096,
+      }),
+      probeDevices: async () => [],
+      forbidCpuFallback: true,
+      launch,
+    });
+    providers.push(provider);
+    await expect(provider.prepare(new AbortController().signal)).rejects.toThrow(
+      'Explicitly select CPU',
+    );
+    expect(launch).not.toHaveBeenCalled();
   });
 
   it('applies backend/resource settings and reports unavailable GPU fallback rather than inventing quotas', async () => {

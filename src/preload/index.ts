@@ -195,6 +195,7 @@ const api: DesktopAPI = {
   },
   retrySession: () => invoke('session:retry'),
   getNativeStatus: () => invoke('native:status'),
+  unloadLocalModels: () => invoke('local-models:unload'),
   onNativeChange: (listener) => {
     const receive = (
       _event: Electron.IpcRendererEvent,
