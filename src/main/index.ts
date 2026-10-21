@@ -335,6 +335,7 @@ let stageExperimentFactory:
       ...args: [
         ...Parameters<ProfileAdapterFactory>,
         settings?: import('../shared/inference-profile-contract').InferenceStageDefaults['settings'],
+        timeoutForRole?: (role: import('./unified-inference-request').InferenceRole) => number,
       ]
     ) => ReturnType<ProfileAdapterFactory>)
   | null = null;
@@ -399,12 +400,13 @@ function profileExperimentAdapters(
   profile: import('../shared/inference-profile-contract').InferenceProfile,
 ): ProfileAdapterFactory {
   let gpuQueue = Promise.resolve();
+  const initialPreferences = session.getPreferences();
   return async (ref, role, input, signal) => {
     if (signal.aborted) throw new DOMException('Experiment cancelled.', 'AbortError');
     if (ref.kind === 'remote') {
       const selected = remoteStore.selected(ref.modelId);
       const settings = {
-        ...session.getPreferences(),
+        ...initialPreferences,
         ...profile.values.stageDefaults[role]?.settings,
       };
       const adapter =
@@ -426,6 +428,9 @@ function profileExperimentAdapters(
       input,
       signal,
       profile.values.stageDefaults[role]?.settings,
+      (requestRole) =>
+        profile.values.stageDefaults[requestRole === 'vision' ? 'observer' : requestRole]?.settings
+          ?.inferenceTimeoutMs ?? initialPreferences.inferenceTimeoutMs,
     );
     const adapter = owned.adapter;
     return {
@@ -1889,7 +1894,7 @@ async function boot(): Promise<void> {
       privateWorkerLine: (worker, stream, line) =>
         diagnostics.recordWorkerLine(worker, stream, line),
     });
-  stageExperimentFactory = async (ref, role, input, signal, overrides) => {
+  stageExperimentFactory = async (ref, role, input, signal, overrides, timeoutForRole) => {
     if (ref.kind !== 'local') throw new Error('Only local models use the native stage worker.');
     if (signal.aborted) throw new DOMException('Experiment cancelled.', 'AbortError');
     const baseSettings = nativeWorkerSettings(session, 'playground');
@@ -1919,6 +1924,8 @@ async function boot(): Promise<void> {
           completeSimulationRequest: (...args) => provider.completeSimulationRequest!(...args),
         },
         input,
+        undefined,
+        timeoutForRole,
       ),
       stop: () => provider.stop(),
     };

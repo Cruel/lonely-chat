@@ -879,6 +879,57 @@ describe('native llama.cpp adapter', () => {
     ).toEqual(['--reasoning', 'on']);
   });
 
+  it('honors a local Split stage deadline longer than its global Run timeout', async () => {
+    const provider = new NativeInference({
+      executable: process.execPath,
+      inferenceTimeoutMs: () => 20,
+      resolveModel: async () => ({ modelPath: '/installed/text-chat.gguf', projectorPath: null }),
+      launch: (_binary, args, options) =>
+        spawn(
+          process.execPath,
+          [
+            '--input-type=module',
+            '-e',
+            childScript,
+            args[args.indexOf('--port') + 1],
+            args[args.indexOf('--api-key') + 1],
+          ],
+          options,
+        ),
+      fetcher: async (url, options) => {
+        if (!String(url).endsWith('/v1/chat/completions')) return fetch(url, options);
+        return new Promise<Response>((resolve, reject) => {
+          const timer = setTimeout(
+            () => resolve(new Response(JSON.stringify({ choices: [] }), { status: 200 })),
+            80,
+          );
+          const onAbort = () => {
+            clearTimeout(timer);
+            reject(options?.signal?.reason);
+          };
+          if (options?.signal?.aborted) onAbort();
+          else options?.signal?.addEventListener('abort', onAbort, { once: true });
+        });
+      },
+    });
+    providers.push(provider);
+    const input = { context: 'Split Chat handoff', cycle: 1 };
+    const request = nativeChatRequest(input);
+    await expect(
+      provider.completeSimulationRequest(
+        input,
+        request,
+        new AbortController().signal,
+        undefined,
+        undefined,
+        200,
+      ),
+    ).resolves.toEqual({ choices: [] });
+    await expect(
+      provider.completeSimulationRequest(input, request, new AbortController().signal),
+    ).rejects.toThrow(/timed out after 0.02 seconds/);
+  });
+
   it('applies the latest configured timeout per request and identifies request timeouts', async () => {
     let timeoutMs = 25;
     const provider = new NativeInference({

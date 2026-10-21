@@ -134,6 +134,59 @@ describe('isolated Profile Playground', () => {
     expect(second.result.accepted?.messages[0].text).toBe('GG');
   });
 
+  it('reuses the local Chat worker for default narrative Memory without another model load', async () => {
+    const withMemory: InferenceProfile = {
+      ...profile,
+      values: {
+        ...profile.values,
+        memory: { enabled: true, intervalMs: 1000, maxCharacters: 2000, expireAfterMs: 0 },
+        stageDefaults: {
+          ...profile.values.stageDefaults,
+          chat: { settings: { inferenceTimeoutMs: 20000 } },
+          memory: { settings: { inferenceTimeoutMs: 60000 } },
+        },
+      },
+    };
+    const created: string[] = [];
+    const completed: string[] = [];
+    const stop = vi.fn(async () => {});
+    const factory: ProfileAdapterFactory = async (ref, role) => {
+      created.push(`${role}:${ref.modelId}`);
+      return {
+        adapter: {
+          capabilities: { images: true },
+          complete: async (request) => {
+            const requestRole = (request as import('./unified-inference-request').InferenceRequest)
+              .role;
+            completed.push(requestRole);
+            const value =
+              requestRole === 'vision'
+                ? scene
+                : requestRole === 'memory'
+                  ? { summary: 'A notable race finish' }
+                  : chat;
+            return { raw: value, normalized: value };
+          },
+        },
+        stop,
+      };
+    };
+    const outcome = await executeProfileExperiment(
+      experiment,
+      withMemory,
+      null,
+      factory,
+      new AbortController().signal,
+    );
+    expect(outcome.result.error).toBeNull();
+    expect(created).toHaveLength(2);
+    expect(created).toContain('chat:chat-model');
+    expect(created).toContain('observer:vision-provider');
+    expect(created).not.toContain('memory:chat-model');
+    expect(completed).toEqual(['vision', 'chat', 'memory']);
+    expect(stop).toHaveBeenCalledTimes(2);
+  });
+
   it('waits for a completed Vision handoff in asynchronous full-pipeline experiments', async () => {
     let finishVision!: (outcome: typeof scene) => void;
     const pending = new Promise<typeof scene>((resolve) => {

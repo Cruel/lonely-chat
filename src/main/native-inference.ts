@@ -803,6 +803,7 @@ export class NativeInference implements InferenceProvider {
     signal: AbortSignal,
     window: ContinuousVideoWindow,
     encoder?: NativeVideoEncoder,
+    requestTimeoutMs?: number,
   ): Promise<unknown> {
     await this.prepare(signal);
     if (!this.videoReady)
@@ -819,7 +820,7 @@ export class NativeInference implements InferenceProvider {
       )
     ).encode(window, signal);
     if (signal.aborted) throw new DOMException('Native video cancelled.', 'AbortError');
-    return this.complete(withNativeVideoData(request, encoded), signal);
+    return this.complete(withNativeVideoData(request, encoded), signal, requestTimeoutMs);
   }
 
   async completeSimulationRequest(
@@ -828,6 +829,7 @@ export class NativeInference implements InferenceProvider {
     signal: AbortSignal,
     videoToken?: string,
     videoOptions?: NativeVideoPreferences,
+    requestTimeoutMs?: number,
   ): Promise<unknown> {
     await this.prepare(signal);
     const submittedMessages = (request as { messages?: readonly { content?: unknown }[] } | null)
@@ -851,7 +853,7 @@ export class NativeInference implements InferenceProvider {
     const payload = videoToken
       ? withNativeVideoData(request, await this.resolveNativeVideo(videoToken, videoOptions))
       : request;
-    return this.complete(payload, signal);
+    return this.complete(payload, signal, requestTimeoutMs);
   }
 
   async generate(
@@ -879,12 +881,18 @@ export class NativeInference implements InferenceProvider {
     }
   }
 
-  private async complete(request: unknown, signal: AbortSignal): Promise<unknown> {
+  private async complete(
+    request: unknown,
+    signal: AbortSignal,
+    requestTimeoutMs?: number,
+  ): Promise<unknown> {
     await this.prepare(signal);
     if (signal.aborted || !this.lifecycle || !this.port || !this.apiKey) {
       throw new Error('Native inference cancelled.');
     }
-    const timeoutMs = this.options.inferenceTimeoutMs?.() ?? 600_000;
+    // An admitted stage owns its own transport deadline. The global preference
+    // only applies when no stage-specific deadline was supplied.
+    const timeoutMs = requestTimeoutMs ?? this.options.inferenceTimeoutMs?.() ?? 600_000;
     try {
       const response = await (this.options.fetcher ?? fetch)(
         `http://127.0.0.1:${this.port}/v1/chat/completions`,
@@ -918,13 +926,16 @@ export class NativeInference implements InferenceProvider {
       return body;
     } catch (error) {
       if (this.failure) throw this.failure;
-      if (signal.aborted || this.lifecycle?.signal.aborted)
-        throw new Error('Native inference cancelled.');
-      if (error instanceof Error && error.name === 'TimeoutError') {
+      if (
+        (error instanceof Error && error.name === 'TimeoutError') ||
+        (signal.aborted && signal.reason instanceof Error && signal.reason.name === 'TimeoutError')
+      ) {
         throw new Error(
           `llama.cpp inference timed out after ${timeoutMs / 1000} seconds. The model did not finish within the configured request deadline.`,
         );
       }
+      if (signal.aborted || this.lifecycle?.signal.aborted)
+        throw new Error('Native inference cancelled.');
       throw error;
     }
   }

@@ -149,18 +149,19 @@ describe('resident local models', () => {
   });
 
   it('preserves Memory admission priority and role-specific timeouts on the shared Chat worker', async () => {
+    const complete = vi.fn(async () => ({
+      choices: [
+        {
+          finish_reason: 'stop',
+          message: { content: JSON.stringify({ summary: 'Memory revision' }) },
+        },
+      ],
+    }));
     const pool = new LocalModelPool({
       files: async () => ({ modelPath: process.execPath, projectorPath: null }),
       create: () =>
         ({
-          completeSimulationRequest: async () => ({
-            choices: [
-              {
-                finish_reason: 'stop',
-                message: { content: JSON.stringify({ summary: 'Memory revision' }) },
-              },
-            ],
-          }),
+          completeSimulationRequest: complete,
           stop: async () => {},
         }) as unknown as NativeInference,
       ramBudgetMiB: () => 1000000,
@@ -188,6 +189,14 @@ describe('resident local models', () => {
       expect.any(Function),
     );
     expect(output.normalized).toEqual({ summary: 'Memory revision' });
+    expect(complete).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.any(Object),
+      expect.any(AbortSignal),
+      undefined,
+      undefined,
+      3210,
+    );
     await pool.unload();
   });
 

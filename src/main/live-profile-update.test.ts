@@ -82,6 +82,59 @@ describe('live profile admission', () => {
   });
 });
 
+it('requires a new Run for Split stage timeout changes but still admits prompt revisions', async () => {
+  const session = new SessionController(new ChatService(), undefined, new FakeClock());
+  const first: InferenceProfile = {
+    ...profile(1),
+    values: {
+      topology: 'split',
+      roles: {
+        observer: { kind: 'local', modelId: 'vision-1' },
+        chat: { kind: 'local', modelId: 'chat-1' },
+      },
+      stageDefaults: {
+        observer: { settings: { inferenceTimeoutMs: 20000 } },
+        chat: { settings: { inferenceTimeoutMs: 40000 } },
+        memory: { settings: { inferenceTimeoutMs: 60000 } },
+      },
+      memory: { enabled: true, intervalMs: 30000, maxCharacters: 2000, expireAfterMs: 0 },
+    },
+  };
+  const adapter = {
+    capabilities: { images: true },
+    complete: async () => ({
+      raw: { events: [], messages: [] },
+      normalized: { events: [], messages: [] },
+    }),
+  };
+  session.configureSplit(() => ({ vision: adapter, chat: adapter, memory: adapter }), false);
+  session.start('stream', 'fake', null, undefined, undefined, undefined, first);
+  for (const role of ['observer', 'chat', 'memory'] as const) {
+    const stageDefaults = structuredClone(first.values.stageDefaults);
+    stageDefaults[role] = { ...stageDefaults[role], settings: { inferenceTimeoutMs: 90000 } };
+    const change: InferenceProfile = {
+      ...first,
+      revision: 2,
+      values: { ...first.values, stageDefaults },
+    };
+    expect(() => session.queueProfileUpdate(change)).toThrow(/require stopping the Run/);
+    expect(session.snapshot().pendingProfileRevision).toBeNull();
+  }
+  const allowed: InferenceProfile = {
+    ...first,
+    revision: 2,
+    values: {
+      ...first.values,
+      stageDefaults: {
+        ...first.values.stageDefaults,
+        chat: { ...first.values.stageDefaults.chat, systemPrompt: 'Change text only' },
+      },
+    },
+  };
+  expect(session.queueProfileUpdate(allowed).pendingProfileRevision).toBe(2);
+  session.stop();
+});
+
 it('resolves Unified prompt templates and sampling from an admission snapshot', async () => {
   const { resolveUnifiedStageRequest } = await import('./stage-context');
   const { buildUnifiedInferenceRequest } = await import('./unified-inference-request');

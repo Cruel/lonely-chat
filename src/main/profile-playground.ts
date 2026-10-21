@@ -418,6 +418,14 @@ export async function executeProfileExperiment(
               expireAfterMs: 0,
             }),
       );
+      const chatAdapter = request.mode === 'vision' ? null : await make('chat');
+      const chatModel = profile.values.roles.chat;
+      const memoryModel = requireRole(profile, 'memory');
+      const reuseChatForMemory =
+        chatAdapter !== null &&
+        chatModel?.kind === 'local' &&
+        memoryModel.kind === 'local' &&
+        chatModel.modelId === memoryModel.modelId;
       const roleAdapters = {
         vision:
           request.mode === 'chat'
@@ -436,9 +444,9 @@ export async function executeProfileExperiment(
                   throw new Error('Chat is not admitted for Vision-only experiments.');
                 },
               }
-            : await make('chat'),
-        ...(request.mode !== 'chat' && profile.values.memory?.enabled
-          ? { memory: await make('memory') }
+            : chatAdapter!,
+        ...(request.mode === 'pipeline' && profile.values.memory?.enabled
+          ? { memory: reuseChatForMemory ? chatAdapter! : await make('memory') }
           : {}),
       };
       const injected = seededContext(prepared);

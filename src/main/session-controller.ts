@@ -185,15 +185,17 @@ export class SessionController {
         profile.values.architecture?.remoteChatImagesConsent
     )
       throw new Error('Changing stage execution or media permissions requires a new Run.');
-    const previousSettings = this.activeProfile.values.stageDefaults.unified?.settings ?? {};
-    const nextSettings = profile.values.stageDefaults.unified?.settings ?? {};
-    for (const key of new Set([...Object.keys(previousSettings), ...Object.keys(nextSettings)])) {
-      if (
-        !liveKeys.has(key) &&
-        JSON.stringify(previousSettings[key as keyof typeof previousSettings]) !==
-          JSON.stringify(nextSettings[key as keyof typeof nextSettings])
-      )
-        throw new Error('Runtime/resource changes require stopping the Run.');
+    for (const role of ['unified', 'observer', 'chat', 'memory'] as const) {
+      const previousSettings = this.activeProfile.values.stageDefaults[role]?.settings ?? {};
+      const nextSettings = profile.values.stageDefaults[role]?.settings ?? {};
+      for (const key of new Set([...Object.keys(previousSettings), ...Object.keys(nextSettings)])) {
+        if (
+          (role !== 'unified' || !liveKeys.has(key)) &&
+          JSON.stringify(previousSettings[key as keyof typeof previousSettings]) !==
+            JSON.stringify(nextSettings[key as keyof typeof nextSettings])
+        )
+          throw new Error('Stage transport or resource changes require stopping the Run.');
+      }
     }
     if (
       (this.pendingProfile && profile.revision <= this.pendingProfile.revision) ||

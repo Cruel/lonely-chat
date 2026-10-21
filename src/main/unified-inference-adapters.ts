@@ -32,10 +32,12 @@ export function llamaCppAdapter(
       signal: AbortSignal,
       videoToken?: string,
       videoOptions?: NativeVideoPreferences,
+      requestTimeoutMs?: number,
     ): Promise<unknown>;
   },
   input: InferenceInput,
   video?: { token: string; options?: NativeVideoPreferences },
+  timeoutForRole?: (role: InferenceRequest['role']) => number,
 ): UnifiedInferenceAdapter {
   return {
     capabilities: { images: true, nativeVideo: Boolean(video) },
@@ -61,8 +63,16 @@ export function llamaCppAdapter(
                 activeSignal,
                 video.token,
                 video.options,
+                timeoutForRole?.((request as InferenceRequest).role),
               )
-            : provider.completeSimulationRequest(input, nativeRequest, activeSignal),
+            : provider.completeSimulationRequest(
+                input,
+                nativeRequest,
+                activeSignal,
+                undefined,
+                undefined,
+                timeoutForRole?.((request as InferenceRequest).role),
+              ),
         (raw) =>
           (request as InferenceRequest).role === 'memory'
             ? normalizeStageMemory(extractNativeJson(raw), request)
@@ -89,9 +99,12 @@ export function nativeVideoStageAdapter(
       request: unknown,
       signal: AbortSignal,
       window: ContinuousVideoWindow,
+      encoder?: import('./continuous-video-encoder').NativeVideoEncoder,
+      requestTimeoutMs?: number,
     ): Promise<unknown>;
   },
   input: InferenceInput,
+  timeoutMs?: number,
 ): UnifiedInferenceAdapter {
   return {
     capabilities: base.capabilities,
@@ -115,16 +128,26 @@ export function nativeVideoStageAdapter(
       const token = window.sourceId + ':' + window.fromMs + ':' + window.throughMs;
       const video = llamaCppAdapter(
         {
-          completeSimulationRequest: (selectedInput, nativeRequest, activeSignal) =>
+          completeSimulationRequest: (
+            selectedInput,
+            nativeRequest,
+            activeSignal,
+            _token,
+            _options,
+            deadlineMs,
+          ) =>
             provider.completeSimulationVideoWindow(
               selectedInput,
               nativeRequest,
               activeSignal,
               window,
+              undefined,
+              deadlineMs,
             ),
         },
         input,
         { token },
+        timeoutMs === undefined ? undefined : () => timeoutMs,
       );
       return video.complete({ ...request, nativeVideo: { sourceRef: token } }, signal, observe);
     },

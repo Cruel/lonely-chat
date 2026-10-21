@@ -163,9 +163,11 @@ export class LocalModelPool {
   ): UnifiedInferenceAdapter {
     const worker = this.workers.get(id);
     if (!worker || !this.pinned.has(id)) throw new Error('Local Split model is not resident.');
-    const frames = llamaCppAdapter(worker, input);
+    const frames = llamaCppAdapter(worker, input, undefined, () => timeoutMs);
     const base =
-      nativeVideo && role === 'observer' ? nativeVideoStageAdapter(frames, worker, input) : frames;
+      nativeVideo && role === 'observer'
+        ? nativeVideoStageAdapter(frames, worker, input, timeoutMs)
+        : frames;
     return {
       capabilities: base.capabilities,
       complete: (request, signal, observer) =>
