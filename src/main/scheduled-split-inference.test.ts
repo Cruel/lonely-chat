@@ -89,6 +89,43 @@ it('allows fast Chat to proceed while slow Vision finishes, then adopts eligible
   expect(expired?.observations).toEqual([]);
 });
 
+it('retries unacknowledged Vision events after Chat fails without creating duplicate triggers', async () => {
+  let visionCalls = 0;
+  const changedScene = { ...scene, sceneState: 'The race moves to another track', events: [{ kind: 'reaction', summary: 'A new racer appears', ageMs: 0 }] };
+  const vision = adapter(async () => {
+    const output = ++visionCalls === 1 ? scene : changedScene;
+    return { raw: output, normalized: output };
+  });
+  let attempts = 0;
+  const chatter = adapter(async () => {
+    attempts++;
+    if (attempts === 1) throw new Error('Chat connection failed');
+    return { raw: { ...chat, events: [scene.events[0]] }, normalized: { ...chat, events: [scene.events[0]] } };
+  });
+  const scheduled = new ScheduledSplitInference();
+  let time = 0;
+  const execute = (cycle: number) =>
+    scheduled.execute(
+      { ...input, cycle, frames: input.frames?.map((frame) => ({ ...frame, observedAt: cycle === 1 ? 2000 : 3000 })) },
+      { vision, chat: chatter },
+      new AbortController().signal,
+      undefined,
+      {},
+      { ...policy, execution: 'sequential', strictWait: true },
+      () => time,
+    );
+  await expect(execute(1)).rejects.toThrow('Chat connection failed');
+  time = 1000;
+  const retry = await execute(2);
+  expect(retry?.visionEvents).toHaveLength(1);
+  expect(retry?.accepted.events).toHaveLength(1);
+  expect(retry?.observations[0].description).toBe(scene.sceneState);
+  time = 1100;
+  const next = await execute(3);
+  expect(next?.visionEvents).toHaveLength(1);
+  expect(next?.observations[0].description).toBe(changedScene.sceneState);
+});
+
 it('uses a bounded sequential wait before Chat proceeds without stale observations', async () => {
   vi.useFakeTimers();
   try {

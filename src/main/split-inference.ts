@@ -8,6 +8,7 @@ import {
 } from './unified-inference-request';
 import { acceptSimulationExecution } from './simulation-execution';
 import type { InferredEvent, CapturedObservation } from '../shared/session-contract';
+import { SplitNarrative } from './split-narrative';
 import type { InferenceProfileValues } from '../shared/inference-profile-contract';
 
 /** Sequential stage execution shares one immutable media snapshot and one abort authority. */
@@ -114,8 +115,12 @@ export class ScheduledSplitInference {
   private visionTask: Promise<void> | null = null;
   private generation = 0;
   private serial = 0;
-  private consumedSerial = 0;
   private mediaIdentity = '';
+  private readonly narrative = new SplitNarrative();
+  private retryPayload: {
+    events: readonly ReturnType<SplitNarrative['pending']>[number][];
+    observations: readonly CapturedObservation[];
+  } | null = null;
 
   reset(): void {
     this.cancelActive();
@@ -124,8 +129,9 @@ export class ScheduledSplitInference {
     this.latest.clear();
     this.visionTask = null;
     this.serial = 0;
-    this.consumedSerial = 0;
     this.mediaIdentity = '';
+    this.narrative.reset();
+    this.retryPayload = null;
   }
 
   nextChatDelay(now: number): number {
@@ -207,13 +213,17 @@ export class ScheduledSplitInference {
           const observations: CapturedObservation[] = sceneState.trim()
             ? [{ source: 'vision', kind: 'visual', description: sceneState.trim(), observedAt }]
             : [];
+          const availableAt = now();
+          this.narrative.observeVision(
+            sceneState,
+            output.accepted.events,
+            observedAt,
+            availableAt,
+            snapshot.frames?.map((frame) => `${frame.sourceId}:${frame.observedAt}`) ?? [],
+          );
           this.latest.publish(
-            {
-              events: output.accepted.events,
-              observations,
-              serial: ++this.serial,
-            },
-            now(),
+            { events: output.accepted.events, observations, serial: ++this.serial },
+            availableAt,
             observedAt,
             identity,
           );
@@ -249,8 +259,12 @@ export class ScheduledSplitInference {
         if (visionFailure) throw visionFailure;
         return null;
       }
-      const events = selected?.serial !== this.consumedSerial ? (selected?.events ?? []) : [];
-      const observations = selected?.observations ?? [];
+      // An unsuccessful Chat attempt pins its exact Vision context until a successful
+      // acknowledgement; newer Vision completions remain queued for the next Chat cycle.
+      const pending = this.retryPayload?.events ?? this.narrative.pending(now(), policy.maximumAgeMs);
+      const observations = this.retryPayload?.observations ?? this.narrative.sceneObservation(now(), policy.maximumAgeMs);
+      this.retryPayload ??= { events: pending, observations };
+      const events = pending.map((entry) => entry.event);
       const chatRequest = requests.chat(events, observations);
       const adapter: UnifiedInferenceAdapter = {
         ...adapters.chat,
@@ -269,13 +283,15 @@ export class ScheduledSplitInference {
         { signal, beforeAccept },
       );
       if (signal.aborted || generation !== this.generation) return null;
-      if (selected) this.consumedSerial = selected.serial;
+      const freshChat = this.narrative.merge(output.accepted.events, 'chat', now());
+      this.narrative.acknowledge(pending);
+      this.retryPayload = null;
       return {
         visionEvents: events,
         observations,
         parsed: output.parsed,
         accepted: {
-          events: [...events, ...output.accepted.events],
+          events: [...events, ...freshChat.map((entry) => entry.event)],
           messages: output.accepted.messages,
         },
       };
