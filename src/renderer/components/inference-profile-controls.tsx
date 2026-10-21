@@ -52,7 +52,7 @@ export function InferenceProfileControls({
     setProfiles(items);
     setLocalModels(
       models.installations
-        .filter((item) => !item.projectorOnly)
+        .filter((item) => !item.projectorOnly && item.role === 'vision-language')
         .map((item) => ({ id: item.id, name: item.repo })),
     );
   };
@@ -69,6 +69,18 @@ export function InferenceProfileControls({
       .then(setRevisions)
       .catch((reason: unknown) => setError(String(reason)));
   }, [selectedId, profiles]);
+
+  useEffect(() => {
+    const selected = revisions.find((p) => p.id === selectedId && p.revision === selectedRevision);
+    if (!selected) return;
+    setName(selected.name);
+    setTopology(selected.values.topology);
+    setRoles(selected.values.roles);
+    setDefaults(JSON.stringify(selected.values.stageDefaults, null, 2));
+    setContextDefaults(JSON.stringify(selected.values.contextDefaults ?? {}, null, 2));
+    setExecution(selected.values.architecture?.execution ?? 'sequential');
+    setHybridMaxImages(selected.values.architecture?.hybridMaxImages ?? 0);
+  }, [selectedId, selectedRevision, revisions]);
 
   const load = (profile: InferenceProfile | null) => {
     onSelect(profile);
@@ -312,8 +324,11 @@ export function InferenceProfileControls({
           </div>
           {topology !== 'unified' && (
             <p className="text-zinc-400">
-              Split and Hybrid execution is enabled by the staged executor. Profile selection alone
-              does not send images to the chat role.
+              Strict Split runs Vision first with ordered timestamped frames. Its validated scene
+              description and Events are passed to Chat as text only; Chat receives no raw images.
+              Remote Vision requires explicit image-transmission permission in its Model
+              Configuration. Hybrid and asynchronous scheduling are configured here but require
+              their later executors.
             </p>
           )}
         </div>

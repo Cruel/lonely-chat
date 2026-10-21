@@ -183,9 +183,11 @@ export function DesktopPage() {
   const chooseProfile = (profile: InferenceProfile | null) => {
     setSelectedProfile(profile);
     const unified = profile?.values.roles.unified;
-    if (unified) {
-      setInferenceMode(unified.kind === 'remote' ? 'remote' : 'native');
-      if (unified.kind === 'remote') setRemoteModelId(unified.modelId);
+    const chatRole = profile?.values.roles.chat;
+    const chosen = unified ?? chatRole;
+    if (chosen) {
+      setInferenceMode(chosen.kind === 'remote' ? 'remote' : 'native');
+      if (chosen.kind === 'remote') setRemoteModelId(chosen.modelId);
     }
   };
   useEffect(() => {

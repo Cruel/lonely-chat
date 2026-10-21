@@ -6,6 +6,7 @@ import { FakeInference, type InferenceInput, type InferenceProvider } from './fa
 import { clipSimulationWindow } from './simulation-cycle';
 import { SimulationExecutionError } from './simulation-execution';
 import { InferenceCoordinator, type UnifiedInferenceAdapter } from './inference-coordinator';
+import { SequentialSplitInference, type SplitAdapters } from './split-inference';
 import { fixtureInferenceAdapter, llamaCppAdapter } from './unified-inference-adapters';
 import { InferenceHistory, type CycleInput } from './inference-history';
 import { VideoFrameBuffer } from './video-frame-buffer';
@@ -55,6 +56,11 @@ export class SessionController {
   private subscribers = new Set<(snapshot: SessionSnapshot) => void>();
   private readonly coordinator = new InferenceCoordinator();
   private remoteAdapter: ((input: InferenceInput) => UnifiedInferenceAdapter) | null = null;
+  private splitAdapters: ((input: InferenceInput) => SplitAdapters) | null = null;
+  private splitUsesLocal = false;
+  private activeProfile: import('../shared/inference-profile-contract').InferenceProfile | null =
+    null;
+  private readonly splitCoordinator = new SequentialSplitInference();
   private readonly scheduler: ChatScheduler;
   private readonly history: InferenceHistory;
   private readonly video: VideoFrameBuffer;
@@ -129,6 +135,32 @@ export class SessionController {
     if (['running', 'starting', 'switching'].includes(this.state.phase))
       throw new Error('Stop the current Run before changing its remote model.');
     this.remoteAdapter = adapter;
+  }
+
+  createLocalSplitAdapter(input: InferenceInput): UnifiedInferenceAdapter {
+    if (!this.nativeInference) throw new Error('Local inference is unavailable.');
+    const provider = this.nativeInference as InferenceProvider & {
+      completeSimulationRequest?: (
+        input: InferenceInput,
+        request: unknown,
+        signal: AbortSignal,
+      ) => Promise<unknown>;
+    };
+    if (!provider.completeSimulationRequest) return fixtureInferenceAdapter(provider, input);
+    return llamaCppAdapter(
+      {
+        completeSimulationRequest: (selected, request, signal) =>
+          provider.completeSimulationRequest!(selected, request, signal),
+      },
+      input,
+    );
+  }
+
+  configureSplit(adapters: (input: InferenceInput) => SplitAdapters, usesLocal: boolean): void {
+    if (['running', 'starting', 'switching'].includes(this.state.phase))
+      throw new Error('Stop the current Run before changing Split models.');
+    this.splitAdapters = adapters;
+    this.splitUsesLocal = usesLocal;
   }
 
   canExecutePausedPlayground(): boolean {
@@ -284,13 +316,16 @@ export class SessionController {
           : validateContext(rawContext);
     if (mode !== 'fake' && mode !== 'native' && mode !== 'remote')
       throw new Error('Unknown inference mode.');
-    if (mode === 'remote' && !this.remoteAdapter)
+    if (mode === 'remote' && profile?.values.topology !== 'split' && !this.remoteAdapter)
       throw new Error('Remote inference is not configured.');
+    if (profile?.values.topology === 'split' && !this.splitAdapters)
+      throw new Error('Split inference stages are not configured.');
     if (mode === 'native' && !this.nativeInference) {
       throw new Error('The native inference runtime is not configured.');
     }
     const sessionSeed = options.seed ?? randomInferenceSeed();
     this.activeInference = mode === 'native' ? this.nativeInference! : this.inference;
+    this.activeProfile = profile ? structuredClone(profile) : null;
     this.context = context;
     this.runPreferences = {
       ...(settingsOverride ? validatePreferences(settingsOverride) : this.preferences),
@@ -520,6 +555,7 @@ export class SessionController {
     this.switchAbort = null;
     this.abort?.abort();
     this.coordinator.cancelActive();
+    this.splitCoordinator.cancelActive();
     const provider = this.activeInference;
     this.shutdownPromise = this.stopProvider(provider);
     this.abort = null;
@@ -597,6 +633,8 @@ export class SessionController {
     activate: () => Promise<void>,
     modelId: string,
   ): Promise<SessionSnapshot> {
+    if (this.state.inferenceProfile?.topology === 'split')
+      throw new Error('Stop the Split Run before changing its pinned local Model Configuration.');
     if (
       this.state.mode !== 'native' ||
       !['starting', 'running', 'error'].includes(this.state.phase)
@@ -836,6 +874,13 @@ export class SessionController {
           this.trace.update(traceId, { input: effectiveInput });
         }
         if (!this.active(epoch) || abort.signal.aborted) return undefined;
+        if (
+          this.state.inferenceProfile?.topology === 'split' &&
+          this.splitUsesLocal &&
+          this.state.mode !== 'native' &&
+          this.nativeInference
+        )
+          await this.nativeInference.prepare?.(abort.signal);
         await provider.prepare?.(abort.signal);
         await this.waitUntilResumed();
         if (!this.active(epoch) || abort.signal.aborted) return undefined;
@@ -857,7 +902,7 @@ export class SessionController {
           ) => Promise<unknown>;
         };
         const adapter =
-          this.state.mode === 'remote'
+          this.state.mode === 'remote' && this.state.inferenceProfile?.topology !== 'split'
             ? this.remoteAdapter!(effectiveInput)
             : nativeProvider.completeSimulationRequest
               ? llamaCppAdapter(
@@ -872,6 +917,23 @@ export class SessionController {
                   effectiveInput,
                 )
               : fixtureInferenceAdapter(provider, effectiveInput);
+        if (this.state.inferenceProfile?.topology === 'split') {
+          if (!this.splitAdapters) throw new Error('Split inference models are not configured.');
+          const result = await this.splitCoordinator.execute(
+            effectiveInput,
+            this.splitAdapters(effectiveInput),
+            abort.signal,
+            () => this.waitUntilResumed(),
+            this.activeProfile?.values.stageDefaults,
+          );
+          inferenceCompleted = this.clock.now();
+          receivedOutput = true;
+          rawOutput = result.parsed;
+          return {
+            ...result,
+            parsed: { ...result.parsed, events: [...result.visionEvents, ...result.parsed.events] },
+          };
+        }
         return this.coordinator.execute(effectiveInput, adapter, {
           signal: abort.signal,
           enforceAudience: Boolean(this.audience),

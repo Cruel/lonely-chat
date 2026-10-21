@@ -221,7 +221,11 @@ const inferenceProfiles = new InferenceProfileStore(app.getPath('userData'), (re
   ref.kind === 'remote'
     ? remoteStore
         .list()
-        .models.some((model) => model.id === ref.modelId && (role !== 'observer' || model.images))
+        .models.some(
+          (model) =>
+            model.id === ref.modelId &&
+            (role !== 'observer' || (model.images && model.allowRemoteImages)),
+        )
     : installs
         .snapshot()
         .installations.some(
@@ -905,10 +909,13 @@ function registerHandlers(): void {
         const profile = profileId
           ? await inferenceProfiles.resolve(profileId, profileRevision ?? undefined)
           : null;
-        if (profile && profile.values.topology !== 'unified')
-          throw new Error(
-            `${profile.values.topology} inference requires the staged inference executor (#53).`,
-          );
+        if (profile?.values.topology === 'hybrid')
+          throw new Error('Hybrid execution is not yet available.');
+        if (
+          profile?.values.topology === 'split' &&
+          profile.values.architecture?.execution === 'asynchronous'
+        )
+          throw new Error('Asynchronous Split execution is provided by #54.');
         const unifiedRole = profile?.values.roles.unified;
         if (unifiedRole && mode !== (unifiedRole.kind === 'local' ? 'native' : 'remote'))
           throw new Error(
@@ -928,7 +935,11 @@ function registerHandlers(): void {
               )
           : undefined;
         if (presetId && !preset) throw new Error('Selected prompt preset was not found.');
+        const splitChat = profile?.values.topology === 'split' ? profile.values.roles.chat : null;
+        if (splitChat && mode !== (splitChat.kind === 'remote' ? 'remote' : 'native'))
+          throw new Error('Split Simulation provider must match its Chat role.');
         const activeModel =
+          splitChat?.modelId ??
           unifiedRole?.modelId ??
           (mode === 'remote'
             ? recordedConfig?.settingsPolicy === 'saved'
@@ -940,6 +951,7 @@ function registerHandlers(): void {
                 : installs.snapshot().active['vision-language']
               : null);
         if (
+          !splitChat &&
           recordedConfig?.settingsPolicy === 'saved' &&
           mode === 'native' &&
           recordedConfig.modelId !== activeModel
@@ -953,6 +965,21 @@ function registerHandlers(): void {
           throw new Error(
             'Activate the local Model Configuration selected by this Inference Profile before starting.',
           );
+        const splitRoles = profile?.values.topology === 'split' ? profile.values.roles : null;
+        const localSplitModels = splitRoles
+          ? [splitRoles.observer, splitRoles.chat].filter((ref) => ref?.kind === 'local')
+          : [];
+        if (localSplitModels.length) {
+          if (new Set(localSplitModels.map((ref) => ref?.modelId)).size !== 1)
+            throw new Error(
+              'Distinct simultaneous local models require the resident scheduler (#55).',
+            );
+          if (
+            !packageE2E &&
+            installs.snapshot().active['vision-language'] !== localSplitModels[0]?.modelId
+          )
+            throw new Error('Activate the local Split Model Configuration before starting.');
+        }
         const effectivePolicy = resolveUnifiedProfilePolicy(
           profile,
           recordedConfig?.settingsPolicy === 'saved'
@@ -991,7 +1018,44 @@ function registerHandlers(): void {
         // Playground may own an idle warm worker even though it is not busy.
         // The start reservation prevents another Playground request during this await.
         await playground.stop();
-        if (mode === 'remote') {
+        if (splitRoles) {
+          // Pin the resolved provider/model configuration for this entire Run.
+          const pinnedRemote = {
+            observer:
+              splitRoles.observer?.kind === 'remote'
+                ? remoteStore.selected(splitRoles.observer.modelId)
+                : null,
+            chat:
+              splitRoles.chat?.kind === 'remote'
+                ? remoteStore.selected(splitRoles.chat.modelId)
+                : null,
+          };
+          const make = (
+            role: 'observer' | 'chat',
+            input: import('./fake-inference').InferenceInput,
+          ) => {
+            const ref = splitRoles[role]!;
+            if (ref.kind === 'local') return session.createLocalSplitAdapter(input);
+            const selected = pinnedRemote[role]!;
+            return selected.connection.credentialMode === 'chatgpt'
+              ? chatGPTUnifiedAdapter(selected, chatGPTAuth, {
+                  timeoutMs: effectiveSettings.inferenceTimeoutMs,
+                  roster: input.roster ?? [],
+                })
+              : remoteUnifiedAdapter(selected, {
+                  timeoutMs: effectiveSettings.inferenceTimeoutMs,
+                  roster: input.roster,
+                });
+          };
+          session.configureSplit(
+            (input) => ({
+              vision: make('observer', input),
+              chat: make('chat', input),
+            }),
+            localSplitModels.length > 0,
+          );
+        }
+        if (mode === 'remote' && !splitRoles) {
           if (!activeModel) throw new Error('Select a remote Model Configuration.');
           const selected = remoteStore.selected(activeModel);
           session.configureRemote((input) =>
