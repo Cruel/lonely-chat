@@ -231,6 +231,10 @@ export class SessionController {
   }
 
   /** The inference worker and each cycle read the start-of-run revision. */
+  getEffectiveProfile(): import('../shared/inference-profile-contract').InferenceProfile | null {
+    return this.activeProfile ? structuredClone(this.activeProfile) : null;
+  }
+
   getRunPreferences(): SessionPreferences {
     return { ...this.runPreferences };
   }

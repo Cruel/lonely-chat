@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { validatePreferences } from '../shared/session-contract';
-import { validateProfileSnapshot } from '../shared/inference-profile-contract';
+import { validateProfileSnapshot, type InferenceProfile } from '../shared/inference-profile-contract';
 import { supportedRecordedMediaPath } from './recorded-media-access';
 import type {
   RecordedRun,
@@ -243,6 +243,18 @@ export class RecordedScenarioStore {
             }
           : {}),
         effective: validateScenarioConfig(value.effective),
+        ...(value.appliedProfileRevisions === undefined ? {} : {
+          appliedProfileRevisions: (() => {
+            if (!Array.isArray(value.appliedProfileRevisions) || value.appliedProfileRevisions.length > 128)
+              throw new Error('Invalid recorded Run profile revisions.');
+            return value.appliedProfileRevisions.map((entry: unknown) => {
+              const revision = object(entry);
+              if (!integer(revision.cycle, 1, Number.MAX_SAFE_INTEGER))
+                throw new Error('Invalid recorded Run profile admission.');
+              return { cycle: revision.cycle as number, profile: validateProfileSnapshot(revision.profile) };
+            });
+          })(),
+        }),
         effectiveSettings: validatePreferences(value.effectiveSettings),
       } as unknown as RecordedRun;
     });
@@ -361,6 +373,23 @@ export class RecordedScenarioStore {
       return structuredClone(run);
     });
   }
+  /** Record the exact saved profile only after its admission, not when merely queued. */
+  async recordProfileAdmission(id: string, cycle: number, profile: InferenceProfile): Promise<void> {
+    const snapshot = validateProfileSnapshot(profile);
+    if (!uuid.test(id) || !integer(cycle, 1, Number.MAX_SAFE_INTEGER))
+      throw new Error('Invalid profile admission.');
+    await this.serialize(async () => {
+      const data = await this.read();
+      const index = data.runs.findIndex((run) => run.id === id);
+      if (index < 0 || data.runs[index].status !== 'running') return;
+      const prior = data.runs[index].appliedProfileRevisions ?? [];
+      if (prior.length >= 128) throw new Error('Run profile revision evidence is full.');
+      data.runs[index] = { ...data.runs[index],
+        appliedProfileRevisions: [...prior, { cycle, profile: snapshot }] };
+      await this.publish(data);
+    });
+  }
+
   async finish(
     id: string,
     status: RecordedRun['status'],

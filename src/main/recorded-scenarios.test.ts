@@ -88,12 +88,16 @@ it('freezes a selected profile revision in Scenario and Run evidence without cre
     effectivePrompt: { context: scenario.config.context, chatActivity: 'normal' },
     effectiveSeed: 42,
   });
+  await store.recordProfileAdmission(run.id, 3, { ...profile, revision: 3 });
   await store.delete(scenario.id);
   const restarted = new RecordedScenarioStore(root);
   const [reloaded] = await restarted.runs();
   expect(reloaded.effectiveProfile).toEqual(profile);
   expect(reloaded.effective.profileSnapshot).toEqual(profile);
   expect(reloaded.effectiveProfile?.revision).toBe(2);
+  expect(reloaded.appliedProfileRevisions).toEqual([
+    { cycle: 3, profile: { ...profile, revision: 3 } },
+  ]);
   expect(run.effectiveProfile).toEqual(profile);
   expect(() =>
     validateScenarioConfig({

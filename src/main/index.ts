@@ -1889,7 +1889,18 @@ async function boot(): Promise<void> {
       mainWindow.webContents.send('audio:change', status);
   });
   let previousSessionPhase = '';
+  let lastRecordedProfileRevision: number | null = null;
   session.subscribe((status) => {
+    if (activeRecordedRun && status.runId === activeRecordedRun.sessionRunId &&
+        status.pendingProfileRevision === null && status.inferenceProfile &&
+        status.inferenceProfile.revision !== lastRecordedProfileRevision) {
+      const profile = session.getEffectiveProfile();
+      if (profile && lastRecordedProfileRevision !== null) {
+        void recordedScenarios.recordProfileAdmission(activeRecordedRun.id, status.cycle, profile)
+          .catch((error: unknown) => logger.error('recording', 'Unable to record live profile admission', error));
+      }
+      lastRecordedProfileRevision = status.inferenceProfile.revision;
+    }
     if (
       activeRecordedRun &&
       status.runId === activeRecordedRun.sessionRunId &&

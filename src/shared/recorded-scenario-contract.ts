@@ -57,6 +57,8 @@ export interface RecordedRun {
   readonly effective: RecordedScenarioConfig;
   readonly effectiveSettings: SessionPreferences;
   readonly effectiveProfile?: InferenceProfile | null;
+  /** Admission-ordered complete snapshots of live-applied revisions; initial snapshot is effectiveProfile. */
+  readonly appliedProfileRevisions?: readonly { readonly cycle: number; readonly profile: InferenceProfile }[];
   readonly effectiveModelId: string | null;
   readonly effectivePreset: {
     readonly id: string;
