@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { SavedInferenceCases } from './saved-inference-cases';
+import { splitRequests } from './split-inference';
 import { makeArchive, openArchive } from './portable-archive';
 import { packageScenario, importScenario, portableRun, restoreRun } from './portable-scenarios';
 import {
@@ -541,6 +542,14 @@ function registerHandlers(): void {
     'presets:delete': (id: string) => promptPresets.delete(id),
     'playground:run': (request: import('../shared/playground-contract').FreeformRequest) =>
       playground.run(request),
+    'profiles:preview-stages': (input: import('./fake-inference').InferenceInput, stages: import('../shared/inference-profile-contract').InferenceProfileValues['stageDefaults'], events: import('../shared/session-contract').InferredEvent[], observations: import('../shared/session-contract').CapturedObservation[]) => {
+      const built = splitRequests(input, stages);
+      const redact = (request: ReturnType<typeof built.chat>) => ({
+        ...request,
+        content: request.content.map((part) => part.type === 'image' ? { ...part, dataUrl: '[image bytes redacted]' } : part),
+      });
+      return { vision: redact(built.vision), chat: redact(built.chat(events, observations)) };
+    },
     'playground:simulation:preview': (
       request: import('../shared/playground-contract').SimulationExperimentRequest,
     ) => playground.previewSimulation(request),
@@ -2028,6 +2037,7 @@ app.on('will-quit', () => {
   ipcMain.removeHandler('playground:video:choose');
   ipcMain.removeHandler('playground:run');
   ipcMain.removeHandler('playground:simulation:preview');
+  ipcMain.removeHandler('profiles:preview-stages');
   ipcMain.removeHandler('playground:simulation:run');
   ipcMain.removeHandler('speech-test:status');
   ipcMain.removeHandler('speech-test:start');

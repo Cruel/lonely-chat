@@ -144,6 +144,7 @@ export interface DesktopInvocations {
   'presets:delete': void;
   'playground:run': FreeformResult;
   'playground:simulation:preview': { constructedRequest: unknown; submittedRequest: unknown };
+  'profiles:preview-stages': unknown;
   'playground:simulation:run': SimulationExperimentResult;
   'speech-test:status': SpeechTestSnapshot;
   'speech-test:start': SpeechTestSnapshot;
@@ -293,6 +294,7 @@ export interface DesktopArguments {
   'presets:delete': [id: string];
   'playground:run': [request: FreeformRequest];
   'playground:simulation:preview': [request: SimulationExperimentRequest];
+  'profiles:preview-stages': [input: import('../main/fake-inference').InferenceInput, stages: InferenceProfileValues['stageDefaults'], events: import('../shared/session-contract').InferredEvent[], observations: import('../shared/session-contract').CapturedObservation[]];
   'playground:simulation:run': [request: SimulationExperimentRequest];
   'speech-test:status': [];
   'speech-test:start': [config: SpeechTestStart];
@@ -453,6 +455,7 @@ export interface DesktopAPI {
   }): Promise<PromptPreset>;
   deletePromptPreset(id: string): Promise<void>;
   runFreeform(request: FreeformRequest): Promise<FreeformResult>;
+  previewStages(input: import('../main/fake-inference').InferenceInput, stages: InferenceProfileValues['stageDefaults'], events: import('../shared/session-contract').InferredEvent[], observations: import('../shared/session-contract').CapturedObservation[]): Promise<unknown>;
   previewSimulation(
     request: SimulationExperimentRequest,
   ): Promise<{ constructedRequest: unknown; submittedRequest: unknown }>;

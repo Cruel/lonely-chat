@@ -140,6 +140,7 @@ const modelsAPI = {
   runFreeform: async () => {
     throw new Error('Not used in this test.');
   },
+  previewStages: async () => ({ vision: {}, chat: {} }),
   previewSimulation: async () => {
     throw new Error('Not used in this test.');
   },

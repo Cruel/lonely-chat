@@ -52,6 +52,7 @@ const api: DesktopAPI = {
   deletePromptPreset: (id) => invoke('presets:delete', id),
   runFreeform: (request) => invoke('playground:run', request),
   previewSimulation: (request) => invoke('playground:simulation:preview', request),
+  previewStages: (input, stages, events, observations) => invoke('profiles:preview-stages', input, stages, events, observations),
   runSimulationExperiment: (request) => invoke('playground:simulation:run', request),
   getSpeechTestStatus: () => invoke('speech-test:status'),
   startSpeechTest: (config) => invoke('speech-test:start', config),

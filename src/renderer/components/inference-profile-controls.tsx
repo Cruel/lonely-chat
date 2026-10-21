@@ -7,7 +7,7 @@ import type {
   ProfileModelReference,
 } from '../../shared/inference-profile-contract';
 import type { RemoteCatalog } from '../../shared/remote-inference-contract';
-import { resolveStageContext, resolveStageTemplate, DEFAULT_CHAT_PROMPT, DEFAULT_VISION_PROMPT } from '../../main/stage-context';
+import type { InferenceInput } from '../../main/fake-inference';
 
 interface Props {
   selectedId: string;
@@ -39,40 +39,22 @@ export function InferenceProfileControls({
   const [roles, setRoles] = useState<InferenceProfileValues['roles']>({});
   const [defaults, setDefaults] = useState('{}');
   const [showStagePreview, setShowStagePreview] = useState(false);
+  const [previewInput, setPreviewInput] = useState(JSON.stringify({ context: 'Example stream narrative', cycle: 1, boundary: { fromSequence: 0, throughSequence: 1, fromMs: 0, throughMs: 1000 }, frames: [{ sourceId: 'example-camera', observedAt: 1000, width: 320, height: 180, dataUrl: 'data:image/jpeg;base64,' }] }, null, 2));
+  const [previewEvents, setPreviewEvents] = useState('[]');
+  const [previewObservations, setPreviewObservations] = useState('[]');
   const [actualRequestPreview, setActualRequestPreview] = useState<string | null>(null);
-  const stagePreview = (() => {
+  const [stagePreview, setStagePreview] = useState<unknown>(null);
+  const resolvePreview = async () => {
     try {
       const parsed = JSON.parse(defaults) as InferenceProfileValues['stageDefaults'];
-      return required[topology].map((role) => {
-        const stage = parsed[role];
-        const sample = resolveStageContext({
-          context: 'Example stream narrative', cycle: 1,
-          boundary: { fromSequence: 0, throughSequence: 1, fromMs: 0, throughMs: 1000 },
-          frames: role === 'observer' ? [{
-            sourceId: 'example-camera', observedAt: 1000, width: 320, height: 180, dataUrl: 'data:image/jpeg;base64,'
-          }] : [],
-          recentEvents: [{ kind: 'reaction', summary: 'An example event', observedAt: 900 }],
-          observations: [{ source: 'vision', kind: 'visual', description: 'Example scene', observedAt: 950 }],
-        }, stage);
-        return {
-          role,
-          exampleOnly: true,
-          instructions: resolveStageTemplate(stage?.systemPrompt ??
-            (role === 'observer' ? DEFAULT_VISION_PROMPT : DEFAULT_CHAT_PROMPT), sample.data),
-          userText: resolveStageTemplate(stage?.userPrompt ?? '{{context}}', sample.data),
-          includedContext: sample.data,
-          omissions: sample.omitted,
-          omittedBySource: sample.omittedBySource,
-          contextCharacters: sample.characters,
-          responseTokenLimit: stage?.maxResponseTokens ?? 2048,
-          mediaReferences: role === 'observer' ? [{ sourceId: 'example-camera', observedAt: 1000, type: 'image' }] : [],
-          visionOutput: role === 'observer' ? stage?.visionOutput ?? 'both' : undefined,
-        };
-      });
-    } catch {
-      return null;
+      const input = JSON.parse(previewInput) as InferenceInput;
+      const events = JSON.parse(previewEvents) as NonNullable<InferenceInput['recentEvents']>;
+      const observations = JSON.parse(previewObservations) as NonNullable<InferenceInput['observations']>;
+      setStagePreview(await window.lonelyChat!.previewStages(input, parsed, [...events], [...observations]));
+    } catch (reason) {
+      setStagePreview({ error: reason instanceof Error ? reason.message : String(reason) });
     }
-  })();
+  };
   const [contextDefaults, setContextDefaults] = useState('{}');
   const [execution, setExecution] = useState<'sequential' | 'asynchronous'>('sequential');
   const [hybridMaxImages, setHybridMaxImages] = useState(0);
@@ -486,9 +468,28 @@ export function InferenceProfileControls({
               {actualRequestPreview && <pre aria-label="Actual submitted request" className="max-h-64 overflow-auto whitespace-pre-wrap text-xs">
                 {actualRequestPreview}
               </pre>}
-              {showStagePreview && <pre aria-label="Stage request preview" className="max-h-64 overflow-auto whitespace-pre-wrap text-xs">
-                {stagePreview ? JSON.stringify(stagePreview, null, 2) : 'Invalid stage JSON.'}
-              </pre>}
+              {showStagePreview && <div className="space-y-2">
+                <p className="text-xs text-zinc-400">Exact production request construction with your unsaved stage settings and selected input snapshot. Edit the input JSON or paste a captured input. Chat uses the supplied intermediate Vision Events and Observations. Image bytes are redacted in the display, never sent.</p>
+                <label className="block">Input snapshot (JSON)
+                  <textarea aria-label="Stage preview input" rows={5} value={previewInput}
+                    onChange={(e) => setPreviewInput(e.target.value)}
+                    className="mt-1 w-full rounded border border-zinc-600 bg-zinc-900 p-2 font-mono" />
+                </label>
+                <label className="block">Chat Vision Events (JSON array)
+                  <textarea aria-label="Stage preview events" rows={2} value={previewEvents}
+                    onChange={(e) => setPreviewEvents(e.target.value)}
+                    className="mt-1 w-full rounded border border-zinc-600 bg-zinc-900 p-2 font-mono" />
+                </label>
+                <label className="block">Chat Vision Observations (JSON array)
+                  <textarea aria-label="Stage preview observations" rows={2} value={previewObservations}
+                    onChange={(e) => setPreviewObservations(e.target.value)}
+                    className="mt-1 w-full rounded border border-zinc-600 bg-zinc-900 p-2 font-mono" />
+                </label>
+                <button type="button" className="rounded border border-zinc-600 px-2 py-1" onClick={() => void resolvePreview()}>Resolve current request</button>
+                <pre aria-label="Stage request preview" className="max-h-64 overflow-auto whitespace-pre-wrap text-xs">
+                  {JSON.stringify(stagePreview, null, 2)}
+                </pre>
+              </div>}
             </div>
           )}
           <div className="flex gap-2">
