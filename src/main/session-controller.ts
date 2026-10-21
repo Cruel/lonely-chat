@@ -146,6 +146,14 @@ export class SessionController {
         profile.values.topology !== this.activeProfile.values.topology ||
         JSON.stringify(profile.values.roles) !== JSON.stringify(this.activeProfile.values.roles))
       throw new Error('Changing models, providers, or topology requires stopping the Run and an explicit transition.');
+    const liveKeys = new Set(['cycleIntervalMs', 'historyMaxCount', 'historyMaxAgeMs', 'chatActivity']);
+    const previousSettings = this.activeProfile.values.stageDefaults.unified?.settings ?? {};
+    const nextSettings = profile.values.stageDefaults.unified?.settings ?? {};
+    for (const key of new Set([...Object.keys(previousSettings), ...Object.keys(nextSettings)])) {
+      if (!liveKeys.has(key) && JSON.stringify(previousSettings[key as keyof typeof previousSettings]) !==
+          JSON.stringify(nextSettings[key as keyof typeof nextSettings]))
+        throw new Error('Runtime/resource changes require stopping the Run.');
+    }
     if (this.pendingProfile && profile.revision <= this.pendingProfile.revision ||
         profile.revision <= this.activeProfile.revision)
       throw new Error('Select a newer saved profile revision.');
@@ -159,6 +167,17 @@ export class SessionController {
     if (!next) return;
     this.pendingProfile = null;
     this.activeProfile = structuredClone(next);
+    if (next.values.topology === 'unified') {
+      const selected = next.values.stageDefaults.unified?.settings;
+      this.runPreferences = validatePreferences({
+        ...this.runPreferences,
+        ...(selected?.cycleIntervalMs !== undefined ? { cycleIntervalMs: selected.cycleIntervalMs } : {}),
+        ...(selected?.historyMaxCount !== undefined ? { historyMaxCount: selected.historyMaxCount } : {}),
+        ...(selected?.historyMaxAgeMs !== undefined ? { historyMaxAgeMs: selected.historyMaxAgeMs } : {}),
+        ...(selected?.chatActivity !== undefined ? { chatActivity: selected.chatActivity } : {}),
+      });
+      this.history.configure(this.runPreferences, this.observationNow());
+    }
     this.setState({
       pendingProfileRevision: null,
       inferenceProfile: { id: next.id, name: next.name, revision: next.revision, topology: next.values.topology },

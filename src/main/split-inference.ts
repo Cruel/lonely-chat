@@ -228,6 +228,8 @@ export class ScheduledSplitInference {
   ): Promise<SplitResult | null> {
     this.visionCadence ??= new StageCadence(policy.visionIntervalMs);
     this.chatCadence ??= new StageCadence(policy.chatIntervalMs);
+    this.visionCadence.configure(policy.visionIntervalMs);
+    this.chatCadence.configure(policy.chatIntervalMs);
     const generation = this.generation;
     const sourceFrames = input.frames ?? [];
     const chatSourceFrames = input.chatFrames ?? sourceFrames;

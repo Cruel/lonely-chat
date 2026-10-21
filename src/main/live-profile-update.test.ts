@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ChatService } from './chat-service';
 import { SessionController } from './session-controller';
 import { FakeClock, flushMicrotasks } from './test-support/fake-clock';
@@ -30,6 +30,35 @@ describe('live profile admission', () => {
     await flushMicrotasks();
     expect(controller.snapshot().inferenceProfile?.revision).toBe(2);
     expect(controller.snapshot().pendingProfileRevision).toBeNull();
+    controller.stop();
+  });
+  it('keeps an in-flight input immutable while queuing a cadence/history revision', async () => {
+    const clock = new FakeClock();
+    const seen: unknown[] = [];
+    let release!: (value: unknown) => void;
+    const pending = new Promise<unknown>((resolve) => { release = resolve; });
+    const inference = { generate: vi.fn((input: unknown) => { seen.push(input); return pending; }) };
+    const controller = new SessionController(new ChatService(), inference, clock);
+    controller.start('stream', 'fake', null, undefined, undefined, undefined, profile(1));
+    await flushMicrotasks();
+    const inputBefore = JSON.stringify(seen[0]);
+    const revised: InferenceProfile = {
+      ...profile(2), values: { ...profile(2).values,
+        stageDefaults: { unified: { systemPrompt: 'new prompt',
+          settings: { cycleIntervalMs: 6000, historyMaxCount: 12 } } },
+      },
+    };
+    controller.queueProfileUpdate(revised);
+    expect(controller.getRunPreferences().cycleIntervalMs).toBe(3000);
+    expect(JSON.stringify(seen[0])).toBe(inputBefore);
+    expect(controller.snapshot().pendingProfileRevision).toBe(2);
+    release({ events: [], messages: [] });
+    await flushMicrotasks();
+    expect(controller.snapshot().inferenceProfile?.revision).toBe(1);
+    clock.advance(6000);
+    await flushMicrotasks();
+    expect(controller.snapshot().inferenceProfile?.revision).toBe(2);
+    expect(controller.getRunPreferences()).toMatchObject({ cycleIntervalMs: 6000, historyMaxCount: 12 });
     controller.stop();
   });
 });

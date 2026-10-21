@@ -248,6 +248,7 @@ let activeRecordedRun: {
   config: import('../shared/recorded-scenario-contract').RecordedScenarioConfig;
 } | null = null;
 let pendingRecordedFinish: Promise<void> = Promise.resolve();
+let lastRecordedProfileRevision: number | null = null;
 const windowStore = new WindowPreferencesStore(app.getPath('userData'));
 let windowPrefs: WindowPreferences = DEFAULT_WINDOW_PREFERENCES;
 let pendingWindowSave: ReturnType<typeof setTimeout> | null = null;
@@ -1136,6 +1137,7 @@ function registerHandlers(): void {
               },
               effectiveSeed: started.sessionSeed!,
             });
+            lastRecordedProfileRevision = profile?.revision ?? null;
             activeRecordedRun = {
               id: saved.id,
               sessionRunId: started.runId!,
@@ -1889,7 +1891,6 @@ async function boot(): Promise<void> {
       mainWindow.webContents.send('audio:change', status);
   });
   let previousSessionPhase = '';
-  let lastRecordedProfileRevision: number | null = null;
   session.subscribe((status) => {
     if (activeRecordedRun && status.runId === activeRecordedRun.sessionRunId &&
         status.pendingProfileRevision === null && status.inferenceProfile &&

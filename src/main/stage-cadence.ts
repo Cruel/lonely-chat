@@ -3,9 +3,16 @@ export class StageCadence {
   private lastStarted: number | null = null;
   private busy = false;
 
-  constructor(private readonly minimumIntervalMs: number) {
+  constructor(private minimumIntervalMs: number) {
     if (!Number.isFinite(minimumIntervalMs) || minimumIntervalMs < 0)
       throw new Error('Invalid stage minimum interval.');
+  }
+
+  /** Apply a new interval at stage admission, preserving the last start and busy state. */
+  configure(minimumIntervalMs: number): void {
+    if (!Number.isFinite(minimumIntervalMs) || minimumIntervalMs < 0)
+      throw new Error('Invalid stage minimum interval.');
+    this.minimumIntervalMs = minimumIntervalMs;
   }
 
   /** Busy work never queues a catch-up attempt. */
