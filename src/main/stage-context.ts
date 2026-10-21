@@ -22,7 +22,7 @@ export function resolveStageContext(input: InferenceInput, stage: InferenceStage
     chat: sources.has('chat') ? bound(input.recentChat, (v) => v.presentedAt) : [],
     scene: sources.has('scene') ? bound(input.observations, (v) => v.observedAt).filter((v) => v.source === 'vision').map((v) => ({ ...v, evidence: 'model-interpretation' })) : [],
     observations: sources.has('observations') ? bound(input.observations, (v) => v.observedAt).filter((v) => v.source !== 'vision').map((v) => ({ ...v, evidence: 'captured' })) : [],
-    narrative: sources.has('narrative') ? input.context : '',
+    narrative: sources.has('narrative') ? { context: input.context, memory: input.narrativeMemory ?? null } : '',
     interpretations: sources.has('interpretations') ? bound(input.priorInterpretations, (v) => v.observedAt).map((v) => ({ ...v, evidence: 'model-interpretation' })) : [],
     // Deliberately not filtered by recent age: these were explicitly retained as significant.
     significantEvents: sources.has('significantEvents')
@@ -40,7 +40,7 @@ export function resolveStageContext(input: InferenceInput, stage: InferenceStage
     }
   }
   if (size() > max && data.narrative) {
-    data.narrative = '';
+    data.narrative = { context: input.context, memory: null };
     omittedBySource.narrative = 1;
   }
   if (size() > max) throw new Error('Stage context budget cannot fit required narrative and request metadata.');

@@ -4,7 +4,7 @@ import type { NativeInference, NativeModelFiles } from './native-inference';
 import { llamaCppAdapter } from './unified-inference-adapters';
 import type { UnifiedInferenceAdapter } from './inference-coordinator';
 
-type Role = 'observer' | 'chat';
+type Role = 'observer' | 'chat' | 'memory';
 interface Job<T> {
   role: Role;
   signal: AbortSignal;
@@ -67,7 +67,8 @@ export class LocalGpuQueue {
     // A sustained Chat backlog cannot permanently exclude Vision. Deadline
     // ordering applies within each role, and Chat wins an otherwise tied slot.
     this.waiting.sort(
-      (a, b) => a.deadline - b.deadline || (a.role === b.role ? 0 : a.role === 'chat' ? -1 : 1),
+      (a, b) => (a.role === 'memory' ? 1 : 0) - (b.role === 'memory' ? 1 : 0) ||
+        a.deadline - b.deadline || (a.role === b.role ? 0 : a.role === 'chat' ? -1 : 1),
     );
     const visionIndex =
       this.consecutiveChats >= 2 ? this.waiting.findIndex((job) => job.role === 'observer') : -1;

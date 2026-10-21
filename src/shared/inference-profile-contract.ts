@@ -5,7 +5,7 @@ import {
 } from './session-contract';
 
 export type InferenceTopology = 'unified' | 'split' | 'hybrid';
-export type InferenceRole = 'unified' | 'observer' | 'chat';
+export type InferenceRole = 'unified' | 'observer' | 'chat' | 'memory';
 export type ProfileModelReference =
   | { readonly kind: 'local'; readonly modelId: string }
   | { readonly kind: 'remote'; readonly modelId: string };
@@ -31,6 +31,7 @@ export interface InferenceProfileValues {
   readonly topology: InferenceTopology;
   readonly roles: Partial<Record<InferenceRole, ProfileModelReference>>;
   readonly stageDefaults: Partial<Record<InferenceRole, InferenceStageDefaults>>;
+  readonly memory?: { readonly enabled: boolean; readonly intervalMs: number; readonly maxCharacters: number; readonly expireAfterMs: number };
   readonly contextDefaults?: {
     readonly context?: string;
     readonly chatActivity?: SessionPreferences['chatActivity'];
@@ -85,7 +86,7 @@ export function validateProfileValues(
   const value = object(input, 'Inference Profile');
   exact(
     value,
-    ['topology', 'roles', 'stageDefaults', 'contextDefaults', 'architecture'],
+    ['topology', 'roles', 'stageDefaults', 'contextDefaults', 'architecture', 'memory'],
     'Inference Profile',
   );
   if (value.topology !== 'unified' && value.topology !== 'split' && value.topology !== 'hybrid')
@@ -94,12 +95,12 @@ export function validateProfileValues(
   const required = roles[topology];
   const assignments = object(value.roles, 'Inference Profile roles');
   if (
-    Object.keys(assignments).some((key) => !required.includes(key as InferenceRole)) ||
+    Object.keys(assignments).some((key) => ![...required, 'memory'].includes(key as InferenceRole)) ||
     required.some((role) => !assignments[role])
   )
     throw new Error(`The ${topology} topology requires ${required.join(' and ')} roles.`);
   const resolved: Partial<Record<InferenceRole, ProfileModelReference>> = {};
-  for (const role of required) {
+  for (const role of [...required, ...(assignments.memory ? ['memory' as const] : [])]) {
     const ref = object(assignments[role], `${role} assignment`);
     exact(ref, ['kind', 'modelId'], `${role} model assignment`);
     if (
@@ -117,7 +118,7 @@ export function validateProfileValues(
     resolved[role] = model;
   }
   const defaults = object(value.stageDefaults, 'Inference Profile stage defaults');
-  exact(defaults, required, 'stage default role');
+  exact(defaults, [...required, 'memory'], 'stage default role');
   const stages: Partial<Record<InferenceRole, InferenceStageDefaults>> = {};
   for (const [role, raw] of Object.entries(defaults)) {
     const stage = object(raw, `${role} stage defaults`);
@@ -171,6 +172,17 @@ export function validateProfileValues(
       ...(stage.visionOutput !== undefined ? { visionOutput: stage.visionOutput as 'scene' | 'events' | 'both' } : {}),
       ...(stage.visionOptionalFields !== undefined ? { visionOptionalFields: stage.visionOptionalFields as ('confidence' | 'notes')[] } : {}),
     };
+  }
+  let memory: InferenceProfileValues['memory'];
+  if (value.memory !== undefined) {
+    const entry = object(value.memory, 'narrative memory');
+    exact(entry, ['enabled', 'intervalMs', 'maxCharacters', 'expireAfterMs'], 'narrative memory');
+    if (typeof entry.enabled !== 'boolean' ||
+      !Number.isSafeInteger(entry.intervalMs) || (entry.intervalMs as number) < 1000 || (entry.intervalMs as number) > 3600000 ||
+      !Number.isSafeInteger(entry.maxCharacters) || (entry.maxCharacters as number) < 256 || (entry.maxCharacters as number) > 12000 ||
+      !Number.isSafeInteger(entry.expireAfterMs) || (entry.expireAfterMs as number) < 0 || (entry.expireAfterMs as number) > 86400000)
+      throw new Error('Invalid narrative memory policy.');
+    memory = entry as unknown as NonNullable<InferenceProfileValues['memory']>;
   }
   let contextDefaults: InferenceProfileValues['contextDefaults'];
   if (value.contextDefaults !== undefined) {
@@ -250,6 +262,7 @@ export function validateProfileValues(
     topology,
     roles: resolved,
     stageDefaults: stages,
+    ...(memory ? { memory } : {}),
     ...(contextDefaults ? { contextDefaults } : {}),
     ...(architecture ? { architecture } : {}),
   };

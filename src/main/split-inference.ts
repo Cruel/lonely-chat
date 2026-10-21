@@ -9,13 +9,18 @@ import {
 import { acceptSimulationExecution } from './simulation-execution';
 import type { InferredEvent, CapturedObservation } from '../shared/session-contract';
 import { SplitNarrative } from './split-narrative';
+import { NarrativeMemory, type NarrativeMemoryPolicy } from './narrative-memory';
 import { DEFAULT_CHAT_PROMPT, DEFAULT_VISION_PROMPT, resolveStageContext, resolveStageTemplate } from './stage-context';
 import type { InferenceProfileValues } from '../shared/inference-profile-contract';
+
+const hasRetainedMemory = (value: unknown): boolean =>
+  Boolean(value && typeof value === 'object' && 'memory' in value && value.memory);
 
 /** Sequential stage execution shares one immutable media snapshot and one abort authority. */
 export interface SplitAdapters {
   readonly vision: UnifiedInferenceAdapter;
   readonly chat: UnifiedInferenceAdapter;
+  readonly memory?: UnifiedInferenceAdapter;
 }
 export interface SplitResult {
   readonly visionEvents: readonly InferredEvent[];
@@ -68,12 +73,13 @@ export function splitRequests(
         : visionBase.content,
       // Retained summaries and prior interpretations aren't part of the legacy
       // unified JSON context; supply them explicitly as uncertain context.
-      ...((visionContext.data.significantEvents as unknown[]).length > 0 || (visionContext.data.interpretations as unknown[]).length > 0
+      ...((visionContext.data.significantEvents as unknown[]).length > 0 || (visionContext.data.interpretations as unknown[]).length > 0 || hasRetainedMemory(visionContext.data.narrative)
         ? { content: [
             ...(stages.observer?.userPrompt
               ? [{ type: 'text' as const, text: resolveStageTemplate(stages.observer.userPrompt, visionContext.data) }]
               : []),
             { type: 'text' as const, text: JSON.stringify({
+              retainedNarrative: visionContext.data.narrative,
               significantHistoricalSummaries: visionContext.data.significantEvents,
               uncertainPriorInterpretations: visionContext.data.interpretations,
             }) },
@@ -114,12 +120,13 @@ export function splitRequests(
         content: stages.chat?.userPrompt
           ? [{ type: 'text' as const, text: resolveStageTemplate(stages.chat.userPrompt, selectedContext.data) }, ...textOnly.content]
           : textOnly.content,
-        ...((selectedContext.data.significantEvents as unknown[]).length > 0 || (selectedContext.data.interpretations as unknown[]).length > 0
+        ...((selectedContext.data.significantEvents as unknown[]).length > 0 || (selectedContext.data.interpretations as unknown[]).length > 0 || hasRetainedMemory(selectedContext.data.narrative)
           ? { content: [
               ...(stages.chat?.userPrompt
                 ? [{ type: 'text' as const, text: resolveStageTemplate(stages.chat.userPrompt, selectedContext.data) }]
                 : []),
               { type: 'text' as const, text: JSON.stringify({
+                retainedNarrative: selectedContext.data.narrative,
                 significantHistoricalSummaries: selectedContext.data.significantEvents,
                 uncertainPriorInterpretations: selectedContext.data.interpretations,
               }) },
@@ -157,6 +164,12 @@ export class ScheduledSplitInference {
   private serial = 0;
   private mediaIdentity = '';
   private readonly narrative = new SplitNarrative();
+  private readonly memory = new NarrativeMemory();
+  private memoryPolicy: NarrativeMemoryPolicy = { enabled: false, intervalMs: 30000, maxCharacters: 2000, expireAfterMs: 0 };
+
+  configureMemory(policy: NarrativeMemoryPolicy): void {
+    this.memoryPolicy = policy;
+  }
   private retryPayload: {
     events: readonly ReturnType<SplitNarrative['pending']>[number][];
     observations: readonly CapturedObservation[];
@@ -173,8 +186,12 @@ export class ScheduledSplitInference {
     this.serial = 0;
     this.mediaIdentity = '';
     this.narrative.reset();
+    this.memory.reset();
     this.retryPayload = null;
   }
+
+  suspendMemory(): void { this.memory.suspend(); }
+  resumeMemory(): void { this.memory.resume(); }
 
   nextChatDelay(now: number): number {
     return this.chatCadence?.nextDelay(now) ?? 0;
@@ -184,6 +201,7 @@ export class ScheduledSplitInference {
     this.generation++;
     this.visionCoordinator.cancelActive();
     this.chatCoordinator.cancelActive();
+    this.memory.reset();
   }
 
   async execute(
@@ -211,8 +229,10 @@ export class ScheduledSplitInference {
     if (mediaIdentity) this.mediaIdentity = mediaIdentity;
     const identity = `${generation}:${this.mediaIdentity}`;
     const priorScene = this.narrative.sceneObservation(now(), policy.maximumAgeMs);
+    const memory = this.memory.snapshot(now(), this.memoryPolicy);
     const visionInput = frozen({
       ...snapshot,
+      narrativeMemory: memory ?? undefined,
       observations: [...(snapshot.observations ?? []), ...priorScene],
       priorInterpretations: this.narrative.priorInterpretations(now(), policy.maximumAgeMs),
     });
@@ -272,6 +292,8 @@ export class ScheduledSplitInference {
             ? [{ source: 'vision', kind: 'visual', description: sceneState.trim(), observedAt }]
             : [];
           const availableAt = now();
+          if (sceneState.trim()) this.memory.observe(sceneState, observedAt);
+          for (const event of output.accepted.events) this.memory.observe(event.summary, event.observedAt);
           this.narrative.observeVision(
             sceneState,
             output.accepted.events,
@@ -325,6 +347,7 @@ export class ScheduledSplitInference {
       const chatRequest = this.retryPayload?.request ?? requests.chat(events, observations);
       const chatInput = this.retryPayload?.input ?? frozen({
         ...snapshot,
+        narrativeMemory: memory ?? undefined,
         frames: [],
         videoWindow: undefined,
         recentEvents: [...(snapshot.recentEvents ?? []), ...events],
@@ -345,6 +368,11 @@ export class ScheduledSplitInference {
       const freshChat = this.narrative.merge(output.accepted.events, 'chat', now());
       this.narrative.acknowledge(pending);
       this.retryPayload = null;
+      for (const event of freshChat) this.memory.observe(event.event.summary, event.observedAt);
+      if (!signal.aborted && generation === this.generation) {
+        // Memory updates happen after time-critical Chat publication, never on its critical path.
+        void this.memory.update(now(), this.memoryPolicy, adapters.memory ?? adapters.chat, signal);
+      }
       return {
         visionEvents: events,
         observations,

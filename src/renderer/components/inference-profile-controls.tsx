@@ -56,6 +56,7 @@ export function InferenceProfileControls({
     }
   };
   const [contextDefaults, setContextDefaults] = useState('{}');
+  const [memory, setMemory] = useState<NonNullable<InferenceProfileValues['memory']>>({ enabled: false, intervalMs: 30000, maxCharacters: 2000, expireAfterMs: 0 });
   const [execution, setExecution] = useState<'sequential' | 'asynchronous'>('sequential');
   const [hybridMaxImages, setHybridMaxImages] = useState(0);
   const [scheduling, setScheduling] = useState({
@@ -113,6 +114,7 @@ export function InferenceProfileControls({
     setRoles(selected.values.roles);
     setDefaults(JSON.stringify(selected.values.stageDefaults, null, 2));
     setContextDefaults(JSON.stringify(selected.values.contextDefaults ?? {}, null, 2));
+    setMemory(selected.values.memory ?? { enabled: false, intervalMs: 30000, maxCharacters: 2000, expireAfterMs: 0 });
     setExecution(selected.values.architecture?.execution ?? 'sequential');
     setHybridMaxImages(selected.values.architecture?.hybridMaxImages ?? 0);
     loadScheduling(selected.values.architecture);
@@ -126,6 +128,7 @@ export function InferenceProfileControls({
       setRoles(profile.values.roles);
       setDefaults(JSON.stringify(profile.values.stageDefaults, null, 2));
       setContextDefaults(JSON.stringify(profile.values.contextDefaults ?? {}, null, 2));
+      setMemory(profile.values.memory ?? { enabled: false, intervalMs: 30000, maxCharacters: 2000, expireAfterMs: 0 });
       setExecution(profile.values.architecture?.execution ?? 'sequential');
       setHybridMaxImages(profile.values.architecture?.hybridMaxImages ?? 0);
       loadScheduling(profile.values.architecture);
@@ -137,8 +140,9 @@ export function InferenceProfileControls({
       const api = window.lonelyChat!;
       const values: InferenceProfileValues = {
         topology,
-        roles: Object.fromEntries(required[topology].map((role) => [role, roles[role]])),
+        roles: Object.fromEntries([...required[topology], ...(memory.enabled && roles.memory ? ['memory' as const] : [])].map((role) => [role, roles[role]])),
         stageDefaults: JSON.parse(defaults) as InferenceProfileValues['stageDefaults'],
+        ...(topology !== 'unified' ? { memory } : {}),
         architecture: {
           execution,
           hybridMaxImages: topology === 'hybrid' ? hybridMaxImages : 0,
@@ -393,6 +397,24 @@ export function InferenceProfileControls({
               </select>
             </label>
           ))}
+          {topology !== 'unified' && (
+            <div className="space-y-2 rounded border border-zinc-700 p-2">
+              <label className="flex items-center gap-2"><input type="checkbox" disabled={disabled} checked={memory.enabled} onChange={(e) => setMemory((m) => ({ ...m, enabled: e.target.checked }))} />Enable shared Run narrative memory</label>
+              {memory.enabled && <>
+                {(['intervalMs', 'maxCharacters', 'expireAfterMs'] as const).map((field) => (
+                  <label className="block" key={field}>{field === 'intervalMs' ? 'Update cadence (ms)' : field === 'maxCharacters' ? 'Summary character budget' : 'Expire after (ms; 0 = never)'}
+                    <input className="mt-1 w-full rounded border border-zinc-600 bg-zinc-900 p-2" type="number" min={field === 'intervalMs' ? 1000 : field === 'maxCharacters' ? 256 : 0} max={field === 'intervalMs' ? 3600000 : field === 'maxCharacters' ? 12000 : 86400000} disabled={disabled} value={memory[field]} onChange={(e) => setMemory((m) => ({ ...m, [field]: Number(e.target.value) }))} />
+                  </label>
+                ))}
+                <label className="block">Memory model (optional; defaults to Chat)
+                  <select className="mt-1 w-full rounded border border-zinc-600 bg-zinc-900 p-2" disabled={disabled} value={roles.memory ? `${roles.memory.kind}:${roles.memory.modelId}` : ''} onChange={(e) => setRoles((current) => ({ ...current, memory: models.find((m) => m.key === e.target.value)?.ref }))}>
+                    <option value="">Use Chat model</option>
+                    {models.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}
+                  </select>
+                </label>
+              </>}
+            </div>
+          )}
           <label className="block">
             Context defaults (JSON; prompt presets override matching values)
             <textarea

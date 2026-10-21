@@ -974,7 +974,7 @@ function registerHandlers(): void {
           );
         const splitRoles = profile?.values.topology === 'split' ? profile.values.roles : null;
         const localSplitModels = splitRoles
-          ? [splitRoles.observer, splitRoles.chat].filter((ref) => ref?.kind === 'local')
+          ? [splitRoles.observer, splitRoles.chat, splitRoles.memory].filter((ref) => ref?.kind === 'local')
           : [];
         if (localSplitModels.length && !localModelPool && !packageE2E)
           throw new Error('Local Split model pool is unavailable.');
@@ -1031,9 +1031,13 @@ function registerHandlers(): void {
               splitRoles.chat?.kind === 'remote'
                 ? remoteStore.selected(splitRoles.chat.modelId)
                 : null,
+            memory:
+              splitRoles.memory?.kind === 'remote'
+                ? remoteStore.selected(splitRoles.memory.modelId)
+                : null,
           };
           const make = (
-            role: 'observer' | 'chat',
+            role: 'observer' | 'chat' | 'memory',
             input: import('./fake-inference').InferenceInput,
           ) => {
             const ref = splitRoles[role]!;
@@ -1056,6 +1060,7 @@ function registerHandlers(): void {
             (input) => ({
               vision: make('observer', input),
               chat: make('chat', input),
+              ...(splitRoles.memory ? { memory: make('memory', input) } : {}),
             }),
             localSplitModels.length > 0,
             splitChat?.kind === 'local'

@@ -354,6 +354,7 @@ export class SessionController {
     this.epoch++;
     this.stopSplitVisionLoop();
     this.splitCoordinator.reset();
+    this.splitCoordinator.configureMemory(this.activeProfile?.values.memory ?? { enabled: false, intervalMs: 30000, maxCharacters: 2000, expireAfterMs: 0 });
     this.runId++;
     this.history.reset(this.clock.wallNow());
     this.chatStartSequence = this.chat.snapshot().sequence;
@@ -433,6 +434,7 @@ export class SessionController {
       this.nextCycleAt = null;
     }
     this.scheduler.pause();
+    this.splitCoordinator.suspendMemory();
     this.setState({ recordedPlayback: 'paused' });
     return this.snapshot();
   }
@@ -443,6 +445,7 @@ export class SessionController {
     this.pausedAt = null;
     this.closePausedInterval();
     this.scheduler.resume();
+    this.splitCoordinator.resumeMemory();
     this.setState({ recordedPlayback: this.eofRequested ? 'draining' : 'playing' });
     const waiters = this.resumeWaiters.splice(0);
     for (const resume of waiters) resume();
