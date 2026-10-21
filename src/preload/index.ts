@@ -52,7 +52,8 @@ const api: DesktopAPI = {
   deletePromptPreset: (id) => invoke('presets:delete', id),
   runFreeform: (request) => invoke('playground:run', request),
   previewSimulation: (request) => invoke('playground:simulation:preview', request),
-  previewStages: (input, stages, events, observations) => invoke('profiles:preview-stages', input, stages, events, observations),
+  previewStages: (input, stages, events, observations) =>
+    invoke('profiles:preview-stages', input, stages, events, observations),
   runSimulationExperiment: (request) => invoke('playground:simulation:run', request),
   previewProfileExperiment: (request) => invoke('playground:profile:preview', request),
   runProfileExperiment: (request) => invoke('playground:profile:run', request),
@@ -96,7 +97,8 @@ const api: DesktopAPI = {
   exportDiagnosticCapture: () => invoke('diagnostics:export'),
   getPrivateWorkerLines: () => invoke('diagnostics:worker-lines'),
   getCompactRecording: () => invoke('compact:get'),
-  configureCompactRecording: (enabled, mode) => invoke('compact:configure', enabled, mode),
+  configureCompactRecording: (enabled, mode, privacy) =>
+    invoke('compact:configure', enabled, mode, privacy),
   setCompactRecordingLimits: (limits) => invoke('compact:limits', limits),
   saveRecordedExactCase: (id, recordingId) => invoke('compact:save-case', id, recordingId),
   listCompactAttempts: () => invoke('compact:list'),

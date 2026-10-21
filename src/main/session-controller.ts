@@ -982,43 +982,70 @@ export class SessionController {
         dependsOn: [...dependsOn],
         modelId: ref?.modelId ?? this.state.modelId ?? null,
       };
-      const id = role === 'chat' && chatTraceId
-        ? chatTraceId
-        : this.trace.begin({
-            ...metadata,
-            runId,
-            cycle: input.cycle,
-            attempt: 1,
-            seed: input.seed ?? 0,
-            rosterSeed: this.state.sessionSeed === undefined || this.state.sessionSeed === null ? 0
-              : deriveInferenceSeed(this.state.sessionSeed, 'roster', input.cycle, 1),
-            mode: ref?.kind === 'local' ? 'native' : 'remote',
-            startedAt,
-            input: privateStageMetadata(input),
-            settings: this.runPreferences,
-            promptPreset: this.state.promptPreset ?? null,
-            adaptation: { topology: profile?.values.topology, stageSettings: profile?.values.stageDefaults[role === 'vision' ? 'observer' : role] },
-          });
-      const update = (patch: Partial<import('../shared/inference-trace-contract').TraceAttempt>) => {
+      const initial: Parameters<InferenceTrace['begin']>[0] = {
+        ...metadata,
+        runId,
+        cycle: input.cycle,
+        attempt: 1,
+        seed: input.seed ?? 0,
+        rosterSeed:
+          this.state.sessionSeed === undefined || this.state.sessionSeed === null
+            ? 0
+            : deriveInferenceSeed(this.state.sessionSeed, 'roster', input.cycle, 1),
+        mode: ref?.kind === 'local' ? 'native' : 'remote',
+        startedAt,
+        input: privateStageMetadata(input),
+        settings: this.runPreferences,
+        promptPreset: this.state.promptPreset ?? null,
+        adaptation: {
+          topology: profile?.values.topology,
+          stageSettings: profile?.values.stageDefaults[role === 'vision' ? 'observer' : role],
+        },
+      };
+      const id =
+        role === 'chat' && chatTraceId
+          ? chatTraceId
+          : this.trace.begin(initial, { ...initial, input });
+      const update = (
+        patch: Partial<import('../shared/inference-trace-contract').TraceAttempt>,
+      ) => {
         // Late transport callbacks cannot revive a cancelled or previous Run.
         if (epoch !== this.epoch || this.trace.get(id)?.stage === 'cancelled') return;
-        const terminal = patch.stage === 'accepted' || patch.stage === 'failed' || patch.stage === 'cancelled';
-        this.trace.update(id, {
-          ...patch,
-          ...(terminal ? { availableAt: this.clock.wallNow(), availableTimelineAt: this.observationNow(), durationMs: Math.max(0, this.clock.now() - startedMono) } : {}),
-          ...(patch.input !== undefined ? { input: privateStageMetadata(patch.input) } : {}),
-          ...(patch.request !== undefined ? { request: privateStageMetadata(patch.request) } : {}),
-          ...(patch.rawResponse !== undefined ? { rawResponse: privateStageMetadata(patch.rawResponse) } : {}),
-          ...(patch.normalized !== undefined ? { normalized: privateStageMetadata(patch.normalized) } : {}),
-        });
+        const terminal =
+          patch.stage === 'accepted' || patch.stage === 'failed' || patch.stage === 'cancelled';
+        this.trace.update(
+          id,
+          {
+            ...patch,
+            ...(terminal
+              ? {
+                  availableAt: this.clock.wallNow(),
+                  availableTimelineAt: this.observationNow(),
+                  durationMs: Math.max(0, this.clock.now() - startedMono),
+                }
+              : {}),
+            ...(patch.input !== undefined ? { input: privateStageMetadata(patch.input) } : {}),
+            ...(patch.request !== undefined
+              ? { request: privateStageMetadata(patch.request) }
+              : {}),
+            ...(patch.rawResponse !== undefined
+              ? { rawResponse: privateStageMetadata(patch.rawResponse) }
+              : {}),
+            ...(patch.normalized !== undefined
+              ? { normalized: privateStageMetadata(patch.normalized) }
+              : {}),
+          },
+          patch,
+        );
       };
-      update({ ...metadata, input: privateStageMetadata(input), request: privateStageMetadata(request), stage: 'transport' });
+      update({ ...metadata, input, request, stage: 'transport' });
       return {
         id,
         update,
         observe: (stage: 'request' | 'response' | 'normalized', value: unknown) => {
           if (stage === 'request') update({ stage: 'transport', request: value });
-          if (stage === 'response') update({ stage: 'normalization', rawResponse: value, usage: traceUsage(value) });
+          if (stage === 'response')
+            update({ stage: 'normalization', rawResponse: value, usage: traceUsage(value) });
           if (stage === 'normalized') update({ stage: 'validation', normalized: value });
         },
       };

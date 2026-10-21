@@ -274,6 +274,7 @@ export interface DesktopArguments {
   'compact:configure': [
     enabled: boolean,
     mode?: import('./compact-recording-contract').InferenceRecordingMode,
+    privacy?: import('./compact-recording-contract').RecordingPrivacy,
   ];
   'compact:limits': [limits: import('./compact-recording-contract').RecordingLimits];
   'compact:save-case': [id: string, recordingId: string];
@@ -299,10 +300,19 @@ export interface DesktopArguments {
   'presets:delete': [id: string];
   'playground:run': [request: FreeformRequest];
   'playground:simulation:preview': [request: SimulationExperimentRequest];
-  'profiles:preview-stages': [input: import('../main/fake-inference').InferenceInput, stages: InferenceProfileValues['stageDefaults'], events: import('../shared/session-contract').InferredEvent[], observations: import('../shared/session-contract').CapturedObservation[]];
+  'profiles:preview-stages': [
+    input: import('../main/fake-inference').InferenceInput,
+    stages: InferenceProfileValues['stageDefaults'],
+    events: import('../shared/session-contract').InferredEvent[],
+    observations: import('../shared/session-contract').CapturedObservation[],
+  ];
   'playground:simulation:run': [request: SimulationExperimentRequest];
-  'playground:profile:preview': [request: import('./profile-playground-contract').ProfileExperimentRequest];
-  'playground:profile:run': [request: import('./profile-playground-contract').ProfileExperimentRequest];
+  'playground:profile:preview': [
+    request: import('./profile-playground-contract').ProfileExperimentRequest,
+  ];
+  'playground:profile:run': [
+    request: import('./profile-playground-contract').ProfileExperimentRequest,
+  ];
   'speech-test:status': [];
   'speech-test:start': [config: SpeechTestStart];
   'speech-test:pcm': [samples: Float32Array, backpressure?: boolean];
@@ -431,6 +441,7 @@ export interface DesktopAPI {
   configureCompactRecording(
     enabled: boolean,
     mode?: import('./compact-recording-contract').InferenceRecordingMode,
+    privacy?: import('./compact-recording-contract').RecordingPrivacy,
   ): Promise<CompactRecordingStatus>;
   setCompactRecordingLimits(
     limits: import('./compact-recording-contract').RecordingLimits,
@@ -464,15 +475,24 @@ export interface DesktopAPI {
   }): Promise<PromptPreset>;
   deletePromptPreset(id: string): Promise<void>;
   runFreeform(request: FreeformRequest): Promise<FreeformResult>;
-  previewStages(input: import('../main/fake-inference').InferenceInput, stages: InferenceProfileValues['stageDefaults'], events: import('../shared/session-contract').InferredEvent[], observations: import('../shared/session-contract').CapturedObservation[]): Promise<unknown>;
+  previewStages(
+    input: import('../main/fake-inference').InferenceInput,
+    stages: InferenceProfileValues['stageDefaults'],
+    events: import('../shared/session-contract').InferredEvent[],
+    observations: import('../shared/session-contract').CapturedObservation[],
+  ): Promise<unknown>;
   previewSimulation(
     request: SimulationExperimentRequest,
   ): Promise<{ constructedRequest: unknown; submittedRequest: unknown }>;
   runSimulationExperiment(
     request: SimulationExperimentRequest,
   ): Promise<SimulationExperimentResult>;
-  previewProfileExperiment?(request: import('./profile-playground-contract').ProfileExperimentRequest): Promise<import('./profile-playground-contract').ProfileExperimentPreview>;
-  runProfileExperiment?(request: import('./profile-playground-contract').ProfileExperimentRequest): Promise<import('./profile-playground-contract').ProfileExperimentResult>;
+  previewProfileExperiment?(
+    request: import('./profile-playground-contract').ProfileExperimentRequest,
+  ): Promise<import('./profile-playground-contract').ProfileExperimentPreview>;
+  runProfileExperiment?(
+    request: import('./profile-playground-contract').ProfileExperimentRequest,
+  ): Promise<import('./profile-playground-contract').ProfileExperimentResult>;
   getSpeechTestStatus(): Promise<SpeechTestSnapshot>;
   startSpeechTest(config: SpeechTestStart): Promise<SpeechTestSnapshot>;
   submitSpeechTestPcm(samples: Float32Array, backpressure?: boolean): Promise<SpeechTestSnapshot>;

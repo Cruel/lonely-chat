@@ -51,12 +51,15 @@ export function privateStageMetadata(value: unknown): unknown {
 
 /** Stable source refs are generated at admission, not inferred from wall-clock ordering. */
 export function stageFrameIds(input: InferenceInput): string[] {
-  const selected = input.captureSelection?.frames;
-  const frames = input.frames ?? [];
-  return frames.slice(0, 32).map((frame, index) =>
-    selected?.length === frames.length && selected[index]
-      ? selected[index]
-      : `${frame.sourceId}:${frame.observedAt}:${frame.mediaTimeMs ?? 'wall'}`);
+  const refs = (frames: InferenceInput['frames'], selected?: readonly string[]) =>
+    (frames ?? []).slice(0, 32).map((frame, index) =>
+      selected && selected.length === frames?.length && selected[index]
+        ? selected[index]
+        : `${frame.sourceId}:${frame.observedAt}:${frame.mediaTimeMs ?? 'wall'}`);
+  return [
+    ...refs(input.frames, input.captureSelection?.frames),
+    ...refs(input.chatFrames, input.captureSelection?.chatFrames),
+  ].slice(0, 64);
 }
 
 export function stageObservationRefs(input: InferenceInput): string[] {

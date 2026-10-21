@@ -323,7 +323,7 @@ async function certify(window: BrowserWindow, s: Services): Promise<void> {
   assert.equal(readiness.audio, 2, 'Audio-from-video must remain opt-in');
   const beforePublic = s.chat.publicSnapshot().sequence;
   const recorded = await api<{ enabled: boolean }>(
-    'window.lonelyChat.configureCompactRecording(true, "compact")',
+    'window.lonelyChat.configureCompactRecording(true, "compact", { retainMedia: true, retainContent: true })',
   );
   assert.equal(recorded.enabled, true);
   await api(`([...document.querySelectorAll('button')].find(button =>
@@ -476,7 +476,7 @@ async function certify(window: BrowserWindow, s: Services): Promise<void> {
     })})`,
   );
   const exactStatus = await api<{ recordingId: string }>(
-    'window.lonelyChat.configureCompactRecording(true, "exact")',
+    'window.lonelyChat.configureCompactRecording(true, "exact", { retainMedia: true, retainContent: true })',
   );
   const exactRun = await api<{ runId: number }>(
     `window.lonelyChat.startSession("CERT_EXACT_NATIVE", "native", ${JSON.stringify({

@@ -687,11 +687,13 @@ function registerHandlers(): void {
     'compact:configure': (
       enabled: boolean,
       mode?: import('../shared/compact-recording-contract').InferenceRecordingMode,
+      privacy?: import('../shared/compact-recording-contract').RecordingPrivacy,
     ) =>
       compactRecorder.configure(
         enabled,
         mode,
         !!session && !['stopped', 'completed', 'error'].includes(session.snapshot().phase),
+        privacy,
       ),
     'compact:limits': (limits: import('../shared/compact-recording-contract').RecordingLimits) =>
       compactRecorder.setLimits(limits),

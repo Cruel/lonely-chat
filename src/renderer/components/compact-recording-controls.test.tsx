@@ -64,6 +64,7 @@ describe('persistent inference recording controls', () => {
       expect(setLimits).toHaveBeenCalledWith({
         diskBytes: 200 * 1024 ** 2,
         memoryBytes: 32 * 1024 ** 2,
+        maxAgeDays: 30,
       }),
     );
   });
@@ -117,12 +118,17 @@ describe('persistent inference recording controls', () => {
     expect(screen.getByLabelText('Capture mode')).toHaveValue('compact');
     fireEvent.change(screen.getByLabelText('Capture mode'), { target: { value: 'exact' } });
     fireEvent.click(screen.getByRole('button', { name: 'Start exact recording' }));
-    await waitFor(() => expect(configure).toHaveBeenCalledWith(true, 'exact'));
+    await waitFor(() =>
+      expect(configure).toHaveBeenCalledWith(true, 'exact', {
+        retainMedia: false,
+        retainContent: false,
+      }),
+    );
     expect(screen.getByLabelText('Capture mode')).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: 'List recorded attempts' }));
     fireEvent.click(await screen.findByRole('button', { name: /attempt-1.*exact/ }));
     expect(
-      await screen.findByRole('region', { name: 'Verified original native request' }),
+      await screen.findByRole('region', { name: 'Verified original submitted request' }),
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Save as rerunnable Playground case' }));
     await waitFor(() => expect(save).toHaveBeenCalledWith('attempt-1', recordingId));

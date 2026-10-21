@@ -74,7 +74,7 @@ describe('opt-in compact inference evidence', () => {
 
   it('restores Exact outcome, later publication events, and closure into saved cases after restart', async () => {
     const { root, recorder, trace } = await fixture();
-    await recorder.configure(true, 'exact');
+    await recorder.configure(true, 'exact', false, { retainMedia: true, retainContent: true });
     const id = start(trace);
     const request = nativeChatRequest(trace.get(id)!.input as InferenceInput);
     trace.update(id, {
@@ -121,7 +121,7 @@ describe('opt-in compact inference evidence', () => {
 
   it('freezes a Compact reconstruction as an immutable case with an explicit provenance warning', async () => {
     const { root, recorder, trace } = await fixture();
-    await recorder.configure(true, 'compact');
+    await recorder.configure(true, 'compact', false, { retainMedia: true, retainContent: true });
     const id = start(trace);
     trace.update(id, { stage: 'scheduled', accepted: { events: [], messages: [] } });
     await recorder.flush();
@@ -149,7 +149,7 @@ describe('opt-in compact inference evidence', () => {
 
   it('compresses evidence, shares exact JPEG bytes, reconstructs current request with explicit caveat', async () => {
     const { root, recorder, trace } = await fixture();
-    await recorder.configure(true);
+    await recorder.configure(true, 'compact', false, { retainMedia: true, retainContent: true });
     const first = start(trace);
     trace.update(first, {
       request: { private: 'historical transport request must not be persisted' },
@@ -222,7 +222,7 @@ describe('opt-in compact inference evidence', () => {
 
   it('survives volatile trace eviction and fails closed if a selected evidence chunk is missing', async () => {
     const { root, recorder, trace } = await fixture();
-    await recorder.configure(true);
+    await recorder.configure(true, 'compact', false, { retainMedia: true, retainContent: true });
     const old = start(trace);
     const newer = start(trace, 2);
     expect(trace.get(old)).toBeNull();
@@ -246,7 +246,7 @@ describe('opt-in compact inference evidence', () => {
 
   it('disabling preserves already-started attempts but excludes subsequent attempts', async () => {
     const { recorder, trace } = await fixture();
-    await recorder.configure(true);
+    await recorder.configure(true, 'compact', false, { retainMedia: true, retainContent: true });
     const first = start(trace);
     await recorder.configure(false);
     const excluded = start(trace, 2);
@@ -254,12 +254,14 @@ describe('opt-in compact inference evidence', () => {
     trace.update(excluded, { stage: 'scheduled' });
     await recorder.flush();
     expect((await recorder.list()).map((item) => item.id)).toEqual([first]);
-    await expect(recorder.configure(true)).resolves.toMatchObject({ enabled: true });
+    await expect(
+      recorder.configure(true, 'compact', false, { retainMedia: true, retainContent: true }),
+    ).resolves.toMatchObject({ enabled: true });
   });
 
   it('reopens private recordings after restart, with disambiguated IDs and a torn index tail', async () => {
     const { root, recorder, trace } = await fixture();
-    await recorder.configure(true);
+    await recorder.configure(true, 'compact', false, { retainMedia: true, retainContent: true });
     const first = start(trace);
     trace.update(first, { stage: 'scheduled' });
     await recorder.flush();
@@ -272,7 +274,7 @@ describe('opt-in compact inference evidence', () => {
     expect((await reopened.reconstruct(first, oldRecording))?.input).toMatchObject({
       context: 'gameplay',
     });
-    await reopened.configure(true);
+    await reopened.configure(true, 'compact', false, { retainMedia: true, retainContent: true });
     const secondTrace = new InferenceTrace();
     secondTrace.attachRecorder(reopened);
     const another = start(secondTrace);
@@ -287,13 +289,13 @@ describe('opt-in compact inference evidence', () => {
 
   it('sends a late chat presentation to the original recording after a new recording starts', async () => {
     const { root, recorder, trace } = await fixture();
-    await recorder.configure(true);
+    await recorder.configure(true, 'compact', false, { retainMedia: true, retainContent: true });
     const first = start(trace);
     trace.update(first, { stage: 'scheduled' });
     await recorder.flush();
     const originalId = recorder.status().recordingId!;
     await recorder.configure(false);
-    await recorder.configure(true);
+    await recorder.configure(true, 'compact', false, { retainMedia: true, retainContent: true });
     const newer = start(trace, 2);
     trace.update(newer, { stage: 'scheduled' });
     trace.present(first, { id: 'chat-2', author: 'viewer', text: 'arrived', presentedAt: 1250 }, 0);
@@ -308,7 +310,7 @@ describe('opt-in compact inference evidence', () => {
 
   it('retains presentations admitted before Run close while attempt writes are still queued', async () => {
     const { root, recorder, trace } = await fixture();
-    await recorder.configure(true);
+    await recorder.configure(true, 'compact', false, { retainMedia: true, retainContent: true });
     const recordingId = recorder.status().recordingId!;
     let unblock!: () => void;
     const gate = new Promise<void>((resolve) => {
@@ -357,7 +359,7 @@ describe('opt-in compact inference evidence', () => {
 
   it('captures each constructed Exact transport request, including retries and missing replies, without duplicating JPEG blobs', async () => {
     const { root, recorder, trace } = await fixture();
-    await recorder.configure(true, 'exact');
+    await recorder.configure(true, 'exact', false, { retainMedia: true, retainContent: true });
     const one = start(trace);
     const built = nativeChatRequest(trace.get(one)!.input as InferenceInput);
     const nativeRequest = {
@@ -423,7 +425,7 @@ describe('opt-in compact inference evidence', () => {
 
   it('finishes already-started Exact attempts after recording is disabled', async () => {
     const { recorder, trace } = await fixture();
-    await recorder.configure(true, 'exact');
+    await recorder.configure(true, 'exact', false, { retainMedia: true, retainContent: true });
     const id = start(trace);
     await recorder.configure(false);
     trace.update(id, { stage: 'transport', request: { seed: 43, messages: [] } });
@@ -438,7 +440,7 @@ describe('opt-in compact inference evidence', () => {
 
   it('marks pre-request failures explicitly and verifies Exact request and archive integrity', async () => {
     const { root, recorder, trace } = await fixture();
-    await recorder.configure(true, 'exact');
+    await recorder.configure(true, 'exact', false, { retainMedia: true, retainContent: true });
     const noRequest = start(trace);
     trace.update(noRequest, {
       stage: 'failed',
@@ -474,7 +476,7 @@ describe('opt-in compact inference evidence', () => {
   it('begins a partial recording with the next complete attempt and finalizes in-flight attempts after stop', async () => {
     const { root, recorder, trace } = await fixture();
     const beforeEnabled = start(trace);
-    await recorder.configure(true, 'compact', true);
+    await recorder.configure(true, 'compact', true, { retainMedia: true, retainContent: true });
     const captured = start(trace, 2);
     await recorder.configure(false);
     expect(recorder.status()).toMatchObject({ enabled: false, partial: true, finalizing: 1 });
@@ -500,7 +502,7 @@ describe('opt-in compact inference evidence', () => {
 
   it('labels interrupted attempts and recovers complete orphan chunks behind a torn index', async () => {
     const { root, recorder, trace } = await fixture();
-    await recorder.configure(true);
+    await recorder.configure(true, 'compact', false, { retainMedia: true, retainContent: true });
     const interrupted = start(trace);
     await recorder.flush(); // Durable checkpoint without a completed response.
     const recordingId = recorder.status().recordingId!;
@@ -538,7 +540,7 @@ describe('opt-in compact inference evidence', () => {
 
   it('isolates corrupt chunks so an unrelated complete attempt remains readable', async () => {
     const { root, recorder, trace } = await fixture();
-    await recorder.configure(true);
+    await recorder.configure(true, 'compact', false, { retainMedia: true, retainContent: true });
     const first = start(trace);
     trace.update(first, { stage: 'scheduled' });
     const second = start(trace, 2, {
@@ -573,7 +575,7 @@ describe('opt-in compact inference evidence', () => {
 
   it('persists configurable limits, preserves old chunks, and disables capture without affecting tracing', async () => {
     const { root, recorder, trace } = await fixture();
-    await recorder.configure(true);
+    await recorder.configure(true, 'compact', false, { retainMedia: true, retainContent: true });
     const first = start(trace);
     trace.update(first, { stage: 'scheduled' });
     await recorder.flush();
@@ -591,10 +593,13 @@ describe('opt-in compact inference evidence', () => {
     expect(reopened.status().limits).toEqual({
       diskBytes: previousBytes,
       memoryBytes: 1024 * 1024,
+      maxAgeDays: 30,
     });
-    await expect(reopened.configure(true)).rejects.toThrow(/disk limit/i);
+    await expect(
+      reopened.configure(true, 'compact', false, { retainMedia: true, retainContent: true }),
+    ).rejects.toThrow(/disk limit/i);
     await reopened.setLimits({ diskBytes: 1024 * 1024, memoryBytes: 1024 * 1024 });
-    await reopened.configure(true);
+    await reopened.configure(true, 'compact', false, { retainMedia: true, retainContent: true });
     // The new archive refuses storage once its memory budget is too small to snapshot a request.
     await reopened.setLimits({ diskBytes: 1024 * 1024, memoryBytes: 1024 });
     const newTrace = new InferenceTrace();
@@ -608,14 +613,14 @@ describe('opt-in compact inference evidence', () => {
 
   it('accounts for late presentations written to an older recording and enforces aggregate disk limits', async () => {
     const { recorder, trace } = await fixture();
-    await recorder.configure(true);
+    await recorder.configure(true, 'compact', false, { retainMedia: true, retainContent: true });
     const old = start(trace);
     trace.update(old, { stage: 'scheduled' });
     await recorder.flush();
     const oldRecording = recorder.status().recordingId!;
     await recorder.configure(false);
     await recorder.flush();
-    await recorder.configure(true);
+    await recorder.configure(true, 'compact', false, { retainMedia: true, retainContent: true });
     const currentBytes = recorder.status().bytes;
     const totalBefore = recorder.status().totalBytes!;
     trace.present(old, { id: 'late-1', author: 'viewer', text: 'first', presentedAt: 1300 }, 0);
@@ -642,7 +647,7 @@ describe('opt-in compact inference evidence', () => {
 
   it('retains terminal attempt memory reservations while disk writes are queued', async () => {
     const { recorder, trace } = await fixture();
-    await recorder.configure(true, 'exact');
+    await recorder.configure(true, 'exact', false, { retainMedia: true, retainContent: true });
     let unblock!: () => void;
     const gate = new Promise<void>((resolve) => {
       unblock = resolve;
@@ -672,7 +677,7 @@ describe('opt-in compact inference evidence', () => {
 
   it('releases publication bookkeeping when a run closes and keeps deduplication caches bounded', async () => {
     const { recorder, trace } = await fixture();
-    await recorder.configure(true);
+    await recorder.configure(true, 'compact', false, { retainMedia: true, retainContent: true });
     for (let cycle = 1; cycle <= 20; cycle++) {
       const id = start(trace, cycle, {
         captureSelection: {
@@ -696,7 +701,7 @@ describe('opt-in compact inference evidence', () => {
 
   it('stops accumulating per-attempt index and deduplication state at the memory budget', async () => {
     const { recorder, trace } = await fixture();
-    await recorder.configure(true);
+    await recorder.configure(true, 'compact', false, { retainMedia: true, retainContent: true });
     await recorder.setLimits({ diskBytes: 8 * 1024 * 1024, memoryBytes: 22 * 1024 });
     let last = '';
     for (let cycle = 1; cycle <= 60 && recorder.status().enabled; cycle++) {

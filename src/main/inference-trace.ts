@@ -113,8 +113,10 @@ export class InferenceTrace {
         durationMs: item.durationMs,
         stage: item.stage,
         errorStage: item.errorStage,
-        error: item.role && item.role !== 'unified' && item.error
-          ? 'Stage failed (open private details)' : item.error,
+        error:
+          item.role && item.role !== 'unified' && item.error
+            ? 'Stage failed (open private details)'
+            : item.error,
         usage: item.usage,
         ...traceFacets(item),
       })),
@@ -186,6 +188,7 @@ export class InferenceTrace {
       | 'presentationClosed'
       | 'sceneState'
     >,
+    recordingInitial?: typeof initial,
   ): string {
     // Stable across application launches: persisted operational links must never collide.
     const id = `attempt-${randomUUID()}`;
@@ -212,16 +215,14 @@ export class InferenceTrace {
       presented: [],
       presentationClosed: false,
     });
-    // Compact/exact recording currently owns Chat batches, not intermediate stage
-    // attempts. Recording these as chat cases would corrupt its archive contract.
-    if (initial.role !== 'vision' && initial.role !== 'memory') this.recorder?.begin(id, initial);
+    this.recorder?.begin(id, recordingInitial ?? initial);
     this.prune();
     this.notify();
     return id;
   }
 
-  update(id: string, patch: Partial<TraceAttempt>): void {
-    this.recorder?.update(id, patch);
+  update(id: string, patch: Partial<TraceAttempt>, recordingPatch?: Partial<TraceAttempt>): void {
+    this.recorder?.update(id, recordingPatch ?? patch);
     const found = this.attempts.find((item) => item.id === id);
     if (!found) return; // Evicted while asynchronous work was still pending.
     for (const [key, value] of Object.entries(patch)) {

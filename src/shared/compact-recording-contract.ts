@@ -2,17 +2,26 @@ import type { TraceAttempt } from './inference-trace-contract';
 
 export type InferenceRecordingMode = 'compact' | 'exact';
 
+/** Independent, explicit consent for retaining source media and textual model content. */
+export interface RecordingPrivacy {
+  readonly retainMedia: boolean;
+  readonly retainContent: boolean;
+}
+
 export interface RecordingLimits {
   /** Maximum private recording bytes for a single archive (not saved cases). */
   readonly diskBytes: number;
   /** Maximum bytes held for incomplete attempts in memory. */
   readonly memoryBytes: number;
+  /** Local archives older than this many days are purged on recording initialization. */
+  readonly maxAgeDays?: number;
 }
 
 /** Private disk-backed evidence. Never included in public chat/overlay or operational logs. */
 export interface CompactRecordingStatus {
   readonly enabled: boolean;
   readonly mode: InferenceRecordingMode;
+  readonly privacy?: RecordingPrivacy;
   readonly recordingId: string | null;
   readonly attempts: number;
   readonly chunks: number;
@@ -30,6 +39,12 @@ export interface CompactRecordingStatus {
 export interface CompactAttemptSummary {
   readonly recordingId: string;
   readonly mode: InferenceRecordingMode;
+  readonly role?: import('./inference-trace-contract').TraceRole;
+  readonly profileRevision?: number | null;
+  readonly dependsOn?: readonly string[];
+  readonly sourceFrameIds?: readonly string[];
+  readonly observedAt?: number | null;
+  readonly availableAt?: number | null;
   readonly id: string;
   readonly runId: number;
   readonly cycle: number;
@@ -52,7 +67,8 @@ export interface CompactReconstruction {
   readonly provenance:
     | 'current-builder-reconstruction'
     | 'exact-recorded-request'
-    | 'exact-not-constructed';
+    | 'exact-not-constructed'
+    | 'metadata-only';
   readonly recordedBuilderVersion: string;
   readonly currentBuilderVersion: string;
   readonly warning: string;

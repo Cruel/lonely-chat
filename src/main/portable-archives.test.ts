@@ -181,12 +181,12 @@ it('imports Compact Run evidence with an explicit current-builder provenance, ne
   const recorder = new CompactInferenceRecorder(source);
   const trace = new InferenceTrace(24 * 1024 * 1024, 1);
   trace.attachRecorder(recorder);
-  await recorder.configure(true);
+  await recorder.configure(true, 'compact', false, { retainMedia: true, retainContent: true });
   const attemptId = addAttempt(trace, 11, 1);
   await recorder.flush();
   const packageData = await recorder.exportRunEvidence(11);
   const imported = new CompactInferenceRecorder(target);
-  await imported.configure(true);
+  await imported.configure(true, 'compact', false, { retainMedia: true, retainContent: true });
   await expect(
     imported.importRunEvidence(11, packageData.recordings, packageData.files),
   ).rejects.toThrow(/Stop inference recording/);
@@ -206,7 +206,7 @@ it('round-trips a Run with exact requests, shared JPEGs and replies without leak
   const recorder = new CompactInferenceRecorder(root);
   const trace = new InferenceTrace(24 * 1024 * 1024, 1);
   trace.attachRecorder(recorder);
-  await recorder.configure(true, 'exact');
+  await recorder.configure(true, 'exact', false, { retainMedia: true, retainContent: true });
   const first = addAttempt(trace, 3, 1);
   const second = addAttempt(trace, 3, 2);
   const foreign = addAttempt(trace, 4, 1);
@@ -214,7 +214,7 @@ it('round-trips a Run with exact requests, shared JPEGs and replies without leak
   await recorder.flush();
   const sourceRecordingId = recorder.status().recordingId!;
   await recorder.configure(false);
-  await recorder.configure(true, 'exact');
+  await recorder.configure(true, 'exact', false, { retainMedia: true, retainContent: true });
   const reusedRunId = addAttempt(trace, 3, 99);
   await recorder.flush();
   const evidence = await recorder.exportRunEvidence(3, [sourceRecordingId]);

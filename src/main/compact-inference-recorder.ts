@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { appendFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import type { InferenceTrace } from './inference-trace';
 import path from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
@@ -14,6 +14,7 @@ import type {
   CompactRecordingStatus,
   InferenceRecordingMode,
   RecordingLimits,
+  RecordingPrivacy,
 } from '../shared/compact-recording-contract';
 
 type EvidenceKind = 'observation' | 'transcript' | 'event' | 'chat' | 'frame';
@@ -25,6 +26,7 @@ type AttemptRecord = {
   selection: Record<string, string[]>;
   details: Record<string, unknown>;
   exact?: { readonly encodedJson: string; readonly sha256: string };
+  retention?: RecordingPrivacy;
 };
 type Presentation = {
   type: 'presentation';
@@ -51,6 +53,9 @@ type Capture = {
   metadata: Parameters<InferenceTrace['begin']>[0];
   patch: Partial<TraceAttempt>;
   mode: InferenceRecordingMode;
+  privacy: RecordingPrivacy;
+  directory: string;
+  recordingId: string;
   requestJson?: string;
   bytes: number;
 };
@@ -92,6 +97,8 @@ function mapImageUrls(value: unknown, replace: (url: string) => string): unknown
   const item = value as Record<string, unknown>;
   return Object.fromEntries(
     Object.entries(item).map(([key, entry]) => {
+      if (key === 'dataUrl' && item.type === 'image' && typeof entry === 'string')
+        return [key, replace(entry)];
       if (key === 'image_url' && entry && typeof entry === 'object' && !Array.isArray(entry)) {
         const image = entry as Record<string, unknown>;
         if (typeof image.url === 'string') return [key, { ...image, url: replace(image.url) }];
@@ -103,7 +110,57 @@ function mapImageUrls(value: unknown, replace: (url: string) => string): unknown
 const EXACT_FRAME_REF = /^exact-jpeg:([a-f0-9]{64})$/;
 const CHUNK_SHA = /^[a-f0-9]{64}$/;
 const CHUNK_FILE = /^\d{8}\.jsonl\.gz$/;
-const DEFAULT_LIMITS: RecordingLimits = { diskBytes: 1024 ** 3, memoryBytes: 64 * 1024 ** 2 };
+const DEFAULT_LIMITS: RecordingLimits = {
+  diskBytes: 1024 ** 3,
+  memoryBytes: 64 * 1024 ** 2,
+  maxAgeDays: 30,
+};
+const DEFAULT_PRIVACY: RecordingPrivacy = { retainMedia: false, retainContent: false };
+
+/** Scrub credentials even in opted-in captures; without content consent keep only structural evidence. */
+function privateSnapshot(value: unknown, privacy: RecordingPrivacy, key = '', depth = 0): unknown {
+  if (depth > 32) return '[depth limit]';
+  if (
+    /^(?:authorization|proxy-authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|cookie|set-cookie|password|client[_-]?secret|credential|secret)$/i.test(
+      key,
+    )
+  )
+    return '[redacted credential]';
+  if (typeof value === 'string') {
+    if (/^data:(?:image|audio|video)\//i.test(value))
+      return privacy.retainMedia ? value : '[media omitted]';
+    if (
+      !privacy.retainContent &&
+      !/^(?:id|role|stage|mode|kind|source|sourceId|modelId|errorStage|clockDomain|topology|format|builderVersion|recordingId|frames|chatFrames|transcripts|observations|events|chat|sourceFrameIds|observationRefs|dependsOn)$/i.test(
+        key,
+      )
+    )
+      return '[content omitted]';
+    return value.replace(
+      /\bBearer\s+\S+|\bsk-[a-zA-Z0-9_-]{12,}|\b(?:access_token|refresh_token|api_key)\s*[=:]\s*\S+/gi,
+      '[redacted credential]',
+    );
+  }
+  if (Array.isArray(value))
+    return value.map((part) => privateSnapshot(part, privacy, key, depth + 1));
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([name, part]) => [
+      name,
+      privateSnapshot(part, privacy, name, depth + 1),
+    ]),
+  );
+}
+
+function validPrivacy(value: unknown): value is RecordingPrivacy {
+  const obj = object(value);
+  return (
+    typeof obj.retainMedia === 'boolean' &&
+    typeof obj.retainContent === 'boolean' &&
+    Object.keys(obj).every((key) => key === 'retainMedia' || key === 'retainContent')
+  );
+}
+
 // Corrupt or unfinished indices cannot force an unbounded recovery scan.
 const MAX_INDEX_BYTES = 128 * 1024 * 1024;
 const MAX_RECOVERY_CHUNKS = 8192;
@@ -112,6 +169,130 @@ const MAX_CHUNK_BYTES = 16 * 1024 * 1024;
 const MAX_CACHED_EVIDENCE_IDS = 2048;
 const MAX_CACHED_FRAME_HASHES = 512;
 class RecordingLimitExceeded extends Error {}
+
+const ROLES = new Set(['unified', 'vision', 'chat', 'memory']);
+const RECORD_TYPES = new Set([
+  'evidence',
+  'attempt',
+  'attempt-start',
+  'presentation',
+  'presentation-closed',
+]);
+
+/** Validate recovered/imported private evidence, not merely the gzip/index digest.
+ * An attacker who edits both data and checksum must not inject credentials,
+ * malformed identities, or unbounded recursive payloads into the archive. */
+function validateArchiveRow(value: unknown): Row {
+  const row = object(value);
+  if (!RECORD_TYPES.has(String(row.type))) throw new Error('Invalid recorded evidence row.');
+  let nodes = 0;
+  const inspect = (entry: unknown, key = '', depth = 0): void => {
+    if (++nodes > 250000 || depth > 32)
+      throw new Error('Recorded evidence structure is excessive.');
+    if (typeof entry === 'string') {
+      if (
+        entry.length > 8 * 1024 * 1024 ||
+        /\bBearer\s+\S+|\bsk-[a-zA-Z0-9_-]{12,}|\b(?:access_token|refresh_token|api_key)\s*[=:]\s*\S+/i.test(
+          entry,
+        )
+      )
+        throw new Error('Recorded evidence contains oversized or unredacted credentials.');
+      if (
+        /^(?:authorization|proxy-authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|cookie|set-cookie|password|client[_-]?secret|credential|secret)$/i.test(
+          key,
+        ) &&
+        entry !== '[redacted credential]'
+      )
+        throw new Error('Unredacted recording credential.');
+    }
+    if (Array.isArray(entry)) {
+      if (entry.length > 65536) throw new Error('Recorded evidence array is excessive.');
+      for (const child of entry) inspect(child, key, depth + 1);
+    } else if (entry && typeof entry === 'object') {
+      const pairs = Object.entries(entry);
+      if (pairs.length > 1024) throw new Error('Recorded evidence object is excessive.');
+      for (const [name, child] of pairs) inspect(child, name, depth + 1);
+    }
+  };
+  inspect(row);
+  if (row.type === 'attempt' || row.type === 'attempt-start') {
+    const summary = object(row.summary);
+    if (
+      typeof summary.id !== 'string' ||
+      !ATTEMPT_ID.test(summary.id) ||
+      !Number.isSafeInteger(summary.runId) ||
+      (summary.runId as number) < 1 ||
+      (summary.role !== undefined && !ROLES.has(String(summary.role))) ||
+      (summary.profileRevision !== undefined &&
+        summary.profileRevision !== null &&
+        (!Number.isSafeInteger(summary.profileRevision) ||
+          (summary.profileRevision as number) < 1)) ||
+      (summary.dependsOn !== undefined &&
+        (!Array.isArray(summary.dependsOn) ||
+          summary.dependsOn.length > 64 ||
+          summary.dependsOn.some(
+            (id: unknown) => typeof id !== 'string' || !ATTEMPT_ID.test(id),
+          ))) ||
+      (summary.sourceFrameIds !== undefined &&
+        (!Array.isArray(summary.sourceFrameIds) ||
+          summary.sourceFrameIds.length > 64 ||
+          summary.sourceFrameIds.some((id: unknown) => typeof id !== 'string' || id.length > 250)))
+    )
+      throw new Error('Invalid recorded stage identity or relationships.');
+    if (row.type === 'attempt') {
+      if (
+        !row.base ||
+        typeof row.base !== 'object' ||
+        Array.isArray(row.base) ||
+        !row.selection ||
+        typeof row.selection !== 'object' ||
+        Array.isArray(row.selection) ||
+        !row.details ||
+        typeof row.details !== 'object' ||
+        Array.isArray(row.details) ||
+        (row.retention !== undefined && !validPrivacy(row.retention))
+      )
+        throw new Error('Malformed recorded attempt evidence.');
+      for (const refs of Object.values(row.selection)) {
+        if (
+          !Array.isArray(refs) ||
+          refs.length > 1024 ||
+          refs.some((ref: unknown) => typeof ref !== 'string' || ref.length > 300)
+        )
+          throw new Error('Invalid recorded evidence references.');
+      }
+    }
+  } else if (row.type === 'evidence') {
+    if (
+      !['observation', 'transcript', 'event', 'chat', 'frame'].includes(String(row.kind)) ||
+      typeof row.id !== 'string' ||
+      row.id.length > 350 ||
+      !row.data ||
+      typeof row.data !== 'object' ||
+      Array.isArray(row.data)
+    )
+      throw new Error('Invalid recorded observation.');
+  } else if (row.type === 'presentation') {
+    if (
+      typeof row.attemptId !== 'string' ||
+      !ATTEMPT_ID.test(row.attemptId) ||
+      !Number.isSafeInteger(row.scheduledIndex) ||
+      (row.scheduledIndex as number) < 0 ||
+      !Number.isFinite(row.presentedAt)
+    )
+      throw new Error('Invalid recorded presentation.');
+  } else if (row.type === 'presentation-closed') {
+    if (
+      !Number.isSafeInteger(row.runId) ||
+      (row.runId as number) < 1 ||
+      !Array.isArray(row.attemptIds) ||
+      row.attemptIds.length > 10000 ||
+      row.attemptIds.some((id: unknown) => typeof id !== 'string' || !ATTEMPT_ID.test(id))
+    )
+      throw new Error('Invalid recorded presentation closure.');
+  }
+  return row as Row;
+}
 
 function snapshotBytes(value: unknown): number {
   return Buffer.byteLength(JSON.stringify(value) ?? 'null');
@@ -128,6 +309,7 @@ function snapshotBytes(value: unknown): number {
 export class CompactInferenceRecorder {
   private enabled = false;
   private mode: InferenceRecordingMode = 'compact';
+  private privacy: RecordingPrivacy = { ...DEFAULT_PRIVACY };
   private directory: string | null = null;
   private recordingId: string | null = null;
   private serialByDirectory = new Map<string, number>();
@@ -153,6 +335,7 @@ export class CompactInferenceRecorder {
   private indexedRun = new Map<string, number>();
   private indexedStage = new Map<string, TraceAttempt['stage']>();
   private presented = new Set<string>();
+  private indexedPrivacy = new Map<string, RecordingPrivacy>();
   // Run IDs increase monotonically within one process; no growing tombstone set is needed.
   // Close rejects new presentations immediately, but queued writes keep their references
   // until the ordered close operation has actually drained.
@@ -170,6 +353,7 @@ export class CompactInferenceRecorder {
     return {
       enabled: this.enabled,
       mode: this.mode,
+      privacy: { ...this.privacy },
       recordingId: this.recordingId,
       attempts: this.attempts,
       chunks: this.chunks,
@@ -191,11 +375,51 @@ export class CompactInferenceRecorder {
       const value: unknown = JSON.parse(
         await readFile(path.join(this.root, 'compact-inference', 'limits.json'), 'utf8'),
       );
-      if (this.validLimits(value)) this.limits = { ...value };
+      if (this.validLimits(value)) this.limits = { ...DEFAULT_LIMITS, ...value };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT')
         this.onError(new Error('Unable to read recording limits; using safe defaults.'));
     }
+    await this.purgeExpiredArchives();
+  }
+
+  /** Retention is enforced on startup, configuration, and archive reads.
+   * Never delete an active or queued archive while asynchronous writes remain. */
+  private async purgeExpiredArchives(): Promise<void> {
+    const base = path.join(this.root, 'compact-inference');
+    const ttl = (this.limits.maxAgeDays ?? DEFAULT_LIMITS.maxAgeDays!) * 86400000;
+    const entries = await readdir(base, { withFileTypes: true }).catch(
+      (error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return [];
+        throw error;
+      },
+    );
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !RECORDING_ID.test(entry.name)) continue;
+      const dir = path.join(base, entry.name);
+      if (
+        (this.enabled && dir === this.directory) ||
+        dir === this.finalizingDirectory ||
+        [...this.pending.values(), ...this.queued.values()].some(
+          (capture) => capture.directory === dir,
+        )
+      )
+        continue;
+      const manifest: unknown = await readFile(path.join(dir, 'manifest.json'), 'utf8').then(
+        (raw) => JSON.parse(raw) as unknown,
+        () => null,
+      );
+      const createdAt = object(manifest).createdAt;
+      // Earlier private archives predate the createdAt manifest field. Their
+      // manifest modification time is a conservative age fallback.
+      const createdMs = typeof createdAt === 'string' ? Date.parse(createdAt) : Number.NaN;
+      const ageStart = Number.isFinite(createdMs)
+        ? createdMs
+        : (await stat(path.join(dir, 'manifest.json')).catch(() => null))?.mtimeMs;
+      if (ageStart === undefined || Date.now() - ageStart <= ttl) continue;
+      await rm(dir, { recursive: true, force: true });
+    }
+    this.totalBytes = await this.measureArchiveUsage();
   }
 
   /** Bounded startup scan of private archive storage. An excessive tree fails closed. */
@@ -242,6 +466,10 @@ export class CompactInferenceRecorder {
     const limits = value as RecordingLimits | null;
     return (
       !!limits &&
+      (limits.maxAgeDays === undefined ||
+        (Number.isSafeInteger(limits.maxAgeDays) &&
+          limits.maxAgeDays >= 1 &&
+          limits.maxAgeDays <= 3650)) &&
       [limits.diskBytes, limits.memoryBytes].every(
         (number) => Number.isSafeInteger(number) && number >= 1024 && number <= 1024 ** 4,
       )
@@ -253,7 +481,8 @@ export class CompactInferenceRecorder {
     const dir = path.join(this.root, 'compact-inference');
     await mkdir(dir, { recursive: true, mode: 0o700 });
     await writeFile(path.join(dir, 'limits.json'), JSON.stringify(limits), { mode: 0o600 });
-    this.limits = { ...limits };
+    this.limits = { ...DEFAULT_LIMITS, ...limits };
+    await this.purgeExpiredArchives();
     if (this.enabled && this.totalBytes >= limits.diskBytes)
       this.limitReached(
         'Disk recording limit reached; further recording is disabled.',
@@ -268,12 +497,20 @@ export class CompactInferenceRecorder {
     enabled: boolean,
     mode: InferenceRecordingMode = 'compact',
     partial = false,
+    privacy: RecordingPrivacy = DEFAULT_PRIVACY,
   ): Promise<CompactRecordingStatus> {
-    if (typeof enabled !== 'boolean' || (mode !== 'compact' && mode !== 'exact'))
+    if (
+      typeof enabled !== 'boolean' ||
+      (mode !== 'compact' && mode !== 'exact') ||
+      !validPrivacy(privacy)
+    )
       throw new Error('Invalid inference recording configuration.');
     if (enabled === this.enabled) {
-      if (enabled && mode !== this.mode)
-        throw new Error('Stop the current recording before switching capture modes.');
+      if (
+        enabled &&
+        (mode !== this.mode || JSON.stringify(privacy) !== JSON.stringify(this.privacy))
+      )
+        throw new Error('Stop the current recording before changing capture options.');
       return this.status();
     }
     if (enabled) {
@@ -282,7 +519,7 @@ export class CompactInferenceRecorder {
           'Cannot start a new recording until the previous captured attempts finish.',
         );
       await this.flush();
-      this.totalBytes = await this.measureArchiveUsage();
+      await this.purgeExpiredArchives();
       if (this.totalBytes >= this.limits.diskBytes)
         throw new Error(
           'Recording disk limit reached across saved session archives. Increase the limit to start a new recording; saved cases remain untouched.',
@@ -299,12 +536,15 @@ export class CompactInferenceRecorder {
         builderVersion: BUILDER_VERSION,
         mode,
         partial,
+        createdAt: new Date().toISOString(),
+        privacy,
       });
       await writeFile(path.join(this.directory, 'manifest.json'), manifest, {
         flag: 'wx',
         mode: 0o600,
       });
       this.mode = mode;
+      this.privacy = { ...privacy };
       this.overLimitDirectories.clear();
       this.captureLimited = false;
       // Keep sequence state only for older runs with chat still eligible to publish.
@@ -337,17 +577,26 @@ export class CompactInferenceRecorder {
     safeId(id);
     // Deep copy at the capture boundary, not after another cycle can mutate its input.
     try {
-      const frozen = structuredClone(metadata);
+      const frozen = privateSnapshot(structuredClone(metadata), this.privacy) as typeof metadata;
       const bytes = snapshotBytes(frozen);
       if (this.memoryUsed() + bytes * 2 + 256 > this.limits.memoryBytes) {
         this.limitReached('Recording memory limit reached; later attempts are excluded.');
         return;
       }
-      this.pending.set(id, { metadata: frozen, patch: {}, mode: this.mode, bytes });
+      this.pending.set(id, {
+        metadata: frozen,
+        patch: {},
+        mode: this.mode,
+        privacy: { ...this.privacy },
+        directory: this.directory,
+        recordingId: this.recordingId!,
+        bytes,
+      });
       const recordings = this.runRecordingIds.get(metadata.runId) ?? new Set<string>();
       recordings.add(this.recordingId!);
       this.runRecordingIds.set(metadata.runId, recordings);
       this.indexedRun.set(id, metadata.runId);
+      this.indexedPrivacy.set(id, { ...this.privacy });
       const summary = this.summaryForStart(id, metadata);
       const dir = this.directory;
       this.enqueue(() =>
@@ -370,12 +619,12 @@ export class CompactInferenceRecorder {
     // Compact continues to omit it, even while the ephemeral inspector retains the request.
     const { request, ...compactPatch } = patch;
     try {
-      if (item.mode === 'exact' && request != null) {
+      if (item.mode === 'exact' && item.privacy.retainContent && request != null) {
         const json = JSON.stringify(request);
         if (!json) throw new Error('The constructed request is not JSON serializable.');
-        item.requestJson = json;
+        item.requestJson = JSON.stringify(privateSnapshot(JSON.parse(json), item.privacy));
       }
-      Object.assign(item.patch, structuredClone(compactPatch));
+      Object.assign(item.patch, privateSnapshot(structuredClone(compactPatch), item.privacy));
       item.bytes =
         snapshotBytes(item.metadata) +
         snapshotBytes(item.patch) +
@@ -389,7 +638,13 @@ export class CompactInferenceRecorder {
       this.captureError('Unable to snapshot an inference result for compact recording.');
       return;
     }
-    if (patch.stage === 'scheduled' || patch.stage === 'failed' || patch.stage === 'cancelled') {
+    if (
+      patch.stage === 'scheduled' ||
+      patch.stage === 'failed' ||
+      patch.stage === 'cancelled' ||
+      (patch.stage === 'accepted' &&
+        (item.metadata.role === 'vision' || item.metadata.role === 'memory'))
+    ) {
       this.pending.delete(id);
       // Transfer the reservation without a gap: the promise chain still owns these values.
       this.queued.set(id, item);
@@ -438,7 +693,10 @@ export class CompactInferenceRecorder {
           type: 'presentation',
           attemptId: id,
           scheduledIndex,
-          ...message,
+          ...(privateSnapshot(
+            message,
+            this.indexedPrivacy.get(id) ?? DEFAULT_PRIVACY,
+          ) as typeof message),
         };
         await this.chunk(dir, [row], { type: 'presentation', attemptId: id, chunk: '' });
         this.presented.add(key);
@@ -522,6 +780,7 @@ export class CompactInferenceRecorder {
     for (const id of this.indexedRun.keys()) used += id.length * 2 + 192;
     for (const [id, dir] of this.indexedDirs) used += (id.length + dir.length) * 2 + 192;
     for (const id of this.indexedStage.keys()) used += id.length * 2 + 128;
+    for (const id of this.indexedPrivacy.keys()) used += id.length * 2 + 128;
     for (const id of this.presented) used += id.length * 2 + 128;
     for (const dir of this.serialByDirectory.keys()) used += dir.length * 2 + 128;
     return used;
@@ -540,6 +799,11 @@ export class CompactInferenceRecorder {
     return {
       recordingId: this.recordingId!,
       mode: this.mode,
+      role: metadata.role,
+      profileRevision: metadata.profileRevision,
+      dependsOn: metadata.dependsOn,
+      sourceFrameIds: metadata.sourceFrameIds,
+      observedAt: metadata.observedAt,
       id,
       runId: metadata.runId,
       cycle: metadata.cycle,
@@ -645,8 +909,7 @@ export class CompactInferenceRecorder {
   }
 
   private async saveAttempt(attempt: TraceAttempt, capture: Capture): Promise<void> {
-    const dir = this.directory;
-    if (!dir) return;
+    const dir = capture.directory;
     const input = object(attempt.input);
     const selection = object(input.captureSelection);
     const entries: Row[] = [];
@@ -667,9 +930,13 @@ export class CompactInferenceRecorder {
       const provided = array(ids);
       references[kind] = chosen.map((value, index) => {
         const key = provided[index];
-        if (typeof key !== 'string' && typeof key !== 'number')
-          throw new Error(`Missing ${kind} selection ID for compact attempt ${attempt.id}.`);
-        const id = `${run}:${kind}:${key}`;
+        // Stage-specific context may not share the global Chat-history sequence.
+        // Content-address the missing references without inventing cross-stage IDs.
+        const stableKey =
+          typeof key === 'string' || typeof key === 'number'
+            ? key
+            : `${attempt.id}:${index}:${sha(JSON.stringify(value))}`;
+        const id = `${run}:${kind}:${stableKey}:${sha(JSON.stringify(value))}`;
         emit(kind, id, { ...object(value), order: index });
         return id;
       });
@@ -679,35 +946,46 @@ export class CompactInferenceRecorder {
     captureEvidence('event', input.recentEvents, selection.events);
     captureEvidence('chat', input.recentChat, selection.chat);
     references.frame = [];
+    references.chatFrame = [];
     const selectedJpegs = new Set<string>();
     const pendingFrames = new Map<string, Buffer>();
-    for (const [index, value] of array(input.frames).entries()) {
-      const frame = object(value);
-      const match = typeof frame.dataUrl === 'string' ? JPEG.exec(frame.dataUrl) : null;
-      if (!match) throw new Error('Selected JPEG was unavailable for compact recording.');
-      const buffer = Buffer.from(match[1], 'base64');
-      const digest = sha(buffer);
-      selectedJpegs.add(digest);
-      const frameId = `${run}:frame:${sha(
-        JSON.stringify([frame.sourceId, frame.observedAt, frame.mediaTimeMs, digest]),
-      )}`;
-      const filename = `${digest}.jpg`;
-      // Reserve disk budget before writing any blobs so an oversized attempt leaves no
-      // partial media alongside a missing outcome. Content hashes deduplicate frames.
-      if (!this.frames.has(digest)) pendingFrames.set(digest, buffer);
-      emit('frame', frameId, {
-        sourceId: frame.sourceId,
-        observedAt: frame.observedAt,
-        ...(frame.mediaTimeMs === undefined ? {} : { mediaTimeMs: frame.mediaTimeMs }),
-        width: frame.width,
-        height: frame.height,
-        jpeg: filename,
-        order: index,
-      });
-      references.frame.push(frameId);
+    for (const kind of ['frame', 'chatFrame'] as const) {
+      const values = array(kind === 'frame' ? input.frames : input.chatFrames);
+      const selectedIds = array(kind === 'frame' ? selection.frames : selection.chatFrames);
+      for (const [index, value] of values.entries()) {
+        const frame = object(value);
+        const match = typeof frame.dataUrl === 'string' ? JPEG.exec(frame.dataUrl) : null;
+        const buffer = match ? Buffer.from(match[1], 'base64') : null;
+        const digest = buffer ? sha(buffer) : 'omitted';
+        if (buffer) selectedJpegs.add(digest);
+        const frameId = `${run}:frame:${sha(
+          JSON.stringify([
+            kind,
+            selectedIds[index],
+            frame.sourceId,
+            frame.observedAt,
+            frame.mediaTimeMs,
+            digest,
+          ]),
+        )}`;
+        const filename = `${digest}.jpg`;
+        // Independent Hybrid Chat frames share the same deduplicated blob store.
+        if (buffer && !this.frames.has(digest)) pendingFrames.set(digest, buffer);
+        emit('frame', frameId, {
+          sourceId: frame.sourceId,
+          observedAt: frame.observedAt,
+          ...(frame.mediaTimeMs === undefined ? {} : { mediaTimeMs: frame.mediaTimeMs }),
+          width: frame.width,
+          height: frame.height,
+          ...(buffer ? { jpeg: filename } : { mediaOmitted: true }),
+          order: index,
+        });
+        references[kind].push(frameId);
+      }
     }
     const {
       frames: _frames,
+      chatFrames: _chatFrames,
       recentTranscripts: _transcripts,
       observations: _observations,
       recentEvents: _events,
@@ -718,7 +996,13 @@ export class CompactInferenceRecorder {
     const { request: _request, input: _input, ...rest } = attempt;
     const summary: CompactAttemptSummary = {
       mode: capture.mode,
-      recordingId: this.recordingId!,
+      recordingId: capture.recordingId,
+      role: attempt.role,
+      profileRevision: attempt.profileRevision,
+      dependsOn: attempt.dependsOn,
+      sourceFrameIds: attempt.sourceFrameIds,
+      observedAt: attempt.observedAt,
+      availableAt: attempt.availableAt,
       id: attempt.id,
       runId: attempt.runId,
       cycle: attempt.cycle,
@@ -734,6 +1018,7 @@ export class CompactInferenceRecorder {
     if (capture.mode === 'exact' && capture.requestJson !== undefined) {
       const original = capture.requestJson;
       const encoded = mapImageUrls(JSON.parse(original), (url) => {
+        if (!JPEG.test(url)) return url;
         const match = JPEG.exec(url);
         if (!match) throw new Error('Exact native request contains a non-JPEG image.');
         const bytes = Buffer.from(match[1], 'base64');
@@ -750,6 +1035,7 @@ export class CompactInferenceRecorder {
       base,
       selection: references,
       details: { ...rest, originalSelection: selection, builderVersion: BUILDER_VERSION },
+      retention: capture.privacy,
       ...(exact ? { exact } : {}),
     } as AttemptRecord);
     // The bounded in-memory frame hash cache may have evicted an older digest.
@@ -803,6 +1089,7 @@ export class CompactInferenceRecorder {
       this.indexedRun.delete(attempt.id);
       this.indexedDirs.delete(attempt.id);
       this.indexedStage.delete(attempt.id);
+      this.indexedPrivacy.delete(attempt.id);
     }
     if (dir === this.directory) this.attempts++;
   }
@@ -1008,7 +1295,7 @@ export class CompactInferenceRecorder {
           .toString('utf8')
           .split('\n')
           .filter(Boolean)
-          .map((line) => JSON.parse(line) as Row);
+          .map((line) => validateArchiveRow(JSON.parse(line)));
         if (!rows.length) throw new Error('Empty imported recording chunk.');
         const matching = rows.filter((item) => item.type === row.type);
         if (matching.length !== 1) throw new Error('Recorded chunk index does not match payload.');
@@ -1086,7 +1373,7 @@ export class CompactInferenceRecorder {
           .toString('utf8')
           .split('\n')
           .filter(Boolean)
-          .map((line) => JSON.parse(line) as Row);
+          .map((line) => validateArchiveRow(JSON.parse(line)));
         for (const item of rows) {
           if (item.type === 'presentation' && !attemptIds.has(item.attemptId))
             throw new Error('Imported presentation references an unknown attempt.');
@@ -1128,6 +1415,7 @@ export class CompactInferenceRecorder {
               mode: part.mode,
               partial: part.partial,
               builderVersion: 'imported-portable',
+              createdAt: new Date().toISOString(),
             }),
             { flag: 'wx', mode: 0o600 },
           );
@@ -1183,6 +1471,7 @@ export class CompactInferenceRecorder {
   /** All previously completed recordings remain discoverable after an application restart. */
   async list(): Promise<CompactAttemptSummary[]> {
     await this.flush();
+    await this.purgeExpiredArchives();
     const base = path.join(this.root, 'compact-inference');
     let recordings: string[];
     try {
@@ -1316,6 +1605,7 @@ export class CompactInferenceRecorder {
     if (typeof recordingId !== 'string' || !RECORDING_ID.test(recordingId))
       throw new Error('Invalid compact recording ID.');
     await this.flush();
+    await this.purgeExpiredArchives();
     const dir = path.join(this.root, 'compact-inference', recordingId);
     const index = await this.readIndex(dir);
     const target = index.find((item) => item.type === 'attempt' && item.attemptId === id);
@@ -1359,25 +1649,29 @@ export class CompactInferenceRecorder {
     }
     if (!attempt) throw new Error('Compact attempt index references a missing attempt.');
     const selected = attempt as AttemptRecord;
-    const required = (kind: EvidenceKind): Record<string, unknown>[] =>
+    const required = (kind: EvidenceKind | 'chatFrame'): Record<string, unknown>[] =>
       (selected.selection[kind] ?? []).map((key) => {
         const row = evidence.get(key);
-        if (!row || row.kind !== kind)
+        if (!row || row.kind !== (kind === 'chatFrame' ? 'frame' : kind))
           throw new Error(`Compact reconstruction is missing selected ${kind} ${key}.`);
         const { order: _order, ...data } = row.data;
         return data;
       });
-    const frames = await Promise.all(
-      required('frame').map(async (frame) => {
-        const filename = frame.jpeg;
-        if (typeof filename !== 'string' || !/^[a-f0-9]{64}\.jpg$/.test(filename))
-          throw new Error('Invalid recorded JPEG reference.');
-        const bytes = await readFile(path.join(dir, 'frames', filename));
-        if (sha(bytes) + '.jpg' !== filename) throw new Error('Recorded JPEG checksum mismatch.');
-        const { jpeg: _jpeg, ...metadata } = frame;
-        return { ...metadata, dataUrl: `data:image/jpeg;base64,${bytes.toString('base64')}` };
-      }),
-    );
+    const restoreFrames = async (kind: 'frame' | 'chatFrame') =>
+      Promise.all(
+        required(kind).map(async (frame) => {
+          if (frame.mediaOmitted === true && frame.jpeg === undefined) return { ...frame };
+          const filename = frame.jpeg;
+          if (typeof filename !== 'string' || !/^[a-f0-9]{64}\.jpg$/.test(filename))
+            throw new Error('Invalid recorded JPEG reference.');
+          const bytes = await readFile(path.join(dir, 'frames', filename));
+          if (sha(bytes) + '.jpg' !== filename) throw new Error('Recorded JPEG checksum mismatch.');
+          const { jpeg: _jpeg, ...metadata } = frame;
+          return { ...metadata, dataUrl: `data:image/jpeg;base64,${bytes.toString('base64')}` };
+        }),
+      );
+    const frames = await restoreFrames('frame');
+    const chatFrames = await restoreFrames('chatFrame');
     const input: InferenceInput = {
       ...selected.base,
       captureSelection: selected.details.originalSelection as InferenceInput['captureSelection'],
@@ -1386,12 +1680,24 @@ export class CompactInferenceRecorder {
       recentEvents: required('event') as unknown as InferenceInput['recentEvents'],
       recentChat: required('chat') as unknown as InferenceInput['recentChat'],
       frames: frames as unknown as InferenceInput['frames'],
+      ...(selected.selection.chatFrame
+        ? { chatFrames: chatFrames as unknown as InferenceInput['chatFrames'] }
+        : {}),
     } as InferenceInput;
     let request: unknown;
     let provenance: CompactReconstruction['provenance'];
     let warning: string;
     const mode = selected.summary.mode ?? 'compact';
-    if (mode === 'exact') {
+    const retained = selected.retention;
+    const hasMissingMedia = [...frames, ...chatFrames].some(
+      (frame) => 'mediaOmitted' in frame && frame.mediaOmitted === true,
+    );
+    if (retained && (!retained.retainContent || hasMissingMedia)) {
+      request = null;
+      provenance = 'metadata-only';
+      warning =
+        'Detailed request replay is unavailable: private content or source media was not retained.';
+    } else if (mode === 'exact') {
       if (!selected.exact) {
         request = null;
         provenance = 'exact-not-constructed';
@@ -1399,10 +1705,10 @@ export class CompactInferenceRecorder {
           'The attempt ended before its native request was constructed; no original request exists to rerun.';
       } else {
         const blobs = new Map(
-          frames.map((frame) => {
-            const match = JPEG.exec(frame.dataUrl);
+          [...frames, ...chatFrames].map((frame) => {
+            const match = JPEG.exec(String(frame.dataUrl ?? ''));
             const bytes = Buffer.from(match![1], 'base64');
-            return [sha(bytes), frame.dataUrl] as const;
+            return [sha(bytes), String(frame.dataUrl)] as const;
           }),
         );
         const restored = mapImageUrls(JSON.parse(selected.exact.encodedJson), (reference) => {
@@ -1418,6 +1724,14 @@ export class CompactInferenceRecorder {
         warning =
           'Verified original native request; its prompts, schema, parameters, seed and JPEG bytes are independent of the current builder.';
       }
+    } else if (
+      selected.summary.role === 'vision' ||
+      selected.summary.role === 'chat' ||
+      selected.summary.role === 'memory'
+    ) {
+      request = null;
+      provenance = 'metadata-only';
+      warning = 'Stage requests are not reconstructed with the legacy Unified builder.';
     } else {
       request = nativeChatRequest(input);
       provenance = 'current-builder-reconstruction';
@@ -1477,7 +1791,7 @@ export class CompactInferenceRecorder {
       recordedBuilderVersion,
       currentBuilderVersion,
       warning:
-        mode === 'exact'
+        provenance === 'metadata-only' || mode === 'exact'
           ? warning
           : (recordedBuilderVersion !== currentBuilderVersion
               ? 'The recorded builder fingerprint differs from this application. '
@@ -1533,6 +1847,6 @@ export class CompactInferenceRecorder {
       .toString('utf8')
       .split('\n')
       .filter(Boolean)
-      .map((line) => JSON.parse(line) as Row);
+      .map((line) => validateArchiveRow(JSON.parse(line)));
   }
 }
