@@ -49,6 +49,8 @@ export interface InferenceProfileValues {
     readonly maximumAgeMs?: number;
     readonly strictWait?: boolean;
     readonly warmIdleMs?: number;
+    /** Recorded EOF budget, excluding paused playback time. */
+    readonly recordedDrainTimeoutMs?: number;
   };
 }
 export interface InferenceProfile {
@@ -237,6 +239,7 @@ export function validateProfileValues(
         'maximumAgeMs',
         'strictWait',
         'warmIdleMs',
+        'recordedDrainTimeoutMs',
       ],
       'architecture',
     );
@@ -246,6 +249,7 @@ export function validateProfileValues(
       'maximumWaitMs',
       'maximumAgeMs',
       'warmIdleMs',
+      'recordedDrainTimeoutMs',
     ] as const) {
       if (
         config[key] !== undefined &&
@@ -285,6 +289,7 @@ export function validateProfileValues(
       ...(config.maximumAgeMs !== undefined ? { maximumAgeMs: config.maximumAgeMs as number } : {}),
       ...(config.strictWait !== undefined ? { strictWait: config.strictWait as boolean } : {}),
       ...(config.warmIdleMs !== undefined ? { warmIdleMs: config.warmIdleMs as number } : {}),
+      ...(config.recordedDrainTimeoutMs !== undefined ? { recordedDrainTimeoutMs: config.recordedDrainTimeoutMs as number } : {}),
     };
   }
   return {

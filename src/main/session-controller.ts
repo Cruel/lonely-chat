@@ -41,6 +41,7 @@ const MAX_ATTEMPTS = 3;
 const RETRY_BASE_MS = 500;
 const SMOOTHING_WEIGHT = 0.35;
 const MAX_PLAYBACK_WINDOW_MS = 60000;
+const DEFAULT_RECORDED_DRAIN_TIMEOUT_MS = 90000;
 
 /** App-owned inference, observation boundaries and chat playback; never tied to a renderer. */
 export class SessionController {
@@ -71,6 +72,9 @@ export class SessionController {
   private pendingProfile: import('../shared/inference-profile-contract').InferenceProfile | null = null;
   private readonly splitCoordinator = new ScheduledSplitInference();
   private splitVisionTimer: unknown = null;
+  private splitVisionTick: (() => void) | null = null;
+  private splitVisionNextAt: number | null = null;
+  private splitVisionRemainingMs: number | null = null;
   private splitVisionAbort: AbortController | null = null;
   private readonly scheduler: ChatScheduler;
   private readonly history: InferenceHistory;
@@ -104,6 +108,10 @@ export class SessionController {
   private eofRequested = false;
   private finalCycleStarted = false;
   private eofVisionHandoffStarted = false;
+  private eofMemoryWaitRegistered = false;
+  private eofTimer: unknown = null;
+  private eofDeadlineAt: number | null = null;
+  private eofRemainingMs: number | null = null;
   private transcriptRevision = 0;
   private cycleTranscriptRevision = 0;
   private processedTranscriptRevision = 0;
@@ -416,6 +424,7 @@ export class SessionController {
     this.trace.closePresentation(this.runId);
     this.epoch++;
     this.stopSplitVisionLoop();
+    this.clearEofTimer();
     this.splitCoordinator.reset();
     this.splitCoordinator.configureMemory(this.activeProfile?.values.memory ?? { enabled: false, intervalMs: 30000, maxCharacters: 2000, expireAfterMs: 0 });
     this.splitCoordinator.configureHybrid(this.activeProfile?.values.topology === 'hybrid' ? this.activeProfile.values.architecture?.hybridMaxImages ?? 0 : 0);
@@ -433,6 +442,7 @@ export class SessionController {
     this.eofRequested = false;
     this.finalCycleStarted = false;
     this.eofVisionHandoffStarted = false;
+    this.eofMemoryWaitRegistered = false;
     this.transcriptRevision = 0;
     this.cycleTranscriptRevision = 0;
     this.processedTranscriptRevision = 0;
@@ -441,6 +451,7 @@ export class SessionController {
       runId: this.runId,
       phase: mode === 'fake' ? 'running' : 'starting',
       recordedPlayback: options.inputMode === 'recorded' ? 'playing' : null,
+      recordedCompletionReason: null,
       mode,
       inputMode: options.inputMode,
       transcriptMode:
@@ -503,6 +514,13 @@ export class SessionController {
       this.inferenceTimer = null;
       this.nextCycleAt = null;
     }
+    this.pauseEofTimer();
+    if (this.splitVisionTimer !== null) {
+      this.splitVisionRemainingMs = Math.max(0, (this.splitVisionNextAt ?? this.clock.now()) - this.clock.now());
+      this.clock.clearTimeout(this.splitVisionTimer);
+      this.splitVisionTimer = null;
+      this.splitVisionNextAt = null;
+    }
     this.scheduler.pause();
     this.splitCoordinator.suspendMemory();
     this.setState({ recordedPlayback: 'paused' });
@@ -516,6 +534,12 @@ export class SessionController {
     this.closePausedInterval();
     this.scheduler.resume();
     this.splitCoordinator.resumeMemory();
+    if (!this.eofRequested && this.splitVisionRemainingMs !== null && this.splitVisionTick) {
+      this.splitVisionNextAt = this.clock.now() + this.splitVisionRemainingMs;
+      this.splitVisionTimer = this.clock.setTimeout(this.splitVisionTick, this.splitVisionRemainingMs);
+    }
+    this.splitVisionRemainingMs = null;
+    this.armEofTimer();
     this.setState({ recordedPlayback: this.eofRequested ? 'draining' : 'playing' });
     const waiters = this.resumeWaiters.splice(0);
     for (const resume of waiters) resume();
@@ -541,6 +565,14 @@ export class SessionController {
     this.requireRecordedPlayback();
     if (this.eofRequested) return this.snapshot();
     this.eofRequested = true;
+    // Stop scheduling new independent cycles, but preserve the admitted Vision
+    // request: its result may be the final observation needed by Chat.
+    if (this.splitVisionTimer !== null) this.clock.clearTimeout(this.splitVisionTimer);
+    this.splitVisionTimer = null;
+    this.splitVisionNextAt = null;
+    this.splitVisionRemainingMs = null;
+    this.eofRemainingMs = this.activeProfile?.values.architecture?.recordedDrainTimeoutMs ?? DEFAULT_RECORDED_DRAIN_TIMEOUT_MS;
+    this.armEofTimer();
     if (!this.retryWork) {
       if (this.inferenceTimer !== null) this.clock.clearTimeout(this.inferenceTimer);
       this.inferenceTimer = null;
@@ -596,6 +628,56 @@ export class SessionController {
     return new Promise<void>((resolve) => this.resumeWaiters.push(resolve));
   }
 
+  private clearEofTimer(): void {
+    if (this.eofTimer !== null) this.clock.clearTimeout(this.eofTimer);
+    this.eofTimer = null;
+    this.eofDeadlineAt = null;
+    this.eofRemainingMs = null;
+  }
+
+  private pauseEofTimer(): void {
+    if (this.eofDeadlineAt === null) return;
+    this.eofRemainingMs = Math.max(0, this.eofDeadlineAt - this.clock.now());
+    if (this.eofTimer !== null) this.clock.clearTimeout(this.eofTimer);
+    this.eofTimer = null;
+    this.eofDeadlineAt = null;
+  }
+
+  private armEofTimer(): void {
+    if (!this.eofRequested || this.pausedAt !== null || this.eofRemainingMs === null || this.eofTimer !== null) return;
+    const epoch = this.epoch;
+    this.eofDeadlineAt = this.clock.now() + this.eofRemainingMs;
+    this.eofTimer = this.clock.setTimeout(() => {
+      this.eofTimer = null;
+      if (!this.active(epoch) || !this.eofRequested) return;
+      const pending = [
+        ...(this.splitCoordinator.visionInFlight ? ['Vision'] : []),
+        ...(this.attemptInFlight ? ['Chat/inference'] : []),
+        ...(this.splitCoordinator.memoryInFlight ? ['memory'] : []),
+        ...(this.scheduler.pendingCount ? ['chat presentation'] : []),
+        ...(this.inferenceTimer !== null ? ['stage cadence'] : []),
+      ];
+      this.epoch++;
+      this.abort?.abort();
+      this.stopSplitVisionLoop();
+      this.splitCoordinator.cancelActive();
+      this.trace.cancelPending(this.runId);
+      this.trace.closePresentation(this.runId);
+      for (const resume of this.resumeWaiters.splice(0)) resume();
+      this.attemptInFlight = false;
+      if (this.inferenceTimer !== null) this.clock.clearTimeout(this.inferenceTimer);
+      this.inferenceTimer = null;
+      this.retryWork = null;
+      this.scheduler.stop();
+      this.video.clear();
+      this.clearEofTimer();
+      this.setState({ phase: 'stopped', recordedPlayback: 'completed',
+        recordedCompletionReason: 'deadline-exceeded', retryAttempt: 0,
+        warning: `Recorded EOF deadline exceeded while draining ${pending.join(', ') || 'final stage work'}.` });
+      this.shutdownPromise = this.stopProvider(this.activeInference);
+    }, this.eofRemainingMs);
+  }
+
   private scheduleCycle(epoch: number, delayMs: number, callback: () => void): void {
     if (this.inferenceTimer !== null) this.clock.clearTimeout(this.inferenceTimer);
     if (this.pausedAt !== null) {
@@ -613,30 +695,57 @@ export class SessionController {
   private advanceRecordedEof(): void {
     if (!this.eofRequested || this.pausedAt !== null || this.attemptInFlight) return;
     if (!this.active(this.epoch)) return;
-    // Independent Vision work is admitted work, even if the Chat attempt and
-    // presentation queue have already drained. Do not cancel its final result.
+    // Independent Vision work is admitted work, even if Chat already finished.
     if (this.splitCoordinator.visionInFlight) return;
+    const split = this.state.inferenceProfile?.topology === 'split' || this.state.inferenceProfile?.topology === 'hybrid';
+    // A decoder can submit its last frame after the previous Vision snapshot.
+    // Analyze it once before the final transcript/Chat handoff, including in
+    // sequential profiles where independent Vision is normally disabled.
+    if (split && this.splitCoordinator.needsFinalVision(
+      this.video.sampleStage(this.observationNow(), this.activeProfile?.values.stageDefaults.observer?.frameSampling, 1).at(-1))) {
+      if (this.inferenceTimer === null) {
+        const epoch = this.epoch;
+        this.scheduleCycle(epoch, this.splitCoordinator.nextVisionDelay(this.observationNow()),
+          () => this.submitSplitVision(epoch));
+      }
+      return;
+    }
     if (
       !this.finalCycleStarted &&
       (this.transcriptRevision > this.processedTranscriptRevision || this.state.cycle === 0)
     ) {
       this.finalCycleStarted = true;
-      this.runCycle(this.epoch);
+      const epoch = this.epoch;
+      const delay = split ? this.splitCoordinator.nextChatDelay(this.observationNow()) : 0;
+      if (delay > 0) this.scheduleCycle(epoch, delay, () => this.runCycle(epoch));
+      else this.runCycle(epoch);
       return;
     }
     if (this.scheduler.pendingCount !== 0) return;
     if (this.splitCoordinator.hasUnconsumedVision() && !this.eofVisionHandoffStarted) {
       this.eofVisionHandoffStarted = true;
       const epoch = this.epoch;
-      this.scheduleCycle(epoch, this.splitCoordinator.nextChatDelay(this.clock.now()), () => this.runCycle(epoch));
+      this.scheduleCycle(epoch, this.splitCoordinator.nextChatDelay(this.observationNow()), () => this.runCycle(epoch));
       return;
     }
-    // A scheduled final handoff is still Run-owned work.
+    // A scheduled final handoff and an admitted memory update are Run-owned work.
     if (this.inferenceTimer !== null) return;
+    if (this.splitCoordinator.memoryInFlight) {
+      if (!this.eofMemoryWaitRegistered) {
+        this.eofMemoryWaitRegistered = true;
+        void this.splitCoordinator.waitForMemory().finally(() => {
+          this.eofMemoryWaitRegistered = false;
+          this.advanceRecordedEof();
+        });
+      }
+      return;
+    }
     this.trace.closePresentation(this.runId);
     this.stopSplitVisionLoop();
     this.splitCoordinator.cancelActive();
-    this.setState({ phase: 'stopped', recordedPlayback: 'completed', retryAttempt: 0 });
+    this.video.clear();
+    this.clearEofTimer();
+    this.setState({ phase: 'stopped', recordedPlayback: 'completed', recordedCompletionReason: 'drained', retryAttempt: 0 });
     this.scheduler.stop();
     this.shutdownPromise = this.stopProvider(this.activeInference);
   }
@@ -647,6 +756,7 @@ export class SessionController {
     this.closePausedInterval();
     this.pausedAt = null;
     this.eofRequested = false;
+    this.clearEofTimer();
     this.attemptInFlight = false;
     this.remainingCycleDelay = null;
     this.nextCycleAt = null;
@@ -667,10 +777,12 @@ export class SessionController {
     if (this.inferenceTimer !== null) this.clock.clearTimeout(this.inferenceTimer);
     this.inferenceTimer = null;
     this.scheduler.stop();
+    if (this.state.inputMode === 'recorded') this.video.clear();
     this.context = '';
     const stopped = {
       phase: 'stopped' as const,
       recordedPlayback: null,
+      recordedCompletionReason: null,
       error: null,
       warning: null,
       retryAttempt: 0,
@@ -931,76 +1043,76 @@ export class SessionController {
     this.splitVisionAbort = null;
     if (this.splitVisionTimer !== null) this.clock.clearTimeout(this.splitVisionTimer);
     this.splitVisionTimer = null;
+    this.splitVisionTick = null;
+    this.splitVisionNextAt = null;
+    this.splitVisionRemainingMs = null;
+  }
+
+  /** Admit exactly one independent Vision snapshot on either the live cadence or
+   * the EOF final-frame boundary. It never advances the Chat history watermark. */
+  private submitSplitVision(epoch: number): void {
+    if (!this.active(epoch) || this.pausedAt !== null || !this.splitAdapters) return;
+    const abort = this.splitVisionAbort ?? new AbortController();
+    this.splitVisionAbort = abort;
+    if (!this.eofRequested && this.splitCoordinator.canAdmitVision(this.observationNow()))
+      this.admitPendingProfile();
+    const cycle = this.state.cycle + 1;
+    const now = this.observationNow();
+    const chat = this.chat.snapshot().messages
+      .filter((message) => Number(message.id.slice('chat-'.length)) > this.chatStartSequence)
+      .map((message) => ({ ...message, presentedAt: this.observationTime(message.presentedAt) }));
+    const snapshot = this.history.snapshot(
+      this.context, cycle, now, this.playbackWindow(), chat, this.audience?.snapshot().members,
+    );
+    const media = this.video.sample(
+      snapshot.boundary.fromMs, now, cycle === 1, this.runPreferences.videoMaxFrames,
+    );
+    const stageMedia = this.stageMedia(now, media);
+    // EOF must be able to inspect the final buffered image even when the last
+    // Chat snapshot already advanced the history boundary past that image.
+    const frames = this.eofRequested
+      ? this.video.sampleStage(now, this.activeProfile?.values.stageDefaults.observer?.frameSampling,
+          this.runPreferences.videoMaxFrames)
+      : stageMedia.frames;
+    const input: CycleInput = {
+      ...snapshot,
+      captureSelection: {
+        ...snapshot.captureSelection!,
+        frames: frames.map((frame, index) => `${frame.sourceId}:${frame.observedAt}:${index}`),
+        ...(stageMedia.chatFrames ? { chatFrames: stageMedia.chatFrames.map((frame, index) => `${frame.sourceId}:${frame.observedAt}:${index}`) } : {}),
+      },
+      chatActivity: this.runPreferences.chatActivity,
+      ...stageMedia,
+      frames,
+      seed: deriveInferenceSeed(this.state.sessionSeed!, 'cycle', cycle, 1),
+    };
+    void this.splitCoordinator.execute(
+      input, this.splitAdapters(input), abort.signal, () => this.waitUntilResumed(),
+      this.activeProfile?.values.stageDefaults ?? {}, this.splitScheduling(),
+      () => this.observationNow(), 'vision', this.stageEvidence(),
+    ).then(() => this.splitCoordinator.waitForVision()).catch(() => {
+      // Vision failures are owned by the stage coordinator, not the loop timer.
+    }).finally(() => {
+      if (this.eofRequested) this.advanceRecordedEof();
+    });
   }
 
   /** Remote async Vision is sampled on its own clock, even while Chat is busy. */
   private startSplitVisionLoop(epoch: number): void {
-    if (this.splitVisionAbort || !this.splitAdapters) return;
+    if (this.splitVisionAbort || !this.splitAdapters || this.eofRequested) return;
     if (this.splitScheduling().execution !== 'asynchronous') return;
-    const abort = new AbortController();
-    this.splitVisionAbort = abort;
+    this.splitVisionAbort = new AbortController();
     const tick = () => {
       this.splitVisionTimer = null;
-      if (!this.active(epoch) || abort.signal.aborted || this.eofRequested) return;
-      if (this.pausedAt === null && this.splitCoordinator.canAdmitVision(this.clock.now()))
-        this.admitPendingProfile();
+      this.splitVisionNextAt = null;
+      if (!this.active(epoch) || this.splitVisionAbort?.signal.aborted || this.eofRequested) return;
+      if (this.pausedAt === null) this.submitSplitVision(epoch);
       const policy = this.splitScheduling();
-      if (this.pausedAt === null) {
-        const cycle = this.state.cycle + 1;
-        const now = this.observationNow();
-        const chat = this.chat
-          .snapshot()
-          .messages.filter(
-            (message) => Number(message.id.slice('chat-'.length)) > this.chatStartSequence,
-          )
-          .map((message) => ({
-            ...message,
-            presentedAt: this.observationTime(message.presentedAt),
-          }));
-        const snapshot = this.history.snapshot(
-          this.context,
-          cycle,
-          now,
-          this.playbackWindow(),
-          chat,
-          this.audience?.snapshot().members,
-        );
-        const media = this.video.sample(
-          snapshot.boundary.fromMs,
-          now,
-          cycle === 1,
-          this.runPreferences.videoMaxFrames,
-        );
-        const stageMedia = this.stageMedia(now, media);
-        const input: CycleInput = {
-          ...snapshot,
-          captureSelection: {
-            ...snapshot.captureSelection!,
-            frames: stageMedia.frames.map((frame, index) => `${frame.sourceId}:${frame.observedAt}:${index}`),
-            ...(stageMedia.chatFrames ? { chatFrames: stageMedia.chatFrames.map((frame, index) => `${frame.sourceId}:${frame.observedAt}:${index}`) } : {}),
-          },
-          chatActivity: this.runPreferences.chatActivity,
-          ...stageMedia,
-          seed: deriveInferenceSeed(this.state.sessionSeed!, 'cycle', cycle, 1),
-        };
-        void this.splitCoordinator.execute(
-          input,
-          this.splitAdapters!(input),
-          abort.signal,
-          () => this.waitUntilResumed(),
-          this.activeProfile?.values.stageDefaults ?? {},
-          policy,
-          () => this.clock.now(),
-          'vision',
-          this.stageEvidence(),
-        ).then(() => this.splitCoordinator.waitForVision()).catch(() => {
-          // Vision errors are owned by the stage coordinator, not the loop timer.
-        }).finally(() => {
-          if (this.eofRequested) this.advanceRecordedEof();
-        });
-      }
-      this.splitVisionTimer = this.clock.setTimeout(tick, Math.max(50, policy.visionIntervalMs));
+      const delay = Math.max(50, policy.visionIntervalMs);
+      this.splitVisionNextAt = this.clock.now() + delay;
+      this.splitVisionTimer = this.clock.setTimeout(tick, delay);
     };
+    this.splitVisionTick = tick;
     tick();
   }
 
@@ -1234,7 +1346,7 @@ export class SessionController {
             () => this.waitUntilResumed(),
             attemptProfile?.values.stageDefaults ?? {},
             this.splitScheduling(),
-            () => this.clock.now(),
+            () => this.observationNow(),
             // Recorded EOF may drain admitted Vision, but must never launch
             // another Vision attempt through the final Chat cycle or retries.
             this.eofRequested ? 'chat' : 'both',
@@ -1437,7 +1549,7 @@ export class SessionController {
         this.retryWork = retry;
         const stageDelay =
           (this.state.inferenceProfile?.topology === 'split' || this.state.inferenceProfile?.topology === 'hybrid')
-            ? this.splitCoordinator.nextChatDelay(this.clock.now())
+            ? this.splitCoordinator.nextChatDelay(this.observationNow())
             : 0;
         this.scheduleCycle(epoch, Math.max(RETRY_BASE_MS * 2 ** (attempt - 1), stageDelay), () => {
           this.retryWork = null;

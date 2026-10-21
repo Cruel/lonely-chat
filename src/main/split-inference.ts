@@ -197,6 +197,7 @@ export class ScheduledSplitInference {
   private generation = 0;
   private serial = 0;
   private mediaIdentity = '';
+  private lastVisionFrame: string | null = null;
   private readonly narrative = new SplitNarrative();
   private readonly memory = new NarrativeMemory();
   private hybridMaxImages = 0;
@@ -235,6 +236,7 @@ export class ScheduledSplitInference {
     this.chatVisionRevision = 0;
     this.serial = 0;
     this.mediaIdentity = '';
+    this.lastVisionFrame = null;
     this.narrative.reset();
     this.memory.reset();
     this.retryPayload = null;
@@ -266,6 +268,16 @@ export class ScheduledSplitInference {
   resumeMemory(): void { this.memory.resume(); }
 
   get visionInFlight(): boolean { return this.visionTask !== null; }
+  get memoryInFlight(): boolean { return this.memoryTask !== null; }
+
+  /** EOF needs a final visual handoff only when a new media frame was captured. */
+  needsFinalVision(frame: VideoFrame | undefined): boolean {
+    return Boolean(frame && `${frame.sourceId}:${frame.observedAt}` !== this.lastVisionFrame);
+  }
+
+  nextVisionDelay(now: number): number {
+    return this.visionCadence?.nextDelay(now) ?? 0;
+  }
 
   canAdmitVision(now: number): boolean {
     return (this.visionCadence?.nextDelay(now) ?? 0) === 0;
@@ -342,6 +354,8 @@ export class ScheduledSplitInference {
     let visionFailure: unknown = null;
     const observedAt = snapshot.frames?.at(-1)?.observedAt ?? snapshot.boundary?.throughMs ?? 0;
     if (work !== 'chat' && this.visionCadence.start(now())) {
+      const last = snapshot.frames?.at(-1);
+      if (last) this.lastVisionFrame = `${last.sourceId}:${last.observedAt}`;
       const cadence = this.visionCadence;
       const evidence = capture?.('vision', visionInput, requests.vision, observedAt, []);
       let failureStage: 'transport' | 'validation' = 'transport';
@@ -478,7 +492,7 @@ export class ScheduledSplitInference {
         // Memory updates happen after time-critical Chat publication, never on its critical path.
         const task = this.memory.update(now(), this.memoryPolicy, adapters.memory ?? adapters.chat, signal,
           capture ? (request) => capture('memory', chatInput, request, observedAt,
-            [...dependsOn, ...(chatEvidence ? [chatEvidence.id] : [])]) : undefined);
+            [...dependsOn, ...(chatEvidence ? [chatEvidence.id] : [])]) : undefined, beforeAccept);
         this.memoryTask = task;
         void task.finally(() => {
           if (this.memoryTask === task) this.memoryTask = null;

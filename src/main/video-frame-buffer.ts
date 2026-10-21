@@ -52,6 +52,11 @@ export class VideoFrameBuffer {
     this.prune(now);
   }
 
+  /** Discard a completed Run's media without losing its selected capture source. */
+  clear(): void {
+    this.frames = [];
+  }
+
   selectSource(sourceId: string | null): void {
     if (sourceId !== this.sourceId) {
       this.sourceId = sourceId;

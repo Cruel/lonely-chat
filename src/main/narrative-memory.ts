@@ -40,11 +40,9 @@ export class NarrativeMemory {
   }
 
   suspend(): void {
+    // Preserve admitted work across Recorded pauses. The publication barrier
+    // in update() holds an already completed response until playback resumes.
     this.suspended = true;
-    this.generation++;
-    this.abort.abort();
-    this.abort = new AbortController();
-    this.inFlight = false;
   }
 
   resume(): void { this.suspended = false; }
@@ -62,7 +60,7 @@ export class NarrativeMemory {
   }
 
   /** Never overlap updates or retry in a tight loop. New evidence remains pending after failure. */
-  async update(now: number, policy: NarrativeMemoryPolicy, adapter: UnifiedInferenceAdapter, signal: AbortSignal, capture?: (request: UnifiedInferenceRequest) => StageTraceCapture): Promise<boolean> {
+  async update(now: number, policy: NarrativeMemoryPolicy, adapter: UnifiedInferenceAdapter, signal: AbortSignal, capture?: (request: UnifiedInferenceRequest) => StageTraceCapture, beforeAccept?: () => Promise<void>): Promise<boolean> {
     if (!policy.enabled || this.suspended || !this.pending.length || this.inFlight || signal.aborted ||
         now - this.lastStarted < policy.intervalMs) return false;
     const generation = this.generation;
@@ -89,7 +87,8 @@ export class NarrativeMemory {
     try {
       evidence?.update({ stage: 'transport' });
       const result = await adapter.complete(request, activeSignal, evidence?.observe);
-      if (activeSignal.aborted || generation !== this.generation) {
+      await beforeAccept?.();
+      if (activeSignal.aborted || generation !== this.generation || (this.suspended && !beforeAccept)) {
         evidence?.update({ stage: 'cancelled', errorStage: stage });
         return false;
       }

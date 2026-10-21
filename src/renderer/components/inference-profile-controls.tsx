@@ -71,6 +71,7 @@ export function InferenceProfileControls({
     maximumAgeMs: 30000,
     strictWait: true,
     warmIdleMs: 0,
+    recordedDrainTimeoutMs: 90000,
   });
   const loadScheduling = (architecture: InferenceProfileValues['architecture']) =>
     setScheduling({
@@ -80,6 +81,7 @@ export function InferenceProfileControls({
       maximumAgeMs: architecture?.maximumAgeMs ?? 30000,
       strictWait: architecture?.strictWait ?? architecture?.execution !== 'asynchronous',
       warmIdleMs: architecture?.warmIdleMs ?? 0,
+      recordedDrainTimeoutMs: architecture?.recordedDrainTimeoutMs ?? 90000,
     });
   const [error, setError] = useState<string | null>(null);
 
@@ -327,7 +329,7 @@ export function InferenceProfileControls({
               </select>
             </label>
           )}
-          {topology === 'split' && (
+          {topology !== 'unified' && (
             <div className="space-y-2 rounded border border-zinc-700 p-2">
               {(
                 [
@@ -336,6 +338,7 @@ export function InferenceProfileControls({
                   ['maximumWaitMs', 'Maximum Vision wait (ms)'],
                   ['maximumAgeMs', 'Completed Vision maximum age (ms)'],
                   ['warmIdleMs', 'Local worker warm retention after Stop (ms)'],
+                  ['recordedDrainTimeoutMs', 'Recorded EOF drain deadline (ms, excluding pauses)'],
                 ] as const
               ).map(([key, label]) => (
                 <label className="block" key={key}>

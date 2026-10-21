@@ -61,6 +61,8 @@ export interface SessionSnapshot {
   readonly warning: string | null;
   /** Recorded-media lifecycle; null for live sessions. */
   readonly recordedPlayback?: 'playing' | 'paused' | 'draining' | 'completed' | null;
+  /** Whether Recorded EOF completed naturally or exhausted its drain deadline. */
+  readonly recordedCompletionReason?: 'drained' | 'deadline-exceeded' | null;
   /** Main-process authority: paused Recorded Run with no in-flight inference. */
   readonly playgroundAvailable?: boolean;
   readonly cycle: number;

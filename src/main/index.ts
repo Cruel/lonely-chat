@@ -2024,7 +2024,9 @@ async function boot(): Promise<void> {
           completed.id,
           outcome,
           status.cycle,
-          status.error,
+          // A deadline-limited EOF is terminal but not a full successful drain.
+          // Preserve the reason in the saved Run, not just the transient UI snapshot.
+          status.error ?? (status.recordedCompletionReason === 'deadline-exceeded' ? status.warning : null),
           compactRecorder.takeRunRecordingIds(completed.sessionRunId),
         )
         .catch((error: unknown) =>
