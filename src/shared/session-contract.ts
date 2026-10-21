@@ -73,6 +73,8 @@ export interface SessionSnapshot {
     readonly revision: number;
     readonly topology: import('./inference-profile-contract').InferenceTopology;
   } | null;
+  /** Saved revision waiting for the next Run stage admission. */
+  readonly pendingProfileRevision?: number | null;
   readonly promptPreset?: {
     readonly id: string;
     readonly name: string;

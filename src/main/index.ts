@@ -875,6 +875,11 @@ function registerHandlers(): void {
       return session.trace.get(id);
     },
     'session:snapshot': () => session.snapshot(),
+    'session:profile:update': async (id: string, revision: number) => {
+      if (typeof id !== 'string' || !Number.isSafeInteger(revision) || revision < 1)
+        throw new Error('Invalid saved profile revision.');
+      return session.queueProfileUpdate(await inferenceProfiles.resolve(id, revision));
+    },
     'session:start': async (
       context: string,
       mode?: import('../shared/session-contract').InferenceMode,
@@ -2137,6 +2142,7 @@ app.on('will-quit', () => {
   ])
     ipcMain.removeHandler(channel);
   ipcMain.removeHandler('session:snapshot');
+  ipcMain.removeHandler('session:profile:update');
   ipcMain.removeHandler('session:start');
   ipcMain.removeHandler('session:stop');
   ipcMain.removeHandler('session:pause');

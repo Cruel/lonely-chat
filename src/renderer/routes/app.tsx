@@ -796,7 +796,7 @@ export function DesktopPage() {
                   selectedRevision={selectedProfile?.revision ?? null}
                   onSelect={chooseProfile}
                   remoteCatalog={remoteCatalog}
-                  disabled={running}
+                  disabled={false}
                 />
                 <Label htmlFor="session-preset" className="mt-4 text-sm text-zinc-200">
                   Prompt preset

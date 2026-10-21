@@ -209,6 +209,23 @@ export function InferenceProfileControls({
         ))}
       </select>
       {selectedId && (
+        <div className="rounded border border-zinc-700 p-2 text-xs text-zinc-300">
+          Editing or saving a profile never changes an active Run automatically. Only a compatible newer revision can be explicitly queued; model/provider changes require a new Run.
+          <button type="button" className="ml-2 underline" onClick={async () => {
+            try {
+              const status = await window.lonelyChat!.getSessionSnapshot();
+              const latest = profiles.find((p) => p.id === selectedId);
+              if (!latest || status.inferenceProfile?.id !== selectedId)
+                throw new Error('Only the running profile can be updated. Stop to change models or providers.');
+              await window.lonelyChat!.queueSessionProfileUpdate?.(selectedId, latest.revision);
+              setError(null);
+            } catch (reason) {
+              setError(reason instanceof Error ? reason.message : String(reason));
+            }
+          }}>Apply latest saved revision at next admission</button>
+        </div>
+      )}
+      {selectedId && (
         <label className="block text-zinc-400">
           Revision
           <select

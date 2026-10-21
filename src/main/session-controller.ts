@@ -66,6 +66,7 @@ export class SessionController {
   private splitRosterProvider: InferenceProvider | null = null;
   private activeProfile: import('../shared/inference-profile-contract').InferenceProfile | null =
     null;
+  private pendingProfile: import('../shared/inference-profile-contract').InferenceProfile | null = null;
   private readonly splitCoordinator = new ScheduledSplitInference();
   private splitVisionTimer: unknown = null;
   private splitVisionAbort: AbortController | null = null;
@@ -136,6 +137,32 @@ export class SessionController {
           index,
         ),
     );
+  }
+
+  /** Queue a saved revision for the next admission; never change an in-flight attempt. */
+  queueProfileUpdate(profile: import('../shared/inference-profile-contract').InferenceProfile): SessionSnapshot {
+    if (this.state.phase !== 'running' || !this.activeProfile ||
+        profile.id !== this.activeProfile.id ||
+        profile.values.topology !== this.activeProfile.values.topology ||
+        JSON.stringify(profile.values.roles) !== JSON.stringify(this.activeProfile.values.roles))
+      throw new Error('Changing models, providers, or topology requires stopping the Run and an explicit transition.');
+    if (this.pendingProfile && profile.revision <= this.pendingProfile.revision ||
+        profile.revision <= this.activeProfile.revision)
+      throw new Error('Select a newer saved profile revision.');
+    this.pendingProfile = structuredClone(profile);
+    this.setState({ pendingProfileRevision: profile.revision });
+    return this.snapshot();
+  }
+
+  private admitPendingProfile(): void {
+    const next = this.pendingProfile;
+    if (!next) return;
+    this.pendingProfile = null;
+    this.activeProfile = structuredClone(next);
+    this.setState({
+      pendingProfileRevision: null,
+      inferenceProfile: { id: next.id, name: next.name, revision: next.revision, topology: next.values.topology },
+    });
   }
 
   /** Main-process only; set before starting a remote Run, never exposed as IPC state. */
@@ -346,6 +373,7 @@ export class SessionController {
         ? this.nativeInference!
         : this.inference;
     this.activeProfile = profile ? structuredClone(profile) : null;
+    this.pendingProfile = null;
     this.context = context;
     this.runPreferences = {
       ...(settingsOverride ? validatePreferences(settingsOverride) : this.preferences),
@@ -392,6 +420,7 @@ export class SessionController {
       retryAttempt: 0,
       sessionSeed,
       promptPreset: preset ? { id: preset.id, name: preset.name, revision: preset.revision } : null,
+      pendingProfileRevision: null,
       inferenceProfile: profile
         ? {
             id: profile.id,
@@ -581,6 +610,7 @@ export class SessionController {
     this.nextCycleAt = null;
     this.retryWork = null;
     for (const resume of this.resumeWaiters.splice(0)) resume();
+    this.pendingProfile = null;
     this.trace.cancelPending(this.runId);
     this.trace.closePresentation(this.runId);
     this.switchAbort?.abort();
@@ -682,6 +712,7 @@ export class SessionController {
       settle = resolve;
     });
     const epoch = ++this.epoch;
+    this.pendingProfile = null;
     this.trace.cancelPending(this.runId);
     this.abort?.abort();
     this.abort = null;
@@ -885,6 +916,7 @@ export class SessionController {
   private runCycle(epoch: number): void {
     if (!this.active(epoch)) return;
     if (this.pausedAt !== null) return;
+    this.admitPendingProfile();
     const cycle = this.state.cycle + 1;
     this.cycleTranscriptRevision = this.transcriptRevision;
     const now = this.observationNow();
@@ -957,6 +989,7 @@ export class SessionController {
     const abort = new AbortController();
     this.abort = abort;
     const provider = this.activeInference;
+    const attemptProfile = this.activeProfile ? structuredClone(this.activeProfile) : null;
     let inferenceStarted = this.clock.now();
     let inferenceCompleted = inferenceStarted;
     const sessionSeed = this.state.sessionSeed!;
@@ -1042,7 +1075,7 @@ export class SessionController {
           ) => Promise<unknown>;
         };
         const nativeVideoWindow = this.state.mode === 'native' &&
-          this.activeProfile?.values.stageDefaults.unified?.videoInput === 'native' &&
+          attemptProfile?.values.stageDefaults.unified?.videoInput === 'native' &&
           nativeProvider.supportsNativeVideo?.() && nativeProvider.completeSimulationVideoWindow
             ? selectContinuousVideoWindow(
                 effectiveInput.frames ?? [],
@@ -1079,7 +1112,7 @@ export class SessionController {
             this.splitAdapters(effectiveInput),
             abort.signal,
             () => this.waitUntilResumed(),
-            this.activeProfile?.values.stageDefaults ?? {},
+            attemptProfile?.values.stageDefaults ?? {},
             this.splitScheduling(),
             () => this.clock.now(),
           );

@@ -195,6 +195,7 @@ const api: DesktopAPI = {
     return () => ipcRenderer.removeListener('media:stop', receive);
   },
   retrySession: () => invoke('session:retry'),
+  queueSessionProfileUpdate: (id, revision) => invoke('session:profile:update', id, revision),
   getNativeStatus: () => invoke('native:status'),
   unloadLocalModels: () => invoke('local-models:unload'),
   onNativeChange: (listener) => {
