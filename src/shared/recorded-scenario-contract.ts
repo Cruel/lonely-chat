@@ -1,5 +1,6 @@
 import type { InferenceMode, SessionPreferences } from './session-contract';
 import type { InferenceProfile } from './inference-profile-contract';
+import type { RemoteCapability, RemoteConnection, RemoteModelConfiguration } from './remote-inference-contract';
 import type { RecordedTranscriptMode } from './recorded-transcript-cache';
 import type { RecordedSegment } from '../renderer/recorded-preview-timeline';
 
@@ -41,6 +42,14 @@ export interface RecordedScenario {
   readonly config: RecordedScenarioConfig;
 }
 
+/** Immutable effective remote transport metadata, deliberately excluding credentials,
+ * account identifiers, credential statuses and environment variable names. */
+export interface RecordedRemoteRoleEvidence {
+  readonly connection: Pick<RemoteConnection, 'id' | 'name' | 'baseUrl' | 'protocol' | 'credentialMode' | 'allowInsecureLan'>;
+  readonly model: Omit<RemoteModelConfiguration, 'capabilityEvidence'>;
+  readonly capabilities: Readonly<Record<RemoteCapability, boolean>>;
+}
+
 /** Content-bearing inference history is opt-in via the independent Compact recorder. */
 export interface RecordedRun {
   readonly id: string;
@@ -60,6 +69,8 @@ export interface RecordedRun {
   /** Admission-ordered complete snapshots of live-applied revisions; initial snapshot is effectiveProfile. */
   readonly appliedProfileRevisions?: readonly { readonly cycle: number; readonly profile: InferenceProfile }[];
   readonly effectiveModelId: string | null;
+  /** Original resolved role bindings survive later Model Configuration edits or deletion. */
+  readonly resolvedRemoteRoles?: Readonly<Partial<Record<'unified' | 'observer' | 'chat' | 'memory', RecordedRemoteRoleEvidence>>>;
   readonly effectivePreset: {
     readonly id: string;
     readonly name: string;

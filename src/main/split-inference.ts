@@ -12,6 +12,7 @@ import type { VideoFrame } from '../shared/video-contract';
 import { SplitNarrative } from './split-narrative';
 import { NarrativeMemory, type NarrativeMemoryPolicy } from './narrative-memory';
 import { selectStageFrames } from './stage-frame-selection';
+import { validateVisionStageResult } from './vision-output';
 import { DEFAULT_CHAT_PROMPT, DEFAULT_VISION_PROMPT, resolveStageContext, resolveStageTemplate } from './stage-context';
 import type { InferenceProfileValues } from '../shared/inference-profile-contract';
 
@@ -162,6 +163,8 @@ export class ScheduledSplitInference {
     serial: number;
   }>();
   private visionTask: Promise<void> | null = null;
+  private visionRevision = 0;
+  private chatVisionRevision = 0;
   private generation = 0;
   private serial = 0;
   private mediaIdentity = '';
@@ -187,6 +190,8 @@ export class ScheduledSplitInference {
     observations: readonly CapturedObservation[];
     request: UnifiedInferenceRequest;
     input: InferenceInput;
+    /** Vision revision represented by this immutable Chat request, not later Vision arrivals. */
+    visionRevision: number;
   } | null = null;
 
   reset(): void {
@@ -195,6 +200,8 @@ export class ScheduledSplitInference {
     this.chatCadence = null;
     this.latest.clear();
     this.visionTask = null;
+    this.visionRevision = 0;
+    this.chatVisionRevision = 0;
     this.serial = 0;
     this.mediaIdentity = '';
     this.narrative.reset();
@@ -204,6 +211,16 @@ export class ScheduledSplitInference {
 
   suspendMemory(): void { this.memory.suspend(); }
   resumeMemory(): void { this.memory.resume(); }
+
+  get visionInFlight(): boolean { return this.visionTask !== null; }
+
+  canAdmitVision(now: number): boolean {
+    return (this.visionCadence?.nextDelay(now) ?? 0) === 0;
+  }
+
+  waitForVision(): Promise<void> { return this.visionTask ?? Promise.resolve(); }
+
+  hasUnconsumedVision(): boolean { return this.visionRevision > this.chatVisionRevision; }
 
   nextChatDelay(now: number): number {
     return this.chatCadence?.nextDelay(now) ?? 0;
@@ -224,7 +241,7 @@ export class ScheduledSplitInference {
     stages: InferenceProfileValues['stageDefaults'],
     policy: SplitScheduling,
     now: () => number = () => performance.now(),
-    visionOnly = false,
+    work: 'both' | 'vision' | 'chat' = 'both',
   ): Promise<SplitResult | null> {
     this.visionCadence ??= new StageCadence(policy.visionIntervalMs);
     this.chatCadence ??= new StageCadence(policy.chatIntervalMs);
@@ -261,7 +278,7 @@ export class ScheduledSplitInference {
     const requests = splitRequests(visionInput, stages);
     let visionFailure: unknown = null;
     const observedAt = snapshot.frames?.at(-1)?.observedAt ?? snapshot.boundary?.throughMs ?? 0;
-    if (this.visionCadence.start(now())) {
+    if (work !== 'chat' && this.visionCadence.start(now())) {
       const cadence = this.visionCadence;
       const task = (async () => {
         try {
@@ -276,32 +293,9 @@ export class ScheduledSplitInference {
                 activeSignal,
                 observer,
               );
-              const payload = result.normalized;
-              if (!payload || typeof payload !== 'object' || Array.isArray(payload))
-                throw new Error('Invalid Vision stage output.');
-              const fields = payload as Record<string, unknown>;
-              if (
-                typeof fields.sceneState !== 'string' ||
-                fields.sceneState.length > 2000 ||
-                !Array.isArray(fields.messages) ||
-                fields.messages.length !== 0 ||
-                Object.keys(fields).some(
-                  (key) => !['events', 'messages', 'sceneState', ...(stages.observer?.visionOptionalFields ?? [])].includes(key),
-                )
-              )
-                throw new Error('Invalid Vision stage schema.');
-              const choice = stages.observer?.visionOutput ?? 'both';
-              if (choice === 'events' && fields.sceneState !== '')
-                throw new Error('Vision output must omit scene state in Events-only mode.');
-              if (choice === 'scene' && Array.isArray(fields.events) && fields.events.length)
-                throw new Error('Vision output must omit Events in Scene-only mode.');
-              if ((fields.confidence !== undefined && (typeof fields.confidence !== 'number' ||
-                  fields.confidence < 0 || fields.confidence > 1)) ||
-                  (fields.notes !== undefined && (typeof fields.notes !== 'string' ||
-                  fields.notes.length > 1000)))
-                throw new Error('Invalid optional Vision field.');
-              sceneState = fields.sceneState;
-              return { ...result, normalized: { events: fields.events, messages: [] } };
+              const output = validateVisionStageResult(result.normalized, stages.observer);
+              sceneState = output.sceneState;
+              return { ...result, normalized: { events: output.events, messages: [] } };
             },
           };
           const output = await this.visionCoordinator.execute(snapshot, adapter, {
@@ -323,6 +317,7 @@ export class ScheduledSplitInference {
             availableAt,
             snapshot.frames?.map((frame) => `${frame.sourceId}:${frame.observedAt}`) ?? [],
           );
+          if (observations.length || output.accepted.events.length) this.visionRevision++;
           this.latest.publish(
             { events: output.accepted.events, observations, serial: ++this.serial },
             availableAt,
@@ -343,7 +338,7 @@ export class ScheduledSplitInference {
       });
     }
 
-    if (visionOnly || !this.chatCadence.start(now())) return null;
+    if (work === 'vision' || !this.chatCadence.start(now())) return null;
     try {
       if (policy.execution === 'sequential' && this.visionTask) {
         if (policy.strictWait) {
@@ -357,6 +352,7 @@ export class ScheduledSplitInference {
       }
       if (signal.aborted || generation !== this.generation) return null;
       const selected = this.latest.eligible(now(), policy.maximumAgeMs, identity);
+      const admittedVisionRevision = this.retryPayload?.visionRevision ?? this.visionRevision;
       if (policy.strictWait && !selected) {
         if (visionFailure) throw visionFailure;
         return null;
@@ -375,7 +371,7 @@ export class ScheduledSplitInference {
         recentEvents: [...(snapshot.recentEvents ?? []), ...events],
         observations: [...(snapshot.observations ?? []), ...observations],
       });
-      this.retryPayload ??= { events: pending, observations, request: chatRequest, input: chatInput };
+      this.retryPayload ??= { events: pending, observations, request: chatRequest, input: chatInput, visionRevision: admittedVisionRevision };
       const adapter: UnifiedInferenceAdapter = {
         ...adapters.chat,
         complete: (_request, activeSignal, observer) =>
@@ -389,6 +385,7 @@ export class ScheduledSplitInference {
       if (signal.aborted || generation !== this.generation) return null;
       const freshChat = this.narrative.merge(output.accepted.events, 'chat', now());
       this.narrative.acknowledge(pending);
+      this.chatVisionRevision = Math.max(this.chatVisionRevision, admittedVisionRevision);
       this.retryPayload = null;
       for (const event of freshChat) this.memory.observe(event.event.summary, event.observedAt);
       if (!signal.aborted && generation === this.generation) {
@@ -443,31 +440,9 @@ export class SequentialSplitInference {
       ...adapters.vision,
       async complete(_request, activeSignal, observer) {
         const result = await adapters.vision.complete(requests.vision, activeSignal, observer);
-        if (
-          !result.normalized ||
-          typeof result.normalized !== 'object' ||
-          Array.isArray(result.normalized)
-        )
-          throw new Error('Vision stage returned an invalid structured result.');
-        const payload = result.normalized as Record<string, unknown>;
-        if (typeof payload.sceneState !== 'string' || payload.sceneState.length > 2000)
-          throw new Error('Vision stage returned an invalid scene state.');
-        if (!Array.isArray(payload.messages) || payload.messages.length !== 0)
-          throw new Error('Vision stage must not generate chat messages.');
-        if (Object.keys(payload).some((key) => !['sceneState', 'events', 'messages', ...(stages.observer?.visionOptionalFields ?? [])].includes(key)))
-          throw new Error('Vision stage returned unexpected fields.');
-        const choice = stages.observer?.visionOutput ?? 'both';
-        if (choice === 'events' && payload.sceneState !== '')
-          throw new Error('Vision output must omit scene state in Events-only mode.');
-        if (choice === 'scene' && Array.isArray(payload.events) && payload.events.length)
-          throw new Error('Vision output must omit Events in Scene-only mode.');
-        if ((payload.confidence !== undefined && (typeof payload.confidence !== 'number' ||
-            payload.confidence < 0 || payload.confidence > 1)) ||
-            (payload.notes !== undefined && (typeof payload.notes !== 'string' ||
-            payload.notes.length > 1000)))
-          throw new Error('Invalid optional Vision field.');
-        sceneState = payload.sceneState;
-        return { ...result, normalized: { events: payload.events, messages: [] } };
+        const output = validateVisionStageResult(result.normalized, stages.observer);
+        sceneState = output.sceneState;
+        return { ...result, normalized: { events: output.events, messages: [] } };
       },
     };
     const vision = await this.coordinator.execute(snapshot, visionAdapter, {

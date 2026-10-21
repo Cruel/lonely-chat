@@ -40,6 +40,14 @@ export class RemoteUsageGuard {
           state.providerCompletion += completion ?? 0;
           if (prompt === null || prompt === undefined || completion === null || completion === undefined) state.estimated = true;
           return result;
+        } catch (error) {
+          // A dispatched generation can incur charges even when transport/JSON
+          // normalization fails. Unknown usage consumes its reserved estimate.
+          state.tokens += reservation;
+          state.prompt += estimatedInput;
+          state.completion += request.sampling.maxTokens;
+          state.estimated = true;
+          throw error;
         } finally {
           state.reserved -= reservation;
         }

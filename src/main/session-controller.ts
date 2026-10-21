@@ -102,6 +102,7 @@ export class SessionController {
   private attemptInFlight = false;
   private eofRequested = false;
   private finalCycleStarted = false;
+  private eofVisionHandoffStarted = false;
   private transcriptRevision = 0;
   private cycleTranscriptRevision = 0;
   private processedTranscriptRevision = 0;
@@ -430,6 +431,7 @@ export class SessionController {
     this.attemptInFlight = false;
     this.eofRequested = false;
     this.finalCycleStarted = false;
+    this.eofVisionHandoffStarted = false;
     this.transcriptRevision = 0;
     this.cycleTranscriptRevision = 0;
     this.processedTranscriptRevision = 0;
@@ -516,7 +518,7 @@ export class SessionController {
     this.setState({ recordedPlayback: this.eofRequested ? 'draining' : 'playing' });
     const waiters = this.resumeWaiters.splice(0);
     for (const resume of waiters) resume();
-    if (this.remainingCycleDelay !== null && (!this.eofRequested || this.retryWork)) {
+    if (this.remainingCycleDelay !== null && (!this.eofRequested || this.retryWork || this.eofVisionHandoffStarted)) {
       const delay = this.remainingCycleDelay;
       this.remainingCycleDelay = null;
       const epoch = this.epoch;
@@ -610,6 +612,9 @@ export class SessionController {
   private advanceRecordedEof(): void {
     if (!this.eofRequested || this.pausedAt !== null || this.attemptInFlight) return;
     if (!this.active(this.epoch)) return;
+    // Independent Vision work is admitted work, even if the Chat attempt and
+    // presentation queue have already drained. Do not cancel its final result.
+    if (this.splitCoordinator.visionInFlight) return;
     if (
       !this.finalCycleStarted &&
       (this.transcriptRevision > this.processedTranscriptRevision || this.state.cycle === 0)
@@ -619,6 +624,14 @@ export class SessionController {
       return;
     }
     if (this.scheduler.pendingCount !== 0) return;
+    if (this.splitCoordinator.hasUnconsumedVision() && !this.eofVisionHandoffStarted) {
+      this.eofVisionHandoffStarted = true;
+      const epoch = this.epoch;
+      this.scheduleCycle(epoch, this.splitCoordinator.nextChatDelay(this.clock.now()), () => this.runCycle(epoch));
+      return;
+    }
+    // A scheduled final handoff is still Run-owned work.
+    if (this.inferenceTimer !== null) return;
     this.trace.closePresentation(this.runId);
     this.stopSplitVisionLoop();
     this.splitCoordinator.cancelActive();
@@ -866,6 +879,8 @@ export class SessionController {
     const tick = () => {
       this.splitVisionTimer = null;
       if (!this.active(epoch) || abort.signal.aborted || this.eofRequested) return;
+      if (this.pausedAt === null && this.splitCoordinator.canAdmitVision(this.clock.now()))
+        this.admitPendingProfile();
       const policy = this.splitScheduling();
       if (this.pausedAt === null) {
         const cycle = this.state.cycle + 1;
@@ -913,8 +928,12 @@ export class SessionController {
           this.activeProfile?.values.stageDefaults ?? {},
           policy,
           () => this.clock.now(),
-          true,
-        );
+          'vision',
+        ).then(() => this.splitCoordinator.waitForVision()).catch(() => {
+          // Vision errors are owned by the stage coordinator, not the loop timer.
+        }).finally(() => {
+          if (this.eofRequested) this.advanceRecordedEof();
+        });
       }
       this.splitVisionTimer = this.clock.setTimeout(tick, Math.max(50, policy.visionIntervalMs));
     };
@@ -1143,6 +1162,9 @@ export class SessionController {
             attemptProfile?.values.stageDefaults ?? {},
             this.splitScheduling(),
             () => this.clock.now(),
+            // Recorded EOF may drain admitted Vision, but must never launch
+            // another Vision attempt through the final Chat cycle or retries.
+            this.eofRequested ? 'chat' : 'both',
           );
           if (!result) return undefined;
           inferenceCompleted = this.clock.now();

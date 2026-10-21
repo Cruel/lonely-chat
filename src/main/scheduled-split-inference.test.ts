@@ -1,5 +1,7 @@
 import { expect, it, vi } from 'vitest';
-import { ScheduledSplitInference, type SplitScheduling } from './split-inference';
+import { ScheduledSplitInference, splitRequests, type SplitScheduling } from './split-inference';
+import { strictProviderSchema } from './remote-inference-adapter';
+import { normalizeStageMemory } from './stage-output';
 import type { InferenceInput } from './fake-inference';
 import type { UnifiedInferenceAdapter } from './inference-coordinator';
 
@@ -42,6 +44,17 @@ function adapter(run: UnifiedInferenceAdapter['complete']): UnifiedInferenceAdap
 async function settle() {
   for (let i = 0; i < 20; i++) await Promise.resolve();
 }
+
+it('encodes optional Vision fields as nullable required strict-provider properties and restores omission', () => {
+  const stage = { observer: { visionOptionalFields: ['confidence', 'notes'] as ('confidence' | 'notes')[] } };
+  const request = splitRequests(input, stage).vision;
+  const strict = strictProviderSchema(request.response.schema);
+  expect(strict).toMatchObject({
+    required: ['events', 'messages', 'sceneState', 'confidence', 'notes'],
+    properties: { confidence: { type: ['number', 'null'] }, notes: { type: ['string', 'null'] } },
+  });
+  expect(normalizeStageMemory({ ...scene, confidence: null, notes: null }, request)).toEqual(scene);
+});
 
 it('allows fast Chat to proceed while slow Vision finishes, then adopts eligible text once', async () => {
   let finishVision!: (result: typeof scene) => void;
@@ -128,6 +141,69 @@ it('retries unacknowledged Vision events after Chat fails without creating dupli
   const next = await execute(3);
   expect(next?.visionEvents).toHaveLength(1);
   expect(next?.observations[0].description).toBe(changedScene.sceneState);
+});
+
+it('keeps newer Vision pending when the frozen Chat retry only consumed an earlier revision', async () => {
+  const sceneB = {
+    sceneState: 'A second racer takes the lead',
+    events: [{ kind: 'reaction', summary: 'Second racer leads', ageMs: 0 }],
+    messages: [],
+  };
+  const vision = adapter(vi.fn(async () => {
+    const result = vi.mocked(vision.complete).mock.calls.length === 1 ? scene : sceneB;
+    return { raw: result, normalized: result };
+  }));
+  let chatAttempts = 0;
+  const chatter = adapter(async () => {
+    if (++chatAttempts === 1) throw new Error('Chat temporarily unavailable');
+    return { raw: chat, normalized: chat };
+  });
+  const scheduler = new ScheduledSplitInference();
+  const signal = new AbortController().signal;
+  let time = 0;
+  const execute = (cycle: number, work: 'vision' | 'chat') =>
+    scheduler.execute(
+      { ...input, cycle, boundary: {
+        ...input.boundary!, throughMs: 2000 + cycle * 1000,
+      }, frames: input.frames?.map((frame) => ({
+        ...frame, observedAt: cycle < 3 ? 2000 : 3000,
+      })) },
+      { vision, chat: chatter },
+      signal, undefined, {},
+      { ...policy, maximumAgeMs: 10000 },
+      () => time,
+      work,
+    );
+
+  // Vision A is available when the initial Chat request is frozen.
+  await execute(1, 'vision');
+  await settle();
+  expect(scheduler.hasUnconsumedVision()).toBe(true);
+  time = 100;
+  await expect(execute(2, 'chat')).rejects.toThrow('Chat temporarily unavailable');
+  const frozenRequest = vi.mocked(chatter.complete).mock.calls[0][0];
+  expect(JSON.stringify(frozenRequest.content)).toContain(scene.sceneState);
+  expect(JSON.stringify(frozenRequest.content)).not.toContain(sceneB.sceneState);
+
+  // Independent Vision produces B while the Chat retry still owns A.
+  time = 1000;
+  await execute(3, 'vision');
+  await settle();
+  expect(vision.complete).toHaveBeenCalledTimes(2);
+
+  time = 1100;
+  const retry = await execute(4, 'chat');
+  expect(retry?.observations[0].description).toBe(scene.sceneState);
+  expect(vi.mocked(chatter.complete).mock.calls[1][0]).toBe(frozenRequest);
+  expect(scheduler.hasUnconsumedVision()).toBe(true);
+
+  // EOF's Chat-only handoff consumes B without triggering another Vision.
+  time = 1200;
+  const final = await execute(5, 'chat');
+  expect(final?.observations[0].description).toBe(sceneB.sceneState);
+  expect(final?.visionEvents.map((event) => event.summary)).toContain(sceneB.events[0].summary);
+  expect(scheduler.hasUnconsumedVision()).toBe(false);
+  expect(vision.complete).toHaveBeenCalledTimes(2);
 });
 
 it('uses a bounded sequential wait before Chat proceeds without stale observations', async () => {

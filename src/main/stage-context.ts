@@ -1,5 +1,5 @@
 import type { InferenceInput } from './fake-inference';
-import type { UnifiedInferenceRequest } from './unified-inference-request';
+import { buildUnifiedInferenceRequest, type UnifiedInferenceRequest } from './unified-inference-request';
 import type { InferenceStageDefaults } from '../shared/inference-profile-contract';
 
 export const STAGE_VARIABLES = ['context', 'cycle', 'events', 'transcripts', 'chat', 'scene', 'observations', 'narrative', 'interpretations', 'significantEvents'] as const;
@@ -68,12 +68,35 @@ export function resolveUnifiedStageRequest(
 ): UnifiedInferenceRequest {
   if (!stage) return request;
   const context = resolveStageContext(input, stage).data;
+  // Filter the actual canonical request, not only interpolated template variables.
+  // Otherwise excluded private transcripts/chat still appear in the base payload.
+  const selected = buildUnifiedInferenceRequest({
+    ...input,
+    recentEvents: context.events as InferenceInput['recentEvents'],
+    recentTranscripts: context.transcripts as InferenceInput['recentTranscripts'],
+    recentChat: context.chat as InferenceInput['recentChat'],
+    observations: [
+      ...(context.scene as NonNullable<InferenceInput['observations']>),
+      ...(context.observations as NonNullable<InferenceInput['observations']>),
+    ],
+  }, request.nativeVideo?.sourceRef);
+  const retained = (context.significantEvents as unknown[]).length ||
+    (context.interpretations as unknown[]).length ||
+    Boolean((context.narrative as { memory?: unknown } | null)?.memory);
   return {
     ...request,
     instructions: stage.systemPrompt === undefined
       ? request.instructions : resolveStageTemplate(stage.systemPrompt, context),
-    content: stage.userPrompt === undefined ? request.content : [
-      { type: 'text', text: resolveStageTemplate(stage.userPrompt, context) }, ...request.content,
+    content: [
+      ...(stage.userPrompt === undefined ? [] : [
+        { type: 'text' as const, text: resolveStageTemplate(stage.userPrompt, context) },
+      ]),
+      ...(retained ? [{ type: 'text' as const, text: JSON.stringify({
+        significantHistoricalSummaries: context.significantEvents,
+        uncertainPriorInterpretations: context.interpretations,
+        retainedNarrative: context.narrative,
+      }) }] : []),
+      ...selected.content,
     ],
     sampling: {
       ...request.sampling,

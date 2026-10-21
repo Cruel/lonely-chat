@@ -81,8 +81,10 @@ export function validateRemoteRequest(
     throw new Error(
       'This model/protocol does not support seed. Remove the seed or choose a compatible model.',
     );
-  // The built-in Unified temperature is a default, not an explicit provider control.
-  if (request.sampling.temperature !== 0.7 && !support.sampling)
+  // Explicit custom temperatures must be supported, but internally advisory
+  // preferences (such as Memory's deterministic 0) may be omitted by the adapter.
+  if (request.sampling.temperature !== 0.7 && !support.sampling &&
+      request.sampling.temperatureMode !== 'advisory')
     throw new Error('This model/protocol does not support custom sampling temperature.');
   if (!Number.isInteger(request.sampling.maxTokens) || request.sampling.maxTokens < 1)
     throw new Error('Invalid maximum output token count.');

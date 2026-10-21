@@ -1,5 +1,6 @@
 import { expect, it } from 'vitest';
-import { resolveStageContext, resolveStageTemplate } from './stage-context';
+import { resolveStageContext, resolveStageTemplate, resolveUnifiedStageRequest } from './stage-context';
+import { buildUnifiedInferenceRequest } from './unified-inference-request';
 import type { InferenceInput } from './fake-inference';
 
 const input: InferenceInput = {
@@ -67,6 +68,23 @@ it('evicts uncertain history ahead of newest captured observations with visible 
   expect(JSON.stringify(result.data.observations)).toContain('new gunshot');
   expect(result.omittedBySource.chat).toBeGreaterThan(0);
   expect(result.characters).toBeLessThanOrEqual(512);
+});
+
+it('removes excluded transcript, chat, and event material from the actual Unified transport', () => {
+  const original = buildUnifiedInferenceRequest(input);
+  const stage = { contextPolicy: {
+    maxAgeMs: 1000, maxCount: 0, maxCharacters: 1024, sources: [] as [],
+  }, userPrompt: 'Only inspect selected evidence {{events}}' };
+  const restricted = resolveUnifiedStageRequest(original, input, stage);
+  const text = restricted.content.filter((part) => part.type === 'text')
+    .map((part) => part.text).join(' ');
+  expect(text).not.toContain('Go!');
+  expect(text).not.toContain('Wow');
+  expect(text).not.toContain('Old championship');
+  expect(text).not.toContain('Recent finish');
+  expect(text).not.toContain('Race track');
+  expect(text).toContain('Only inspect selected evidence');
+  expect(JSON.stringify(original.content)).toContain('Go!');
 });
 
 it('supports empty sources and safely rejects malformed template variables', () => {

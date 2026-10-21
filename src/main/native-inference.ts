@@ -209,6 +209,10 @@ function parseCompletion(body: unknown): unknown {
   return parsed;
 }
 
+export function extractNativeJson(body: unknown): unknown {
+  return parseCompletion(body);
+}
+
 export function extractNativeChat(
   body: unknown,
   roster: readonly ChatterIdentity[] = AUDIENCE,

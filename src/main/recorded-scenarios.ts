@@ -4,6 +4,7 @@ import path from 'node:path';
 import { validatePreferences } from '../shared/session-contract';
 import { validateProfileSnapshot, type InferenceProfile } from '../shared/inference-profile-contract';
 import { supportedRecordedMediaPath } from './recorded-media-access';
+import { validateRecordedRemoteRoles } from './recorded-role-evidence';
 import type {
   RecordedRun,
   RecordedScenario,
@@ -256,6 +257,9 @@ export class RecordedScenarioStore {
           })(),
         }),
         effectiveSettings: validatePreferences(value.effectiveSettings),
+        ...(value.resolvedRemoteRoles === undefined ? {} : {
+          resolvedRemoteRoles: validateRecordedRemoteRoles(value.resolvedRemoteRoles),
+        }),
       } as unknown as RecordedRun;
     });
     return { version: 1, scenarios, runs };
@@ -307,6 +311,9 @@ export class RecordedScenarioStore {
         status: snapshot.status === 'running' ? 'interrupted' : snapshot.status,
         effective: validateScenarioConfig(snapshot.effective),
         effectiveSettings: validatePreferences(snapshot.effectiveSettings),
+        ...(snapshot.resolvedRemoteRoles === undefined ? {} : {
+          resolvedRemoteRoles: validateRecordedRemoteRoles(snapshot.resolvedRemoteRoles),
+        }),
       };
       data.runs.push(run);
       await this.publish(data);
@@ -360,6 +367,9 @@ export class RecordedScenarioStore {
         throw new Error('Run history limit reached. Existing Run evidence will not be evicted.');
       const run: RecordedRun = {
         ...structuredClone(input),
+        ...(input.resolvedRemoteRoles === undefined ? {} : {
+          resolvedRemoteRoles: validateRecordedRemoteRoles(input.resolvedRemoteRoles),
+        }),
         id: randomUUID(),
         startedAt: new Date().toISOString(),
         endedAt: null,

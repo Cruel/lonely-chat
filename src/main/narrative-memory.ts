@@ -79,7 +79,7 @@ export class NarrativeMemory {
       role: 'memory',
       instructions: 'Maintain an accurate compact chronology of meaningful developments. Retain important older facts and their approximate timestamps; do not invent unsupported facts. Treat previous summary as uncertain model interpretation. Return only JSON with summary.',
       content, response: { kind: 'json', schema },
-      sampling: { temperature: 0, maxTokens: Math.min(4096, Math.max(128, Math.ceil(policy.maxCharacters / 3))) },
+      sampling: { temperature: 0, temperatureMode: 'advisory', maxTokens: Math.min(4096, Math.max(128, Math.ceil(policy.maxCharacters / 3))) },
       evidenceWindow: null,
     } as unknown as UnifiedInferenceRequest;
     try {

@@ -6,6 +6,7 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { ChatGPTAuth, verifyChatGPTIdentity } from './chatgpt-auth';
 import { chatGPTUnifiedAdapter, probeChatGPTModel } from './chatgpt-inference';
+import { NarrativeMemory } from './narrative-memory';
 import { InferenceCoordinator } from './inference-coordinator';
 import { ChatService } from './chat-service';
 import { SessionController } from './session-controller';
@@ -78,6 +79,7 @@ function fixture(
       | 'reasoning-only'
       | 'empty';
     readonly probeOutput?: boolean;
+    readonly memoryOutput?: boolean;
     readonly code?: string;
     readonly author?: string;
     readonly ageMs?: number;
@@ -135,9 +137,11 @@ function fixture(
           { status: 429 },
         );
       const responseText = JSON.stringify(
-        options.probeOutput
-          ? { events: [], messages: [] }
-          : {
+        options.memoryOutput
+          ? { summary: 'The racer won at 100 ms.' }
+          : options.probeOutput
+            ? { events: [], messages: [] }
+            : {
               events: [{ kind: 'reaction', summary: 'a reunion', ageMs: options.ageMs ?? 100 }],
               messages: [
                 { author: options.author ?? 'viewer', text: 'Good to see you!', offsetMs: 100 },
@@ -334,6 +338,26 @@ function selection(accountId: string): RemoteSelection {
 }
 
 describe('ChatGPT OAuth and subscription inference', () => {
+  it('runs Memory through the real ChatGPT adapter without sending unsupported temperature', async () => {
+    const f = fixture({ memoryOutput: true });
+    const { auth } = await service(f);
+    const accountId = (await auth.signIn()).activeAccountId!;
+    const memory = new NarrativeMemory();
+    memory.observe('Racer won at 100 ms.', 100);
+    const adapter = chatGPTUnifiedAdapter(selection(accountId), auth, {
+      roster: [], fetcher: f.fetcher,
+    });
+    expect(await memory.update(1000, {
+      enabled: true, intervalMs: 1000, maxCharacters: 512, expireAfterMs: 0,
+    }, adapter, new AbortController().signal)).toBe(true);
+    expect(memory.snapshot(1000, {
+      enabled: true, intervalMs: 1000, maxCharacters: 512, expireAfterMs: 0,
+    })?.text).toBe('The racer won at 100 ms.');
+    const submitted = f.requests.filter((entry) => entry.url.endsWith('/responses'));
+    expect(submitted).toHaveLength(1);
+    expect(submitted[0].body).not.toHaveProperty('temperature');
+    expect(submitted[0].body).not.toHaveProperty('max_output_tokens');
+  });
   it('binds dynamic registration, browser state/PKCE, JWKS identity, scopes and encrypted credentials', async () => {
     const f = fixture();
     const { auth, directory } = await service(f);

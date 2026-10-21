@@ -9,6 +9,7 @@ import {
 } from './recorded-scenarios';
 import { DEFAULT_PREFERENCES } from '../shared/session-contract';
 import type { RecordedScenarioConfig } from '../shared/recorded-scenario-contract';
+import { snapshotRemoteRole } from './recorded-role-evidence';
 
 const roots: string[] = [];
 const sample = (video: string, audio: string): RecordedScenarioConfig => ({
@@ -106,6 +107,42 @@ it('freezes a selected profile revision in Scenario and Run evidence without cre
     }),
   ).toThrow(/saved profile field/);
   expect(() => validateScenarioConfig({ ...config, profileRevision: 3 })).toThrow(/does not match/);
+});
+
+it('persists credential-free resolved remote role evidence independently of source model changes', async () => {
+  const { root, store, video, audio } = await setup();
+  const selected = {
+    connection: {
+      id: 'conn', name: 'Example', baseUrl: 'https://example.test/v1',
+      protocol: 'chat-completions' as const, credentialMode: 'managed' as const,
+      allowInsecureLan: false, credentialStatus: 'protected' as const,
+    },
+    model: {
+      id: 'model', name: 'Profiled model', connectionId: 'conn', model: 'provider-model-v1',
+      images: true, allowRemoteImages: true, outputFormat: 'json-schema' as const,
+      maxRequestsPerRun: 7, capabilityOverrides: { jsonSchema: true },
+    },
+  };
+  const evidence = snapshotRemoteRole(selected);
+  const run = await store.begin({
+    scenarioId: null, name: 'Cloud evidence', sessionRunId: 1,
+    effective: { ...sample(video, audio), mode: 'remote', modelId: 'model' },
+    effectiveSettings: DEFAULT_PREFERENCES, effectiveProfile: null,
+    effectiveModelId: 'model', effectivePreset: null,
+    effectivePrompt: { context: 'Watch the scene', chatActivity: 'normal' },
+    effectiveSeed: 1, resolvedRemoteRoles: { unified: evidence },
+  });
+  selected.model.model = 'provider-model-v2';
+  const [reloaded] = await new RecordedScenarioStore(root).runs();
+  expect(reloaded.resolvedRemoteRoles?.unified).toEqual(evidence);
+  expect(reloaded.resolvedRemoteRoles?.unified?.model.model).toBe('provider-model-v1');
+  expect(JSON.stringify(reloaded)).not.toContain('credentialStatus');
+  await expect(store.importRun({
+    ...run,
+    resolvedRemoteRoles: {
+      unified: { ...evidence, connection: { ...evidence.connection, apiKey: 'leak' } },
+    },
+  } as typeof run)).rejects.toThrow(/disallowed or secret/);
 });
 
 it('saves and reloads named Scenarios with exact media paths, audio offsets and explicit embedded audio selection', async () => {

@@ -30,6 +30,8 @@ export interface InferenceRequest<Role extends InferenceRole = InferenceRole, Sc
   };
   readonly sampling: {
     readonly temperature: number;
+    /** Advisory temperatures may be omitted when the selected transport forbids sampling. */
+    readonly temperatureMode?: 'advisory' | 'required';
     readonly maxTokens: number;
     readonly seed?: number;
     /** Coordinator retry seeds are advisory unless explicitly required by a caller. */

@@ -220,14 +220,18 @@ describe('remote provider capability and multimodal contracts', () => {
         content: Array.from({ length: 17 }, (_, index) => ({ ...image, observedAt: index })),
       }),
     ).toThrow(/at most 16 frames/);
-    expect(() =>
+    expect(
       strictProviderSchema({
         type: 'object',
         properties: { ok: { type: 'string' } },
         required: [],
         additionalProperties: false,
       }),
-    ).toThrow(/require all/);
+    ).toEqual({
+      type: 'object',
+      properties: { ok: { type: ['string', 'null'] } },
+      required: ['ok'], additionalProperties: false,
+    });
     expect(() =>
       strictProviderSchema({
         type: 'array',

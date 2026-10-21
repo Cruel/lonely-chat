@@ -1,7 +1,9 @@
 import type { InferenceInput, InferenceProvider } from './fake-inference';
 import type { NativeVideoPreferences } from '../shared/video-tools-contract';
 import { AUDIENCE } from './fake-inference';
-import { extractNativeChat, llamaCppRequest, withNativeVideoPlaceholder } from './native-inference';
+import { extractNativeChat, extractNativeJson, llamaCppRequest, withNativeVideoPlaceholder } from './native-inference';
+import { normalizeStageMemory } from './stage-output';
+import type { InferenceRequest } from './unified-inference-request';
 import { executeNativeSimulation } from './simulation-execution';
 import type { UnifiedInferenceAdapter } from './inference-coordinator';
 import { selectContinuousVideoWindow, type ContinuousVideoWindow } from './continuous-video-window';
@@ -39,7 +41,9 @@ export function llamaCppAdapter(
                 video.options,
               )
             : provider.completeSimulationRequest(input, nativeRequest, activeSignal),
-        (raw) => extractNativeChat(raw, input.roster ?? AUDIENCE),
+        (raw) => (request as InferenceRequest).role === 'memory'
+          ? normalizeStageMemory(extractNativeJson(raw), request)
+          : normalizeStageMemory(extractNativeChat(raw, input.roster ?? AUDIENCE), request),
         observe,
       );
       return { raw: result.rawNativeOutput, normalized: result.normalizedResult };

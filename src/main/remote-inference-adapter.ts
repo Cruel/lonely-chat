@@ -1,4 +1,6 @@
 import OpenAI from 'openai';
+import { normalizeStageMemory } from './stage-output';
+import type { InferenceRequest } from './unified-inference-request';
 import type { InferenceTraceObserver } from './inference-trace';
 import type { UnifiedInferenceAdapter, NormalizedInferenceUsage } from './inference-coordinator';
 import { unifiedOutputSchema, type UnifiedInferenceRequest } from './unified-inference-request';
@@ -107,15 +109,16 @@ export function strictProviderSchema(value: Record<string, unknown>): Record<str
       const keys = Object.keys(schema.properties);
       if (
         !Array.isArray(schema.required) ||
-        keys.some((key) => !(schema.required as unknown[]).includes(key)) ||
-        schema.required.length !== keys.length
+        (schema.required as unknown[]).some((key) => !keys.includes(String(key)))
       )
         throw new Error('Strict JSON Schema must require all declared properties.');
       for (const property of Object.values(schema.properties)) validate(property);
     } else if (schema.type === 'array') {
       validate(schema.items);
     } else if (
-      !['string', 'integer', 'number', 'boolean', 'null'].includes(schema.type as string)
+      !['string', 'integer', 'number', 'boolean', 'null'].includes(schema.type as string) &&
+      !(Array.isArray(schema.type) && schema.type.length === 2 && schema.type.includes('null') &&
+        schema.type.some((type) => ['string', 'integer', 'number', 'boolean'].includes(type)))
     ) {
       throw new Error('Unsupported strict provider JSON Schema type.');
     }
@@ -124,11 +127,23 @@ export function strictProviderSchema(value: Record<string, unknown>): Record<str
   const clean = (entry: unknown): unknown => {
     if (Array.isArray(entry)) return entry.map(clean);
     if (!entry || typeof entry !== 'object') return entry;
-    return Object.fromEntries(
-      Object.entries(entry)
+    const schema = entry as Record<string, unknown>;
+    const result = Object.fromEntries(
+      Object.entries(schema)
         .filter(([key]) => !unsupported.has(key))
         .map(([key, item]) => [key, clean(item)]),
     );
+    if (schema.type === 'object') {
+      const properties = result.properties as Record<string, Record<string, unknown>>;
+      const required = new Set(schema.required as string[]);
+      for (const [key, property] of Object.entries(properties)) {
+        if (required.has(key)) continue;
+        // OpenAI strict output requires every property; null represents omitted.
+        properties[key] = { ...property, type: [property.type, 'null'] };
+      }
+      result.required = Object.keys(properties);
+    }
+    return result;
   };
   const unsupported = new Set([
     'maxItems',
@@ -143,18 +158,16 @@ export function strictProviderSchema(value: Record<string, unknown>): Record<str
     'format',
     'uniqueItems',
   ]);
-  return Object.fromEntries(
-    Object.entries(value)
-      .filter(([key]) => !unsupported.has(key))
-      .map(([key, item]) => [key, clean(item)]),
-  );
+  return clean(value) as Record<string, unknown>;
 }
 
 /** Resolve author colors after decoding JSON; external models never control audience colors. */
 export function normalizeRemoteResult(
   parsed: unknown,
   roster: readonly ChatterIdentity[],
+  role: InferenceRequest['role'] = 'unified',
 ): unknown {
+  if (role === 'memory') return parsed;
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
     throw new Error('Remote inference returned an invalid result object.');
   const record = parsed as Record<string, unknown>;
@@ -252,7 +265,7 @@ async function remoteComplete(
     );
     if (result.status !== 'completed')
       throw new Error('Remote inference did not complete. No Chat batch was accepted.');
-    const normalized = normalizeRemoteResult(boundedJson(completedResponsesText(result)), roster);
+    const normalized = normalizeRemoteResult(normalizeStageMemory(boundedJson(completedResponsesText(result)), request), roster, request.role);
     const counts = usage(result.usage);
     const raw = {
       id: result.id,
@@ -305,7 +318,7 @@ async function remoteComplete(
   const choice = result.choices[0];
   if (!choice || choice.finish_reason !== 'stop' || typeof choice.message.content !== 'string')
     throw new Error('Remote inference did not finish normally. No Chat batch was accepted.');
-  const normalized = normalizeRemoteResult(boundedJson(choice.message.content), roster);
+  const normalized = normalizeRemoteResult(normalizeStageMemory(boundedJson(choice.message.content), request), roster, request.role);
   const counts = usage(result.usage);
   const raw = {
     id: result.id,

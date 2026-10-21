@@ -24,6 +24,8 @@ import { RecordedResumeReservation } from './recorded-resume-reservation';
 import { PromptPresetStore } from './prompt-preset-store';
 import { InferenceProfileStore } from './inference-profile-store';
 import { resolveUnifiedProfilePolicy } from '../shared/inference-profile-contract';
+import { resolveRunStartProfile } from './recorded-run-profile';
+import { snapshotRemoteRole } from './recorded-role-evidence';
 import { SpeechPlaygroundService } from './speech-playground-service';
 import { SpeechSegmentCapture } from './speech-segment-capture';
 import { installElectronSmoke } from './electron-smoke';
@@ -220,7 +222,7 @@ const chatGPTAuth = new ChatGPTAuth(
 const remotePlayground = new RemoteInferencePlayground();
 let activeRemoteUsage: RemoteUsageGuard | null = null;
 const promptPresets = new PromptPresetStore(app.getPath('userData'));
-const inferenceProfiles = new InferenceProfileStore(app.getPath('userData'), (ref, role) =>
+const profileRoleAvailable: ConstructorParameters<typeof InferenceProfileStore>[1] = (ref, role) =>
   ref.kind === 'remote'
     ? remoteStore
         .list()
@@ -234,8 +236,8 @@ const inferenceProfiles = new InferenceProfileStore(app.getPath('userData'), (re
         .installations.some(
           (model) =>
             model.id === ref.modelId && !model.projectorOnly && model.role === 'vision-language',
-        ),
-);
+        );
+const inferenceProfiles = new InferenceProfileStore(app.getPath('userData'), profileRoleAvailable);
 const audioConfig = new AudioConfigStore(app.getPath('userData'));
 const transcriptCache = new RecordedTranscriptCache(app.getPath('userData'));
 const speechCapture = new SpeechSegmentCapture(app.getPath('userData'), (error) =>
@@ -927,9 +929,10 @@ function registerHandlers(): void {
         }
         const profileId = recordedConfig?.profileId ?? options?.profileId;
         const profileRevision = recordedConfig?.profileRevision ?? options?.profileRevision;
-        const profile = profileId
-          ? await inferenceProfiles.resolve(profileId, profileRevision ?? undefined)
-          : null;
+        const profile = await resolveRunStartProfile(
+          profileId, profileRevision, recordedConfig,
+          (id, revision) => inferenceProfiles.resolve(id, revision), profileRoleAvailable,
+        );
 
         const unifiedRole = profile?.values.roles.unified;
         if (unifiedRole && mode !== (unifiedRole.kind === 'local' ? 'native' : 'remote'))
@@ -1035,6 +1038,7 @@ function registerHandlers(): void {
         }
         const remoteUsage = new RemoteUsageGuard();
         activeRemoteUsage = remoteUsage;
+        const resolvedRemoteRoles: Partial<Record<'unified' | 'observer' | 'chat' | 'memory', ReturnType<typeof snapshotRemoteRole>>> = {};
         if (splitRoles) {
           // Pin the resolved provider/model configuration for this entire Run.
           const pinnedRemote = {
@@ -1051,6 +1055,10 @@ function registerHandlers(): void {
                 ? remoteStore.selected(splitRoles.memory.modelId)
                 : null,
           };
+          for (const role of ['observer', 'chat', 'memory'] as const) {
+            const selected = pinnedRemote[role];
+            if (selected) resolvedRemoteRoles[role] = snapshotRemoteRole(selected);
+          }
           const make = (
             role: 'observer' | 'chat' | 'memory',
             input: import('./fake-inference').InferenceInput,
@@ -1091,6 +1099,7 @@ function registerHandlers(): void {
         if (mode === 'remote' && !splitRoles) {
           if (!activeModel) throw new Error('Select a remote Model Configuration.');
           const selected = remoteStore.selected(activeModel);
+          resolvedRemoteRoles.unified = snapshotRemoteRole(selected);
           session.configureRemote((input) =>
             remoteUsage.wrap(selected.model, selected.connection.credentialMode === 'chatgpt'
               ? chatGPTUnifiedAdapter(selected, chatGPTAuth, {
@@ -1134,6 +1143,7 @@ function registerHandlers(): void {
               effectiveSettings: session.getRunPreferences(),
               effectiveProfile: profile,
               effectiveModelId: activeModel,
+              resolvedRemoteRoles,
               effectivePreset: started.promptPreset ?? null,
               effectivePrompt: {
                 context: effectivePolicy.context,

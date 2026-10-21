@@ -47,6 +47,20 @@ describe('remote usage guard', () => {
     expect(() => validateRemoteModel({ ...model, outputUsdPerMillion: Infinity })).toThrow(/price estimate/);
   });
 
+  it('charges conservative estimated token volume for each dispatched broken completion', async () => {
+    const guard = new RemoteUsageGuard();
+    const broken = vi.fn(async () => { throw new Error('JSON normalization failed after tokens were generated'); });
+    const entry = { ...model, maxTokensPerRun: 70, maxRequestsPerMinute: undefined, maxRequestsPerRun: undefined };
+    const wrapped = guard.wrap(entry, { capabilities: { images: false }, complete: broken });
+    await expect(wrapped.complete(request, new AbortController().signal)).rejects.toThrow(/normalization/);
+    expect(guard.snapshot(entry)).toMatchObject({
+      requests: 1, hasEstimatedUsage: true, providerPromptTokens: 0, providerCompletionTokens: 0,
+    });
+    expect(guard.snapshot(entry).estimatedTokens).toBeGreaterThan(50);
+    await expect(wrapped.complete(request, new AbortController().signal)).rejects.toThrow(/token-volume/);
+    expect(broken).toHaveBeenCalledTimes(1);
+  });
+
   it('counts failed requests and releases reservations after a broken stream', async () => {
     const guard = new RemoteUsageGuard();
     const complete = vi.fn().mockRejectedValue(new Error('interrupted'));
