@@ -8,8 +8,10 @@ import {
 } from './unified-inference-request';
 import { acceptSimulationExecution } from './simulation-execution';
 import type { InferredEvent, CapturedObservation } from '../shared/session-contract';
+import type { VideoFrame } from '../shared/video-contract';
 import { SplitNarrative } from './split-narrative';
 import { NarrativeMemory, type NarrativeMemoryPolicy } from './narrative-memory';
+import { selectStageFrames } from './stage-frame-selection';
 import { DEFAULT_CHAT_PROMPT, DEFAULT_VISION_PROMPT, resolveStageContext, resolveStageTemplate } from './stage-context';
 import type { InferenceProfileValues } from '../shared/inference-profile-contract';
 
@@ -106,8 +108,8 @@ export function splitRequests(
       const selectedContext = resolveStageContext({ ...input, recentEvents: [...(input.recentEvents ?? []), ...events], observations: [...(input.observations ?? []), ...observations] }, stages.chat);
       const textOnly = buildUnifiedInferenceRequest({
         ...input,
-        frames: [],
-        videoWindow: undefined,
+        frames: input.chatFrames ?? [],
+        videoWindow: input.chatFrames?.length ? input.videoWindow : undefined,
         recentEvents: selectedContext.data.events as InferenceInput['recentEvents'],
         recentTranscripts: selectedContext.data.transcripts as InferenceInput['recentTranscripts'],
         recentChat: selectedContext.data.chat as InferenceInput['recentChat'],
@@ -165,6 +167,16 @@ export class ScheduledSplitInference {
   private mediaIdentity = '';
   private readonly narrative = new SplitNarrative();
   private readonly memory = new NarrativeMemory();
+  private hybridMaxImages = 0;
+  private frameResizer: ((frame: VideoFrame, maxWidth: number, maxHeight: number) => VideoFrame) | null = null;
+  configureFrameResizer(resizer: (frame: VideoFrame, maxWidth: number, maxHeight: number) => VideoFrame): void {
+    this.frameResizer = resizer;
+  }
+  private resizeFrames(frames: VideoFrame[], policy: InferenceProfileValues['stageDefaults']['observer']): VideoFrame[] {
+    const size = policy?.frameSampling;
+    return this.frameResizer && size ? frames.map((frame) => this.frameResizer!(frame, size.maxWidth, size.maxHeight)) : frames;
+  }
+  configureHybrid(maxImages: number): void { this.hybridMaxImages = maxImages; }
   private memoryPolicy: NarrativeMemoryPolicy = { enabled: false, intervalMs: 30000, maxCharacters: 2000, expireAfterMs: 0 };
 
   configureMemory(policy: NarrativeMemoryPolicy): void {
@@ -217,9 +229,17 @@ export class ScheduledSplitInference {
     this.visionCadence ??= new StageCadence(policy.visionIntervalMs);
     this.chatCadence ??= new StageCadence(policy.chatIntervalMs);
     const generation = this.generation;
+    const sourceFrames = input.frames ?? [];
+    const chatSourceFrames = input.chatFrames ?? sourceFrames;
+    const boundaryNow = Math.max(input.boundary?.throughMs ?? 0, sourceFrames.at(-1)?.observedAt ?? 0);
+    const visionFrames = this.resizeFrames(selectStageFrames(sourceFrames, boundaryNow, stages.observer?.frameSampling, 32), stages.observer);
+    const chatFrames = this.resizeFrames(selectStageFrames(chatSourceFrames, boundaryNow, stages.chat?.frameSampling, this.hybridMaxImages), stages.chat);
+    if (chatFrames.length && !adapters.chat.capabilities.images)
+      throw new Error('Selected Chat model does not accept Hybrid image frames.');
     const snapshot = frozen({
       ...input,
-      frames: input.frames
+      chatFrames,
+      frames: visionFrames
         ?.slice()
         .sort((a, b) => a.observedAt - b.observedAt || a.sourceId.localeCompare(b.sourceId)),
     });
@@ -344,12 +364,12 @@ export class ScheduledSplitInference {
       const pending = this.retryPayload?.events ?? this.narrative.pending(now(), policy.maximumAgeMs);
       const observations = this.retryPayload?.observations ?? this.narrative.sceneObservation(now(), policy.maximumAgeMs);
       const events = pending.map((entry) => entry.event);
-      const chatRequest = this.retryPayload?.request ?? requests.chat(events, observations);
+      const chatRequest = this.retryPayload?.request ?? splitRequests({ ...visionInput, chatFrames }, stages).chat(events, observations);
       const chatInput = this.retryPayload?.input ?? frozen({
         ...snapshot,
         narrativeMemory: memory ?? undefined,
-        frames: [],
-        videoWindow: undefined,
+        frames: chatFrames,
+        videoWindow: chatFrames.length ? snapshot.videoWindow : undefined,
         recentEvents: [...(snapshot.recentEvents ?? []), ...events],
         observations: [...(snapshot.observations ?? []), ...observations],
       });

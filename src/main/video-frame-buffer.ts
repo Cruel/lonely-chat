@@ -6,6 +6,8 @@ import {
 } from '../shared/video-contract';
 import { DEFAULT_PREFERENCES, type SessionPreferences } from '../shared/session-contract';
 import { VIDEO_SAMPLERS, type VideoSampler } from './video-sampler';
+import { selectStageFrames } from './stage-frame-selection';
+import type { InferenceStageDefaults } from '../shared/inference-profile-contract';
 
 const MAX_BUFFERED_FRAMES = 260; // 60 s at the fastest allowed 250 ms cadence plus baseline.
 const MAX_BUFFERED_BYTES = 32 * 1024 * 1024;
@@ -128,6 +130,11 @@ export class VideoFrameBuffer {
       truncated: start > requestedFrom,
       frames,
     };
+  }
+
+  sampleStage(throughMs: number, policy: InferenceStageDefaults['frameSampling'], cap: number): VideoFrame[] {
+    this.prune(throughMs);
+    return selectStageFrames(this.frames, throughMs, policy, cap);
   }
 
   get size(): number {

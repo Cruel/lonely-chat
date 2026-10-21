@@ -921,8 +921,7 @@ function registerHandlers(): void {
         const profile = profileId
           ? await inferenceProfiles.resolve(profileId, profileRevision ?? undefined)
           : null;
-        if (profile?.values.topology === 'hybrid')
-          throw new Error('Hybrid execution is not yet available.');
+
         const unifiedRole = profile?.values.roles.unified;
         if (unifiedRole && mode !== (unifiedRole.kind === 'local' ? 'native' : 'remote'))
           throw new Error(
@@ -942,7 +941,7 @@ function registerHandlers(): void {
               )
           : undefined;
         if (presetId && !preset) throw new Error('Selected prompt preset was not found.');
-        const splitChat = profile?.values.topology === 'split' ? profile.values.roles.chat : null;
+        const splitChat = (profile?.values.topology === 'split' || profile?.values.topology === 'hybrid') ? profile.values.roles.chat : null;
         if (splitChat && mode !== (splitChat.kind === 'remote' ? 'remote' : 'native'))
           throw new Error('Split Simulation provider must match its Chat role.');
         const activeModel =
@@ -972,7 +971,12 @@ function registerHandlers(): void {
           throw new Error(
             'Activate the local Model Configuration selected by this Inference Profile before starting.',
           );
-        const splitRoles = profile?.values.topology === 'split' ? profile.values.roles : null;
+        const splitRoles = (profile?.values.topology === 'split' || profile?.values.topology === 'hybrid') ? profile.values.roles : null;
+        if (profile?.values.topology === 'hybrid' &&
+            (profile.values.architecture?.hybridMaxImages ?? 0) > 0 &&
+            splitRoles?.chat?.kind === 'remote' &&
+            profile.values.architecture?.remoteChatImagesConsent !== true)
+          throw new Error('Remote Chat image transmission requires explicit Hybrid consent.');
         const localSplitModels = splitRoles
           ? [splitRoles.observer, splitRoles.chat, splitRoles.memory].filter((ref) => ref?.kind === 'local')
           : [];
@@ -1254,7 +1258,7 @@ function registerHandlers(): void {
       await playground.stop();
       const current = session.snapshot();
       if (
-        current.inferenceProfile?.topology === 'split' &&
+        (current.inferenceProfile?.topology === 'split' || current.inferenceProfile?.topology === 'hybrid') &&
         ['starting', 'running', 'error'].includes(current.phase)
       )
         throw new Error('Stop the Split Run before changing a pinned projector.');
@@ -1285,7 +1289,7 @@ function registerHandlers(): void {
       await playground.stop();
       const current = session.snapshot();
       if (
-        current.inferenceProfile?.topology === 'split' &&
+        (current.inferenceProfile?.topology === 'split' || current.inferenceProfile?.topology === 'hybrid') &&
         ['starting', 'running', 'error'].includes(current.phase)
       )
         throw new Error('Stop the Split Run before changing a pinned projector.');
@@ -1328,7 +1332,7 @@ function registerHandlers(): void {
       if (current === id) return installs.snapshot();
       if (role === 'vision-language') {
         if (
-          session.snapshot().inferenceProfile?.topology === 'split' &&
+          (session.snapshot().inferenceProfile?.topology === 'split' || session.snapshot().inferenceProfile?.topology === 'hybrid') &&
           ['running', 'starting', 'switching', 'error'].includes(session.snapshot().phase)
         )
           throw new Error('Stop the Split Run before changing its pinned local models.');
@@ -1816,6 +1820,19 @@ async function boot(): Promise<void> {
     diagnostics,
     reportError,
   );
+  session.configureFrameResizer((frame, maxWidth, maxHeight) => {
+    const source = nativeImage.createFromDataURL(frame.dataUrl);
+    const size = source.getSize();
+    if (source.isEmpty() || size.width !== frame.width || size.height !== frame.height)
+      throw new Error('Captured frame dimensions do not match its JPEG payload.');
+    const scale = Math.min(1, maxWidth / size.width, maxHeight / size.height);
+    if (scale === 1) return frame;
+    const width = Math.max(1, Math.floor(size.width * scale));
+    const height = Math.max(1, Math.floor(size.height * scale));
+    const dataUrl = `data:image/jpeg;base64,${source.resize({ width, height }).toJPEG(85).toString('base64')}`;
+    if (dataUrl.length > 2_700_000) throw new Error('Resized stage frame exceeds the media budget.');
+    return { ...frame, width, height, dataUrl };
+  });
   session.trace.attachRecorder(compactRecorder);
   await compactRecorder.loadLimits();
   audio = new AudioService(

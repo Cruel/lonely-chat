@@ -59,6 +59,7 @@ export function InferenceProfileControls({
   const [memory, setMemory] = useState<NonNullable<InferenceProfileValues['memory']>>({ enabled: false, intervalMs: 30000, maxCharacters: 2000, expireAfterMs: 0 });
   const [execution, setExecution] = useState<'sequential' | 'asynchronous'>('sequential');
   const [hybridMaxImages, setHybridMaxImages] = useState(0);
+  const [remoteChatImagesConsent, setRemoteChatImagesConsent] = useState(false);
   const [scheduling, setScheduling] = useState({
     visionIntervalMs: 1500,
     chatIntervalMs: 1500,
@@ -117,6 +118,7 @@ export function InferenceProfileControls({
     setMemory(selected.values.memory ?? { enabled: false, intervalMs: 30000, maxCharacters: 2000, expireAfterMs: 0 });
     setExecution(selected.values.architecture?.execution ?? 'sequential');
     setHybridMaxImages(selected.values.architecture?.hybridMaxImages ?? 0);
+    setRemoteChatImagesConsent(selected.values.architecture?.remoteChatImagesConsent === true);
     loadScheduling(selected.values.architecture);
   }, [selectedId, selectedRevision, revisions]);
 
@@ -131,6 +133,7 @@ export function InferenceProfileControls({
       setMemory(profile.values.memory ?? { enabled: false, intervalMs: 30000, maxCharacters: 2000, expireAfterMs: 0 });
       setExecution(profile.values.architecture?.execution ?? 'sequential');
       setHybridMaxImages(profile.values.architecture?.hybridMaxImages ?? 0);
+      setRemoteChatImagesConsent(profile.values.architecture?.remoteChatImagesConsent === true);
       loadScheduling(profile.values.architecture);
     }
   };
@@ -146,6 +149,7 @@ export function InferenceProfileControls({
         architecture: {
           execution,
           hybridMaxImages: topology === 'hybrid' ? hybridMaxImages : 0,
+          remoteChatImagesConsent: topology === 'hybrid' && remoteChatImagesConsent,
           ...scheduling,
         },
         contextDefaults: JSON.parse(contextDefaults) as InferenceProfileValues['contextDefaults'],
@@ -373,6 +377,12 @@ export function InferenceProfileControls({
               />
             </label>
           )}
+          {topology === 'hybrid' && (
+            <label className="flex gap-2 items-center">
+              <input type="checkbox" aria-label="Allow remote Chat image uploads" disabled={disabled} checked={remoteChatImagesConsent} onChange={(e) => setRemoteChatImagesConsent(e.target.checked)} />
+              Explicitly allow selected images to be uploaded to remote Chat providers during this Hybrid profile's Runs
+            </label>
+          )}
           {required[topology].map((role) => (
             <label key={role} className="block capitalize">
               {role} model
@@ -439,6 +449,9 @@ export function InferenceProfileControls({
           </label>
           {topology !== 'unified' && (
             <div className="space-y-2 rounded border border-zinc-700 p-2">
+              <p className="text-xs text-zinc-400">
+                Per-stage frameSampling in stage defaults: maxFrames (1–32), windowMs (250–60000), strategy (uniform/latest), maxWidth and maxHeight. Frame target dimensions must be supported by the original capture; thumbnails are never upscaled.
+              </p>
               <p className="text-xs text-zinc-400">
                 Prompt variables: {'{{context}}'}, {'{{cycle}}'}, {'{{events}}'},
                 {' {{transcripts}}'}, {' {{chat}}'}, {' {{scene}}'},

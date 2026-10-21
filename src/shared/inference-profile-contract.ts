@@ -24,6 +24,7 @@ export interface InferenceStageDefaults {
   };
   /** Vision must always emit protocol-required fields; disabled outputs are empty. */
   readonly visionOutput?: 'scene' | 'events' | 'both';
+  readonly frameSampling?: { readonly maxFrames: number; readonly windowMs: number; readonly strategy: 'uniform' | 'latest'; readonly maxWidth: number; readonly maxHeight: number };
   readonly maxResponseTokens?: number;
   readonly visionOptionalFields?: readonly ('confidence' | 'notes')[];
 }
@@ -39,6 +40,7 @@ export interface InferenceProfileValues {
   readonly architecture?: {
     readonly execution: 'sequential' | 'asynchronous';
     readonly hybridMaxImages: number;
+    readonly remoteChatImagesConsent?: boolean;
     readonly visionIntervalMs?: number;
     readonly chatIntervalMs?: number;
     readonly maximumWaitMs?: number;
@@ -122,7 +124,7 @@ export function validateProfileValues(
   const stages: Partial<Record<InferenceRole, InferenceStageDefaults>> = {};
   for (const [role, raw] of Object.entries(defaults)) {
     const stage = object(raw, `${role} stage defaults`);
-    exact(stage, ['settings', 'systemPrompt', 'userPrompt', 'contextPolicy', 'visionOutput', 'maxResponseTokens', 'visionOptionalFields'], `${role} stage default`);
+    exact(stage, ['settings', 'systemPrompt', 'userPrompt', 'contextPolicy', 'visionOutput', 'maxResponseTokens', 'visionOptionalFields', 'frameSampling'], `${role} stage default`);
     if (stage.visionOutput !== undefined &&
       (role !== 'observer' || !['scene', 'events', 'both'].includes(String(stage.visionOutput))))
       throw new Error('Invalid Vision output selection.');
@@ -135,6 +137,19 @@ export function validateProfileValues(
       (!Number.isSafeInteger(stage.maxResponseTokens) || (stage.maxResponseTokens as number) < 128 ||
         (stage.maxResponseTokens as number) > 8192))
       throw new Error('Invalid stage response token budget.');
+    let frameSampling: InferenceStageDefaults['frameSampling'];
+    if (stage.frameSampling !== undefined) {
+      if (role !== 'observer' && role !== 'chat') throw new Error('Frame sampling only supports Vision and Chat.');
+      const f = object(stage.frameSampling, 'frame sampling');
+      exact(f, ['maxFrames', 'windowMs', 'strategy', 'maxWidth', 'maxHeight'], 'frame sampling');
+      if (!Number.isSafeInteger(f.maxFrames) || (f.maxFrames as number) < 1 || (f.maxFrames as number) > 32 ||
+          !Number.isSafeInteger(f.windowMs) || (f.windowMs as number) < 250 || (f.windowMs as number) > 60000 ||
+          !['uniform','latest'].includes(String(f.strategy)) ||
+          !Number.isSafeInteger(f.maxWidth) || (f.maxWidth as number) < 64 || (f.maxWidth as number) > 1920 ||
+          !Number.isSafeInteger(f.maxHeight) || (f.maxHeight as number) < 64 || (f.maxHeight as number) > 1080)
+        throw new Error('Invalid stage frame sampling.');
+      frameSampling = f as unknown as NonNullable<InferenceStageDefaults['frameSampling']>;
+    }
     let contextPolicy: InferenceStageDefaults['contextPolicy'];
     if (stage.contextPolicy !== undefined) {
       const policy = object(stage.contextPolicy, 'stage context policy');
@@ -168,6 +183,7 @@ export function validateProfileValues(
       ...(stage.systemPrompt !== undefined ? { systemPrompt: stage.systemPrompt as string } : {}),
       ...(stage.userPrompt !== undefined ? { userPrompt: stage.userPrompt as string } : {}),
       ...(contextPolicy ? { contextPolicy } : {}),
+      ...(frameSampling ? { frameSampling } : {}),
       ...(stage.maxResponseTokens !== undefined ? { maxResponseTokens: stage.maxResponseTokens as number } : {}),
       ...(stage.visionOutput !== undefined ? { visionOutput: stage.visionOutput as 'scene' | 'events' | 'both' } : {}),
       ...(stage.visionOptionalFields !== undefined ? { visionOptionalFields: stage.visionOptionalFields as ('confidence' | 'notes')[] } : {}),
@@ -205,6 +221,7 @@ export function validateProfileValues(
       [
         'execution',
         'hybridMaxImages',
+        'remoteChatImagesConsent',
         'visionIntervalMs',
         'chatIntervalMs',
         'maximumWaitMs',
@@ -230,6 +247,8 @@ export function validateProfileValues(
       )
         throw new Error(`Invalid ${key} stage scheduling limit.`);
     }
+    if (config.remoteChatImagesConsent !== undefined && typeof config.remoteChatImagesConsent !== 'boolean')
+      throw new Error('Invalid Hybrid remote-image consent.');
     if (config.strictWait !== undefined && typeof config.strictWait !== 'boolean')
       throw new Error('Invalid strict-wait policy.');
     if (
@@ -244,6 +263,7 @@ export function validateProfileValues(
     architecture = {
       execution: config.execution,
       hybridMaxImages: config.hybridMaxImages,
+      ...(config.remoteChatImagesConsent === true ? { remoteChatImagesConsent: true } : {}),
       ...(config.visionIntervalMs !== undefined
         ? { visionIntervalMs: config.visionIntervalMs as number }
         : {}),

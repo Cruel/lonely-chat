@@ -175,6 +175,10 @@ export class SessionController {
     this.splitRosterProvider = rosterProvider;
   }
 
+  configureFrameResizer(resizer: (frame: VideoFrame, maxWidth: number, maxHeight: number) => VideoFrame): void {
+    this.splitCoordinator.configureFrameResizer(resizer);
+  }
+
   canExecutePausedPlayground(): boolean {
     return (
       this.state.inputMode === 'recorded' &&
@@ -328,16 +332,16 @@ export class SessionController {
           : validateContext(rawContext);
     if (mode !== 'fake' && mode !== 'native' && mode !== 'remote')
       throw new Error('Unknown inference mode.');
-    if (mode === 'remote' && profile?.values.topology !== 'split' && !this.remoteAdapter)
+    if (mode === 'remote' && (profile?.values.topology !== 'split' && profile?.values.topology !== 'hybrid') && !this.remoteAdapter)
       throw new Error('Remote inference is not configured.');
-    if (profile?.values.topology === 'split' && !this.splitAdapters)
+    if ((profile?.values.topology === 'split' || profile?.values.topology === 'hybrid') && !this.splitAdapters)
       throw new Error('Split inference stages are not configured.');
     if (mode === 'native' && !this.nativeInference) {
       throw new Error('The native inference runtime is not configured.');
     }
     const sessionSeed = options.seed ?? randomInferenceSeed();
     this.activeInference =
-      mode === 'native' && profile?.values.topology !== 'split'
+      mode === 'native' && (profile?.values.topology !== 'split' && profile?.values.topology !== 'hybrid')
         ? this.nativeInference!
         : this.inference;
     this.activeProfile = profile ? structuredClone(profile) : null;
@@ -355,6 +359,7 @@ export class SessionController {
     this.stopSplitVisionLoop();
     this.splitCoordinator.reset();
     this.splitCoordinator.configureMemory(this.activeProfile?.values.memory ?? { enabled: false, intervalMs: 30000, maxCharacters: 2000, expireAfterMs: 0 });
+    this.splitCoordinator.configureHybrid(this.activeProfile?.values.topology === 'hybrid' ? this.activeProfile.values.architecture?.hybridMaxImages ?? 0 : 0);
     this.runId++;
     this.history.reset(this.clock.wallNow());
     this.chatStartSequence = this.chat.snapshot().sequence;
@@ -402,8 +407,12 @@ export class SessionController {
       smoothedInferenceMs: null,
       playbackWindowMs: this.runPreferences.cycleIntervalMs,
       effectiveVideoCaptureIntervalMs: this.runPreferences.videoCaptureIntervalMs,
-      effectiveVideoCaptureMaxWidth: this.runPreferences.videoCaptureMaxWidth,
-      effectiveVideoCaptureMaxHeight: this.runPreferences.videoCaptureMaxHeight,
+      effectiveVideoCaptureMaxWidth: Math.max(this.runPreferences.videoCaptureMaxWidth,
+        this.activeProfile?.values.stageDefaults.observer?.frameSampling?.maxWidth ?? 0,
+        this.activeProfile?.values.topology === 'hybrid' ? this.activeProfile.values.stageDefaults.chat?.frameSampling?.maxWidth ?? 0 : 0),
+      effectiveVideoCaptureMaxHeight: Math.max(this.runPreferences.videoCaptureMaxHeight,
+        this.activeProfile?.values.stageDefaults.observer?.frameSampling?.maxHeight ?? 0,
+        this.activeProfile?.values.topology === 'hybrid' ? this.activeProfile.values.stageDefaults.chat?.frameSampling?.maxHeight ?? 0 : 0),
       droppedObservations: 0,
       estimatedNextInferenceMs: null,
       adaptiveFrameLimit: null,
@@ -656,7 +665,7 @@ export class SessionController {
     activate: () => Promise<void>,
     modelId: string,
   ): Promise<SessionSnapshot> {
-    if (this.state.inferenceProfile?.topology === 'split')
+    if ((this.state.inferenceProfile?.topology === 'split' || this.state.inferenceProfile?.topology === 'hybrid'))
       throw new Error('Stop the Split Run before changing its pinned local Model Configuration.');
     if (
       this.state.mode !== 'native' ||
@@ -824,21 +833,16 @@ export class SessionController {
           cycle === 1,
           this.runPreferences.videoMaxFrames,
         );
+        const stageMedia = this.stageMedia(now, media);
         const input: CycleInput = {
           ...snapshot,
           captureSelection: {
             ...snapshot.captureSelection!,
-            frames: media.frames.map(
-              (frame, index) => `${frame.sourceId}:${frame.observedAt}:${index}`,
-            ),
+            frames: stageMedia.frames.map((frame, index) => `${frame.sourceId}:${frame.observedAt}:${index}`),
+            ...(stageMedia.chatFrames ? { chatFrames: stageMedia.chatFrames.map((frame, index) => `${frame.sourceId}:${frame.observedAt}:${index}`) } : {}),
           },
           chatActivity: this.runPreferences.chatActivity,
-          frames: media.frames,
-          videoWindow: {
-            fromMs: media.fromMs,
-            throughMs: media.throughMs,
-            truncated: media.truncated,
-          },
+          ...stageMedia,
           seed: deriveInferenceSeed(this.state.sessionSeed!, 'cycle', cycle, 1),
         };
         void this.splitCoordinator.execute(
@@ -855,6 +859,26 @@ export class SessionController {
       this.splitVisionTimer = this.clock.setTimeout(tick, Math.max(50, policy.visionIntervalMs));
     };
     tick();
+  }
+
+  private stageMedia(now: number, media: ReturnType<VideoFrameBuffer['sample']>) {
+    const stages = this.activeProfile?.values.stageDefaults;
+    const frames = stages?.observer?.frameSampling
+      ? this.video.sampleStage(now, stages.observer.frameSampling, this.runPreferences.videoMaxFrames)
+      : [...media.frames];
+    const chatFrames = this.activeProfile?.values.topology === 'hybrid'
+      ? this.video.sampleStage(now, stages?.chat?.frameSampling,
+          Math.min(this.runPreferences.videoMaxFrames, this.activeProfile.values.architecture?.hybridMaxImages ?? 0))
+      : [];
+    const earliest = Math.min(media.fromMs, ...frames.map((f) => f.observedAt), ...chatFrames.map((f) => f.observedAt));
+    const maxWindow = Math.max(stages?.observer?.frameSampling?.windowMs ?? 0,
+      this.activeProfile?.values.topology === 'hybrid' ? stages?.chat?.frameSampling?.windowMs ?? 0 : 0);
+    return {
+      frames,
+      ...(this.activeProfile?.values.topology === 'hybrid' ? { chatFrames } : {}),
+      videoWindow: { fromMs: earliest, throughMs: media.throughMs,
+        truncated: media.truncated || maxWindow > this.runPreferences.videoCoverageMs },
+    };
   }
 
   private runCycle(epoch: number): void {
@@ -891,17 +915,16 @@ export class SessionController {
       cycle === 1,
       this.state.mode === 'native' ? plan.frameLimit : this.runPreferences.videoMaxFrames,
     );
+    const stageMedia = this.stageMedia(now, media);
     const input: CycleInput = {
       ...snapshot,
       captureSelection: {
         ...snapshot.captureSelection!,
-        frames: media.frames.map(
-          (frame, index) => `${frame.sourceId}:${frame.observedAt}:${index}`,
-        ),
+        frames: stageMedia.frames.map((frame, index) => `${frame.sourceId}:${frame.observedAt}:${index}`),
+        ...(stageMedia.chatFrames ? { chatFrames: stageMedia.chatFrames.map((frame, index) => `${frame.sourceId}:${frame.observedAt}:${index}`) } : {}),
       },
       chatActivity: this.runPreferences.chatActivity,
-      frames: media.frames,
-      videoWindow: { fromMs: media.fromMs, throughMs: media.throughMs, truncated: media.truncated },
+      ...stageMedia,
     };
     this.refreshDropped();
     this.setState({
@@ -910,7 +933,7 @@ export class SessionController {
       warning: null,
       adaptiveFrameLimit: this.state.mode === 'native' ? plan.frameLimit : null,
       effectiveCycleMs:
-        this.state.inferenceProfile?.topology === 'split'
+        (this.state.inferenceProfile?.topology === 'split' || this.state.inferenceProfile?.topology === 'hybrid')
           ? this.splitScheduling().chatIntervalMs
           : this.state.mode === 'native'
             ? plan.minimumIntervalMs
@@ -979,7 +1002,7 @@ export class SessionController {
         if (!this.active(epoch) || abort.signal.aborted) return undefined;
         if (this.audience) {
           await this.audience.ensure(
-            this.state.inferenceProfile?.topology === 'split'
+            (this.state.inferenceProfile?.topology === 'split' || this.state.inferenceProfile?.topology === 'hybrid')
               ? (this.splitRosterProvider ?? provider)
               : provider,
             abort.signal,
@@ -996,7 +1019,7 @@ export class SessionController {
         await this.waitUntilResumed();
         if (!this.active(epoch) || abort.signal.aborted) return undefined;
         if (this.state.phase === 'starting') this.setState({ phase: 'running' });
-        if (this.state.inferenceProfile?.topology === 'split') this.startSplitVisionLoop(epoch);
+        if ((this.state.inferenceProfile?.topology === 'split' || this.state.inferenceProfile?.topology === 'hybrid')) this.startSplitVisionLoop(epoch);
         inferenceStarted = this.clock.now();
         this.setState({
           effectiveSeed: seed,
@@ -1014,7 +1037,7 @@ export class SessionController {
           ) => Promise<unknown>;
         };
         const adapter =
-          this.state.mode === 'remote' && this.state.inferenceProfile?.topology !== 'split'
+          this.state.mode === 'remote' && (this.state.inferenceProfile?.topology !== 'split' && this.state.inferenceProfile?.topology !== 'hybrid')
             ? this.remoteAdapter!(effectiveInput)
             : nativeProvider.completeSimulationRequest
               ? llamaCppAdapter(
@@ -1029,7 +1052,7 @@ export class SessionController {
                   effectiveInput,
                 )
               : fixtureInferenceAdapter(provider, effectiveInput);
-        if (this.state.inferenceProfile?.topology === 'split') {
+        if ((this.state.inferenceProfile?.topology === 'split' || this.state.inferenceProfile?.topology === 'hybrid')) {
           if (!this.splitAdapters) throw new Error('Split inference models are not configured.');
           const result = await this.splitCoordinator.execute(
             effectiveInput,
@@ -1079,7 +1102,7 @@ export class SessionController {
           else
             this.scheduleCycle(
               epoch,
-              this.state.inferenceProfile?.topology === 'split'
+              (this.state.inferenceProfile?.topology === 'split' || this.state.inferenceProfile?.topology === 'hybrid')
                 ? this.splitScheduling().chatIntervalMs
                 : this.runPreferences.cycleIntervalMs,
               () => this.runCycle(epoch),
@@ -1155,7 +1178,7 @@ export class SessionController {
         }
         const delayMs = Math.max(
           0,
-          (this.state.inferenceProfile?.topology === 'split'
+          ((this.state.inferenceProfile?.topology === 'split' || this.state.inferenceProfile?.topology === 'hybrid')
             ? this.splitScheduling().chatIntervalMs
             : this.state.mode === 'native'
               ? nextPlan.minimumIntervalMs
@@ -1226,7 +1249,7 @@ export class SessionController {
         this.attemptInFlight = true; // Retry is accepted work, including during EOF draining.
         this.retryWork = retry;
         const stageDelay =
-          this.state.inferenceProfile?.topology === 'split'
+          (this.state.inferenceProfile?.topology === 'split' || this.state.inferenceProfile?.topology === 'hybrid')
             ? this.splitCoordinator.nextChatDelay(this.clock.now())
             : 0;
         this.scheduleCycle(epoch, Math.max(RETRY_BASE_MS * 2 ** (attempt - 1), stageDelay), () => {
