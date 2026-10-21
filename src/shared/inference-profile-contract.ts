@@ -24,6 +24,8 @@ export interface InferenceStageDefaults {
   };
   /** Vision must always emit protocol-required fields; disabled outputs are empty. */
   readonly visionOutput?: 'scene' | 'events' | 'both';
+  /** Explicit native clip opt-in; uncertain or unsupported models retain JPEG frames. */
+  readonly videoInput?: 'frames' | 'native';
   readonly frameSampling?: { readonly maxFrames: number; readonly windowMs: number; readonly strategy: 'uniform' | 'latest'; readonly maxWidth: number; readonly maxHeight: number };
   readonly maxResponseTokens?: number;
   readonly visionOptionalFields?: readonly ('confidence' | 'notes')[];
@@ -124,7 +126,7 @@ export function validateProfileValues(
   const stages: Partial<Record<InferenceRole, InferenceStageDefaults>> = {};
   for (const [role, raw] of Object.entries(defaults)) {
     const stage = object(raw, `${role} stage defaults`);
-    exact(stage, ['settings', 'systemPrompt', 'userPrompt', 'contextPolicy', 'visionOutput', 'maxResponseTokens', 'visionOptionalFields', 'frameSampling'], `${role} stage default`);
+    exact(stage, ['settings', 'systemPrompt', 'userPrompt', 'contextPolicy', 'visionOutput', 'maxResponseTokens', 'visionOptionalFields', 'frameSampling', 'videoInput'], `${role} stage default`);
     if (stage.visionOutput !== undefined &&
       (role !== 'observer' || !['scene', 'events', 'both'].includes(String(stage.visionOutput))))
       throw new Error('Invalid Vision output selection.');
@@ -137,6 +139,12 @@ export function validateProfileValues(
       (!Number.isSafeInteger(stage.maxResponseTokens) || (stage.maxResponseTokens as number) < 128 ||
         (stage.maxResponseTokens as number) > 8192))
       throw new Error('Invalid stage response token budget.');
+    if (stage.videoInput !== undefined &&
+      (!['frames', 'native'].includes(String(stage.videoInput)) ||
+        (role !== 'unified' && role !== 'observer')))
+      throw new Error('Native video is only selectable for Unified and Vision stages.');
+    if (stage.videoInput === 'native' && resolved[role as InferenceRole]?.kind !== 'local')
+      throw new Error('Native video requires a local model for the selected stage.');
     let frameSampling: InferenceStageDefaults['frameSampling'];
     if (stage.frameSampling !== undefined) {
       if (role !== 'observer' && role !== 'chat') throw new Error('Frame sampling only supports Vision and Chat.');
@@ -184,6 +192,7 @@ export function validateProfileValues(
       ...(stage.userPrompt !== undefined ? { userPrompt: stage.userPrompt as string } : {}),
       ...(contextPolicy ? { contextPolicy } : {}),
       ...(frameSampling ? { frameSampling } : {}),
+      ...(stage.videoInput !== undefined ? { videoInput: stage.videoInput as 'frames' | 'native' } : {}),
       ...(stage.maxResponseTokens !== undefined ? { maxResponseTokens: stage.maxResponseTokens as number } : {}),
       ...(stage.visionOutput !== undefined ? { visionOutput: stage.visionOutput as 'scene' | 'events' | 'both' } : {}),
       ...(stage.visionOptionalFields !== undefined ? { visionOptionalFields: stage.visionOptionalFields as ('confidence' | 'notes')[] } : {}),

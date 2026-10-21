@@ -26,6 +26,8 @@ import { PrivateInferenceError } from './private-inference-error';
 import { executeNativeSimulation, SimulationExecutionError } from './simulation-execution';
 import { NativeWorkerLog, type WorkerLogSink, type WorkerStream } from './native-worker-log';
 import { AUTHOR_PLACEHOLDER, type ChatterIdentity } from '../shared/audience-contract';
+import type { ContinuousVideoWindow } from './continuous-video-window';
+import { ffmpegNativeVideoEncoder, type NativeVideoEncoder } from './continuous-video-encoder';
 
 export interface NativeModelFiles {
   readonly modelPath: string;
@@ -48,7 +50,9 @@ export function withNativeVideoPlaceholder<
       ? {
           ...message,
           content: [
-            { type: 'text', text: message.content },
+            ...(Array.isArray(message.content)
+              ? message.content
+              : [{ type: 'text', text: message.content }]),
             { type: 'input_video', input_video: { data: VIDEO_DATA_PLACEHOLDER } },
           ],
         }
@@ -324,6 +328,12 @@ export class NativeInference implements InferenceProvider {
   /** A failed GPU child must not be selected again by the controller's bounded retry. */
   private fallbackToCpu = false;
   private visionReady = false;
+  private videoReady = false;
+
+  /** True only after the loaded model/projector advertises native video in /props. */
+  supportsNativeVideo(): boolean {
+    return this.videoReady && Boolean(this.options.videoFfmpegDir?.());
+  }
 
   snapshot(): NativeServiceStatus {
     return { ...this.status, resources: this.resources };
@@ -548,6 +558,7 @@ export class NativeInference implements InferenceProvider {
     this.apiKey = key;
     this.failure = null;
     this.visionReady = false;
+    this.videoReady = false;
     const executable =
       gpuOffloadLayers > 0 && (selection.selected === 'cuda' || selection.selected === 'vulkan')
         ? (this.options.gpuExecutables?.[selection.selected] ?? this.options.executable)
@@ -625,13 +636,14 @@ export class NativeInference implements InferenceProvider {
                 throw new Error(
                   'Model compatibility check failed: unable to query loaded modalities.',
                 );
-              const props = (await readBounded(response)) as { modalities?: { vision?: unknown } };
+              const props = (await readBounded(response)) as { modalities?: { vision?: unknown; video?: unknown } };
               if (props?.modalities?.vision !== true) {
                 throw new Error(
                   'Model compatibility check failed: the pinned llama.cpp runtime did not load a vision-capable model/projector pair. Select a matching projector or text-only.',
                 );
               }
               this.visionReady = true;
+              this.videoReady = props.modalities?.video === true;
             }
             return;
           }
@@ -776,6 +788,27 @@ export class NativeInference implements InferenceProvider {
     if (!token || !this.options.resolveVideo)
       throw new Error('Native video clips are only supported in Playground.');
     return this.options.resolveVideo(token, preferences);
+  }
+
+  /** Run-only native-video transport; the encoded clip never reaches an inspector. */
+  async completeSimulationVideoWindow(
+    input: InferenceInput,
+    request: unknown,
+    signal: AbortSignal,
+    window: ContinuousVideoWindow,
+    encoder?: NativeVideoEncoder,
+  ): Promise<unknown> {
+    await this.prepare(signal);
+    if (!this.videoReady)
+      throw new Error('Selected local model has no verified native-video modality; use image frames.');
+    const directory = this.options.videoFfmpegDir?.();
+    if (!encoder && !directory)
+      throw new Error('FFmpeg is required for continuous native-video clips.');
+    const encoded = await (encoder ?? ffmpegNativeVideoEncoder(
+      path.join(directory!, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'),
+    )).encode(window, signal);
+    if (signal.aborted) throw new DOMException('Native video cancelled.', 'AbortError');
+    return this.complete(withNativeVideoData(request, encoded), signal);
   }
 
   async completeSimulationRequest(

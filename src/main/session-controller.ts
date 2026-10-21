@@ -14,6 +14,7 @@ import {
 import { fixtureInferenceAdapter, llamaCppAdapter } from './unified-inference-adapters';
 import { InferenceHistory, type CycleInput } from './inference-history';
 import { VideoFrameBuffer } from './video-frame-buffer';
+import { selectContinuousVideoWindow, type ContinuousVideoWindow } from './continuous-video-window';
 import { PrivateInferenceError } from './private-inference-error';
 import { InferenceTrace, traceFailureStage, traceUsage } from './inference-trace';
 import { deriveInferenceSeed, randomInferenceSeed, validInferenceSeed } from './inference-seeds';
@@ -1035,7 +1036,23 @@ export class SessionController {
             request: unknown,
             signal: AbortSignal,
           ) => Promise<unknown>;
+          supportsNativeVideo?: () => boolean;
+          completeSimulationVideoWindow?: (
+            input: CycleInput, request: unknown, signal: AbortSignal, window: ContinuousVideoWindow,
+          ) => Promise<unknown>;
         };
+        const nativeVideoWindow = this.state.mode === 'native' &&
+          this.activeProfile?.values.stageDefaults.unified?.videoInput === 'native' &&
+          nativeProvider.supportsNativeVideo?.() && nativeProvider.completeSimulationVideoWindow
+            ? selectContinuousVideoWindow(
+                effectiveInput.frames ?? [],
+                effectiveInput.videoWindow?.fromMs ?? effectiveInput.boundary?.fromMs ?? 0,
+                effectiveInput.videoWindow?.throughMs ?? effectiveInput.boundary?.throughMs ?? 0,
+                Math.min(this.runPreferences.videoCoverageMs, 15_000),
+                this.runPreferences.videoMaxFrames,
+              ) : null;
+        const videoIdentity = nativeVideoWindow
+          ? nativeVideoWindow.sourceId + ':' + nativeVideoWindow.fromMs + ':' + nativeVideoWindow.throughMs : undefined;
         const adapter =
           this.state.mode === 'remote' && (this.state.inferenceProfile?.topology !== 'split' && this.state.inferenceProfile?.topology !== 'hybrid')
             ? this.remoteAdapter!(effectiveInput)
@@ -1043,13 +1060,16 @@ export class SessionController {
               ? llamaCppAdapter(
                   {
                     completeSimulationRequest: (selected, request, signal) =>
-                      nativeProvider.completeSimulationRequest!(
-                        selected as CycleInput,
-                        request,
-                        signal,
-                      ),
+                      nativeVideoWindow
+                        ? nativeProvider.completeSimulationVideoWindow!(
+                            selected as CycleInput, request, signal, nativeVideoWindow,
+                          )
+                        : nativeProvider.completeSimulationRequest!(
+                            selected as CycleInput, request, signal,
+                          ),
                   },
                   effectiveInput,
+                  videoIdentity ? { token: videoIdentity } : undefined,
                 )
               : fixtureInferenceAdapter(provider, effectiveInput);
         if ((this.state.inferenceProfile?.topology === 'split' || this.state.inferenceProfile?.topology === 'hybrid')) {
@@ -1074,6 +1094,7 @@ export class SessionController {
         }
         return this.coordinator.execute(effectiveInput, adapter, {
           signal: abort.signal,
+          ...(videoIdentity ? { nativeVideoRef: videoIdentity } : {}),
           enforceAudience: Boolean(this.audience),
           beforeAccept: () => this.waitUntilResumed(),
           observe: observer,

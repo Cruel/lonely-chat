@@ -1048,7 +1048,10 @@ function registerHandlers(): void {
             if (ref.kind === 'local')
               return packageE2E
                 ? session.createLocalSplitAdapter(input)
-                : localModelPool!.adapter(ref.modelId, role, input);
+                : localModelPool!.adapter(
+                    ref.modelId, role, input,
+                    role === 'observer' && profile?.values.stageDefaults.observer?.videoInput === 'native',
+                  );
             const selected = pinnedRemote[role]!;
             return selected.connection.credentialMode === 'chatgpt'
               ? chatGPTUnifiedAdapter(selected, chatGPTAuth, {
@@ -1715,6 +1718,9 @@ async function boot(): Promise<void> {
     warmIdleMs: () => localWarmIdleMs,
   });
   await videoTools.open();
+  // Continuous Runs may select native video without opening Playground first.
+  // Resolve the paired FFmpeg installation before any local worker is launched.
+  await videoTools.status();
   playground = new PlaygroundService(
     () =>
       !quitting &&

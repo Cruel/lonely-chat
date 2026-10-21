@@ -437,7 +437,7 @@ export function InferenceProfileControls({
             />
           </label>
           <label className="block">
-            Stage defaults by role (JSON: settings, systemPrompt, userPrompt, contextPolicy, maxResponseTokens, visionOutput, visionOptionalFields; no credentials)
+            Stage defaults by role (JSON: settings, systemPrompt, userPrompt, contextPolicy, maxResponseTokens, visionOutput, visionOptionalFields, videoInput; no credentials)
             <textarea
               aria-label="Profile stage defaults"
               disabled={disabled}
@@ -450,7 +450,7 @@ export function InferenceProfileControls({
           {topology !== 'unified' && (
             <div className="space-y-2 rounded border border-zinc-700 p-2">
               <p className="text-xs text-zinc-400">
-                Per-stage frameSampling in stage defaults: maxFrames (1–32), windowMs (250–60000), strategy (uniform/latest), maxWidth and maxHeight. Frame target dimensions must be supported by the original capture; thumbnails are never upscaled.
+                Per-stage frameSampling in stage defaults: maxFrames (1–32), windowMs (250–60000), strategy (uniform/latest), maxWidth and maxHeight. Frame target dimensions must be supported by the original capture; thumbnails are never upscaled. Set videoInput to 'native' on a local Vision stage to opt into a bounded encoded clip only when the loaded model explicitly reports video support; otherwise timestamped JPEG frames remain the default.
               </p>
               <p className="text-xs text-zinc-400">
                 Prompt variables: {'{{context}}'}, {'{{cycle}}'}, {'{{events}}'},

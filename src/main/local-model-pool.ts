@@ -1,7 +1,7 @@
 import { stat } from 'node:fs/promises';
 import type { InferenceInput, InferenceProvider } from './fake-inference';
 import type { NativeInference, NativeModelFiles } from './native-inference';
-import { llamaCppAdapter } from './unified-inference-adapters';
+import { llamaCppAdapter, nativeVideoStageAdapter } from './unified-inference-adapters';
 import type { UnifiedInferenceAdapter } from './inference-coordinator';
 
 type Role = 'observer' | 'chat' | 'memory';
@@ -152,10 +152,12 @@ export class LocalModelPool {
     }
   }
 
-  adapter(id: string, role: Role, input: InferenceInput): UnifiedInferenceAdapter {
+  adapter(id: string, role: Role, input: InferenceInput, nativeVideo = false): UnifiedInferenceAdapter {
     const worker = this.workers.get(id);
     if (!worker || !this.pinned.has(id)) throw new Error('Local Split model is not resident.');
-    const base = llamaCppAdapter(worker, input);
+    const frames = llamaCppAdapter(worker, input);
+    const base = nativeVideo && role === 'observer'
+      ? nativeVideoStageAdapter(frames, worker, input) : frames;
     return {
       capabilities: base.capabilities,
       complete: (request, signal, observer) =>
