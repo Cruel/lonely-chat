@@ -93,6 +93,15 @@ export class InferenceTrace {
     return {
       attempts: this.attempts.map((item): TraceSummary => ({
         id: item.id,
+        role: item.role,
+        profileRevision: item.profileRevision,
+        observedAt: item.observedAt,
+        availableAt: item.availableAt,
+        startedTimelineAt: item.startedTimelineAt,
+        availableTimelineAt: item.availableTimelineAt,
+        sourceFrameIds: item.sourceFrameIds,
+        observationRefs: item.observationRefs,
+        dependsOn: item.dependsOn,
         runId: item.runId,
         cycle: item.cycle,
         attempt: item.attempt,
@@ -104,7 +113,8 @@ export class InferenceTrace {
         durationMs: item.durationMs,
         stage: item.stage,
         errorStage: item.errorStage,
-        error: item.error,
+        error: item.role && item.role !== 'unified' && item.error
+          ? 'Stage failed (open private details)' : item.error,
         usage: item.usage,
         ...traceFacets(item),
       })),
@@ -174,6 +184,7 @@ export class InferenceTrace {
       | 'transportError'
       | 'presented'
       | 'presentationClosed'
+      | 'sceneState'
     >,
   ): string {
     // Stable across application launches: persisted operational links must never collide.
@@ -197,10 +208,13 @@ export class InferenceTrace {
       accepted: null,
       scheduled: null,
       transportError: null,
+      sceneState: null,
       presented: [],
       presentationClosed: false,
     });
-    this.recorder?.begin(id, initial);
+    // Compact/exact recording currently owns Chat batches, not intermediate stage
+    // attempts. Recording these as chat cases would corrupt its archive contract.
+    if (initial.role !== 'vision' && initial.role !== 'memory') this.recorder?.begin(id, initial);
     this.prune();
     this.notify();
     return id;
@@ -222,6 +236,7 @@ export class InferenceTrace {
         'accepted',
         'scheduled',
         'transportError',
+        'sceneState',
         'input',
       ].includes(key)
         ? key === 'input'
@@ -287,6 +302,7 @@ export class InferenceTrace {
       'scheduled',
       'rawResponse',
       'transportError',
+      'sceneState',
       'request',
       'input',
     ] as const) {

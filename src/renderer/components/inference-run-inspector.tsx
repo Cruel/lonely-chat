@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { JsonInspector } from './json-inspector';
-import { attemptTimeline } from '../run-timeline';
+import { attemptTimeline, runTimeline } from '../run-timeline';
 import type { TraceAttempt, TraceFilter, TraceList } from '../../shared/inference-trace-contract';
 
 const EMPTY: TraceList = { attempts: [], dropped: 0, bytes: 0 };
@@ -122,6 +122,7 @@ export function InferenceRunInspector({
   const [listing, setListing] = useState<TraceList>(EMPTY);
   const [selected, setSelected] = useState<string | null>(focus?.attemptId ?? null);
   const [detail, setDetail] = useState<TraceAttempt | null>(null);
+  const [runDetails, setRunDetails] = useState<readonly TraceAttempt[]>([]);
   const [filter, setFilter] = useState<TraceFilter>(DEFAULT_FILTER);
   const [matches, setMatches] = useState<readonly string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -175,14 +176,20 @@ export function InferenceRunInspector({
   useEffect(() => {
     let live = true;
     const api = window.lonelyChat;
-    if (!selected || !listing.attempts.some((item) => item.id === selected)) {
+    const chosen = listing.attempts.find((item) => item.id === selected);
+    if (!selected || !chosen) {
       setDetail(null);
+      setRunDetails([]);
       return;
     }
-    void api
-      ?.getInferenceTrace(selected)
-      .then((value) => {
-        if (live) setDetail(value);
+    // Content-bearing sibling records are fetched only after an explicit selection.
+    const siblings = listing.attempts.filter((item) => item.runId === chosen.runId);
+    void Promise.all(siblings.map((item) => api?.getInferenceTrace(item.id) ?? Promise.resolve(null)))
+      .then((values) => {
+        if (!live) return;
+        const retained = values.filter((item): item is TraceAttempt => item !== null);
+        setRunDetails(retained);
+        setDetail(retained.find((item) => item.id === selected) ?? null);
       })
       .catch((reason: unknown) => {
         if (live) setError(String(reason));
@@ -221,13 +228,16 @@ export function InferenceRunInspector({
   const current = detail?.id === selected ? detail : null;
   const frames = current ? frameList(current.input, current.request) : [];
   const timeline = current ? attemptTimeline(current) : [];
+  const joinedTimeline = useMemo(() => runTimeline(runDetails), [runDetails]);
+  const multiStage = runDetails.some((item) => item.role === 'vision' || item.role === 'chat' || item.role === 'memory');
 
   return (
     <div className="space-y-4">
       <p className="text-xs text-zinc-400">
-        Recent attempts are captured in bounded volatile memory, including sensitive prompts, images
-        and transcripts. Evidence is desktop-only: it is neither persisted by this inspector nor
-        published to the overlay. Oversized fields may be omitted.
+        Recent attempts are kept in bounded volatile memory. Summary listings contain metadata only;
+        private stage details are fetched on selection, with binary media and credentials omitted from
+        Split stage evidence. Legacy exact-case capture may include private prompts, images and
+        transcripts. Nothing is sent to the overlay; oversized fields may be omitted.
       </p>
       {error && (
         <p role="alert" className="text-sm text-rose-300">
@@ -302,6 +312,10 @@ export function InferenceRunInspector({
                 <span className="block font-medium">
                   Run {item.runId} · cycle {item.cycle} · attempt {item.attempt}
                 </span>
+                <span className="block text-zinc-300">
+                  {(item.role ?? 'unified').toUpperCase()} · {item.modelId ?? 'fixture'}
+                  {item.profileRevision ? ` · profile r${item.profileRevision}` : ''}
+                </span>
                 <span className="block text-zinc-400">
                   {clockTime(item.startedAt)} ·{' '}
                   {item.boundary
@@ -331,7 +345,7 @@ export function InferenceRunInspector({
             <>
               <div className="rounded-lg border border-border p-4 text-sm">
                 <h3 className="font-medium">
-                  Run {current.runId} · cycle {current.cycle} · attempt {current.attempt}
+                  Run {current.runId} · cycle {current.cycle} · attempt {current.attempt} · {(current.role ?? 'unified').toUpperCase()}
                 </h3>
                 <p className="mt-2 text-xs text-zinc-400">
                   {clockTime(current.startedAt)} · {current.mode} · model{' '}
@@ -350,6 +364,19 @@ export function InferenceRunInspector({
                     {current.error}
                   </p>
                 )}
+                <p className="mt-2 text-xs text-zinc-400">
+                  Profile revision {current.profileRevision ?? 'unknown'} · observed {clockTime(current.observedAt ?? null)} · result available {clockTime(current.availableAt ?? null)}
+                </p>
+                {Boolean(current.dependsOn?.length) && (
+                  <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                    <span className="text-zinc-400">Consumed attempts:</span>
+                    {current.dependsOn?.map((id) => (
+                      <Button key={id} size="sm" variant="link" onClick={() => setSelected(id)}>
+                        {id}
+                      </Button>
+                    ))}
+                  </div>
+                )}
                 {current.usage && (
                   <p className="mt-2 text-xs text-zinc-400">
                     Tokens: prompt {current.usage.promptTokens ?? '—'}, completion{' '}
@@ -362,7 +389,7 @@ export function InferenceRunInspector({
                     <Button
                       size="sm"
                       variant="secondary"
-                      disabled={saving || !current.request || !current.modelId}
+                      disabled={saving || !current.request || !current.modelId || (current.role !== undefined && current.role !== 'unified')}
                       onClick={async () => {
                         if (!window.lonelyChat?.saveInferenceCase) return;
                         setSaving(true);
@@ -404,6 +431,30 @@ export function InferenceRunInspector({
                   </Button>
                 )}
               </div>
+              {multiStage && (
+                <section className="rounded-lg border border-border p-3" aria-label="Multi-stage Run timeline">
+                  <h4 className="mb-2 text-sm font-medium">Run {current.runId} · Vision → Chat → presentation</h4>
+                  <p className="mb-3 text-xs text-zinc-400">
+                    Events are ordered by the Run observation axis (pause-adjusted for recorded playback).
+                    Physical request and result-availability times are distinct from the original media observation times.
+                    Select any entry to inspect its stage request and response.
+                  </p>
+                  <ol className="max-h-[36rem] space-y-1 overflow-y-auto">
+                    {joinedTimeline.map((item) => (
+                      <li key={item.key} className="border-l-2 border-zinc-600 py-2 pl-3 text-xs">
+                        <button type="button" className="w-full text-left" onClick={() => item.attemptId && setSelected(item.attemptId)}>
+                          <span className="font-mono text-zinc-400">{clockTime(item.timestamp)} · {item.clockDomain ?? 'observation'} clock</span>
+                          {item.physicalTimestamp !== undefined && item.physicalTimestamp !== null && item.physicalTimestamp !== item.timestamp && (
+                            <span className="ml-2 text-zinc-500">Wall: {clockTime(item.physicalTimestamp)}</span>
+                          )}
+                          <span className="mt-1 block font-medium text-zinc-200">{item.title}</span>
+                          <span className="block break-words text-zinc-400">{item.description}</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ol>
+                </section>
+              )}
               <section
                 className="rounded-lg border border-border p-3"
                 aria-label="Observation and presentation timeline"
@@ -524,6 +575,7 @@ export function InferenceRunInspector({
                 value={current.normalized}
               />
               <JsonInspector title="Parsed events and messages" value={current.parsed} />
+              {current.role === 'vision' && <JsonInspector title="Accepted scene state" value={current.sceneState} />}
               <JsonInspector
                 title="Validated events and roster-resolved chat"
                 value={current.accepted}

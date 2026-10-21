@@ -10,6 +10,8 @@ export type TraceStage =
   | 'failed'
   | 'cancelled';
 
+export type TraceRole = 'unified' | 'vision' | 'chat' | 'memory';
+
 export interface TraceUsage {
   readonly promptTokens: number | null;
   readonly completionTokens: number | null;
@@ -19,6 +21,19 @@ export interface TraceUsage {
 /** Private desktop-only metadata; content is fetched separately by ID. */
 export interface TraceSummary {
   readonly id: string;
+  /** Role at admission; older unified evidence may omit it. */
+  readonly role?: TraceRole;
+  readonly profileRevision?: number | null;
+  /** The observation clock and the completion/availability clock are not interchangeable. */
+  readonly observedAt?: number | null;
+  readonly availableAt?: number | null;
+  /** Physical start/availability projected onto the pause-adjusted Run clock. */
+  readonly startedTimelineAt?: number | null;
+  readonly availableTimelineAt?: number | null;
+  /** Immutable, content-free evidence and causality identifiers. */
+  readonly sourceFrameIds?: readonly string[];
+  readonly observationRefs?: readonly string[];
+  readonly dependsOn?: readonly string[];
   readonly runId: number;
   readonly cycle: number;
   readonly attempt: number;
@@ -52,6 +67,7 @@ export interface TraceAttempt extends TraceSummary {
   readonly accepted: unknown | null;
   readonly scheduled: unknown | null;
   readonly transportError: unknown | null;
+  readonly sceneState?: unknown | null;
   /** Exact chat publications from this attempt, not inferred from scheduled offsets. */
   readonly presented?: readonly {
     readonly id: string;

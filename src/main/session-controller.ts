@@ -18,6 +18,7 @@ import { selectContinuousVideoWindow, type ContinuousVideoWindow } from './conti
 import { resolveUnifiedStageRequest } from './stage-context';
 import { PrivateInferenceError } from './private-inference-error';
 import { InferenceTrace, traceFailureStage, traceUsage } from './inference-trace';
+import { privateStageMetadata, stageFrameIds, stageObservationRefs, type StageTraceFactory } from './stage-trace-evidence';
 import { deriveInferenceSeed, randomInferenceSeed, validInferenceSeed } from './inference-seeds';
 import { chooseWorkload, type ResourceMeasurements } from './resource-policy';
 import type { AudienceService } from './audience-service';
@@ -850,6 +851,68 @@ export class SessionController {
     );
   }
 
+  /** Private, Run-scoped evidence bridge. Never passes sensitive media to listing, logs or overlay. */
+  private stageEvidence(chatTraceId?: string): StageTraceFactory {
+    const epoch = this.epoch;
+    const runId = this.runId;
+    const profile = this.activeProfile ? structuredClone(this.activeProfile) : null;
+    return (role, input, request, observedAt, dependsOn) => {
+      const ref = profile?.values.roles[role === 'vision' ? 'observer' : role];
+      const startedAt = this.clock.wallNow();
+      const startedMono = this.clock.now();
+      const metadata = {
+        role,
+        startedTimelineAt: this.observationTime(startedAt),
+        profileRevision: profile?.revision ?? null,
+        observedAt,
+        sourceFrameIds: stageFrameIds(input),
+        observationRefs: stageObservationRefs(input),
+        dependsOn: [...dependsOn],
+        modelId: ref?.modelId ?? this.state.modelId ?? null,
+      };
+      const id = role === 'chat' && chatTraceId
+        ? chatTraceId
+        : this.trace.begin({
+            ...metadata,
+            runId,
+            cycle: input.cycle,
+            attempt: 1,
+            seed: input.seed ?? 0,
+            rosterSeed: this.state.sessionSeed === undefined || this.state.sessionSeed === null ? 0
+              : deriveInferenceSeed(this.state.sessionSeed, 'roster', input.cycle, 1),
+            mode: ref?.kind === 'local' ? 'native' : 'remote',
+            startedAt,
+            input: privateStageMetadata(input),
+            settings: this.runPreferences,
+            promptPreset: this.state.promptPreset ?? null,
+            adaptation: { topology: profile?.values.topology, stageSettings: profile?.values.stageDefaults[role === 'vision' ? 'observer' : role] },
+          });
+      const update = (patch: Partial<import('../shared/inference-trace-contract').TraceAttempt>) => {
+        // Late transport callbacks cannot revive a cancelled or previous Run.
+        if (epoch !== this.epoch || this.trace.get(id)?.stage === 'cancelled') return;
+        const terminal = patch.stage === 'accepted' || patch.stage === 'failed' || patch.stage === 'cancelled';
+        this.trace.update(id, {
+          ...patch,
+          ...(terminal ? { availableAt: this.clock.wallNow(), availableTimelineAt: this.observationNow(), durationMs: Math.max(0, this.clock.now() - startedMono) } : {}),
+          ...(patch.input !== undefined ? { input: privateStageMetadata(patch.input) } : {}),
+          ...(patch.request !== undefined ? { request: privateStageMetadata(patch.request) } : {}),
+          ...(patch.rawResponse !== undefined ? { rawResponse: privateStageMetadata(patch.rawResponse) } : {}),
+          ...(patch.normalized !== undefined ? { normalized: privateStageMetadata(patch.normalized) } : {}),
+        });
+      };
+      update({ ...metadata, input: privateStageMetadata(input), request: privateStageMetadata(request), stage: 'transport' });
+      return {
+        id,
+        update,
+        observe: (stage: 'request' | 'response' | 'normalized', value: unknown) => {
+          if (stage === 'request') update({ stage: 'transport', request: value });
+          if (stage === 'response') update({ stage: 'normalization', rawResponse: value, usage: traceUsage(value) });
+          if (stage === 'normalized') update({ stage: 'validation', normalized: value });
+        },
+      };
+    };
+  }
+
   private splitScheduling(): SplitScheduling {
     const architecture = this.activeProfile?.values.architecture;
     const execution = architecture?.execution ?? 'sequential';
@@ -929,6 +992,7 @@ export class SessionController {
           policy,
           () => this.clock.now(),
           'vision',
+          this.stageEvidence(),
         ).then(() => this.splitCoordinator.waitForVision()).catch(() => {
           // Vision errors are owned by the stage coordinator, not the loop timer.
         }).finally(() => {
@@ -1047,6 +1111,13 @@ export class SessionController {
     const traceStarted = this.clock.now();
     const rosterSeed = deriveInferenceSeed(sessionSeed, 'roster', input.cycle, attempt);
     const traceId = this.trace.begin({
+      role: this.state.inferenceProfile?.topology === 'split' || this.state.inferenceProfile?.topology === 'hybrid' ? 'chat' : 'unified',
+      profileRevision: attemptProfile?.revision ?? null,
+      startedTimelineAt: this.observationNow(),
+      observedAt: effectiveInput.boundary?.throughMs ?? null,
+      sourceFrameIds: stageFrameIds(effectiveInput),
+      observationRefs: stageObservationRefs(effectiveInput),
+      dependsOn: [],
       runId: this.runId,
       cycle: input.cycle,
       attempt,
@@ -1055,7 +1126,8 @@ export class SessionController {
       mode: this.state.mode,
       modelId: this.state.modelId ?? null,
       startedAt: this.clock.wallNow(),
-      input: effectiveInput,
+      input: (this.state.inferenceProfile?.topology === 'split' || this.state.inferenceProfile?.topology === 'hybrid')
+        ? privateStageMetadata(effectiveInput) : effectiveInput,
       settings: this.runPreferences,
       promptPreset: this.state.promptPreset ?? null,
       adaptation: {
@@ -1093,7 +1165,8 @@ export class SessionController {
             rosterSeed,
           );
           effectiveInput = { ...effectiveInput, roster: this.audience.snapshot().members };
-          this.trace.update(traceId, { input: effectiveInput });
+          this.trace.update(traceId, { input: (this.state.inferenceProfile?.topology === 'split' || this.state.inferenceProfile?.topology === 'hybrid')
+            ? privateStageMetadata(effectiveInput) : effectiveInput });
         }
         if (!this.active(epoch) || abort.signal.aborted) return undefined;
         await provider.prepare?.(abort.signal);
@@ -1165,6 +1238,7 @@ export class SessionController {
             // Recorded EOF may drain admitted Vision, but must never launch
             // another Vision attempt through the final Chat cycle or retries.
             this.eofRequested ? 'chat' : 'both',
+            this.stageEvidence(traceId),
           );
           if (!result) return undefined;
           inferenceCompleted = this.clock.now();
@@ -1221,7 +1295,7 @@ export class SessionController {
           return;
         }
         const { parsed: result, accepted } = execution;
-        this.trace.update(traceId, { stage: 'accepted', accepted });
+        this.trace.update(traceId, { stage: 'accepted', accepted, availableAt: this.clock.wallNow(), availableTimelineAt: this.observationNow() });
         const resolved = accepted.messages;
         // All validation precedes every state change, history acknowledgement and playback.
         const duration = Math.max(0, inferenceCompleted - inferenceStarted);
@@ -1309,6 +1383,8 @@ export class SessionController {
         const errorStage = traceFailureStage(this.trace.get(traceId));
         this.trace.update(traceId, {
           stage: 'failed',
+          availableAt: this.clock.wallNow(),
+          availableTimelineAt: this.observationNow(),
           errorStage,
           error: message,
           durationMs: Math.max(0, this.clock.now() - traceStarted),

@@ -1,4 +1,6 @@
 import type { UnifiedInferenceAdapter } from './inference-coordinator';
+import { traceUsage } from './inference-trace';
+import type { StageTraceCapture } from './stage-trace-evidence';
 import type { InferenceContentPart, UnifiedInferenceRequest } from './unified-inference-request';
 
 export interface NarrativeMemoryPolicy {
@@ -60,7 +62,7 @@ export class NarrativeMemory {
   }
 
   /** Never overlap updates or retry in a tight loop. New evidence remains pending after failure. */
-  async update(now: number, policy: NarrativeMemoryPolicy, adapter: UnifiedInferenceAdapter, signal: AbortSignal): Promise<boolean> {
+  async update(now: number, policy: NarrativeMemoryPolicy, adapter: UnifiedInferenceAdapter, signal: AbortSignal, capture?: (request: UnifiedInferenceRequest) => StageTraceCapture): Promise<boolean> {
     if (!policy.enabled || this.suspended || !this.pending.length || this.inFlight || signal.aborted ||
         now - this.lastStarted < policy.intervalMs) return false;
     const generation = this.generation;
@@ -82,18 +84,32 @@ export class NarrativeMemory {
       sampling: { temperature: 0, temperatureMode: 'advisory', maxTokens: Math.min(4096, Math.max(128, Math.ceil(policy.maxCharacters / 3))) },
       evidenceWindow: null,
     } as unknown as UnifiedInferenceRequest;
+    const evidence = capture?.(request);
+    let stage: 'transport' | 'validation' = 'transport';
     try {
-      const result = await adapter.complete(request, activeSignal);
-      if (activeSignal.aborted || generation !== this.generation) return false;
+      evidence?.update({ stage: 'transport' });
+      const result = await adapter.complete(request, activeSignal, evidence?.observe);
+      if (activeSignal.aborted || generation !== this.generation) {
+        evidence?.update({ stage: 'cancelled', errorStage: stage });
+        return false;
+      }
+      evidence?.update({ stage: 'normalization', rawResponse: result.raw, usage: result.usage ?? traceUsage(result.raw) });
+      stage = 'validation';
+      evidence?.update({ stage, normalized: result.normalized });
       const record = result.normalized;
-      if (!record || typeof record !== 'object' || Array.isArray(record)) return false;
-      const fields = record as Record<string, unknown>;
-      if (Object.keys(fields).length !== 1 || typeof fields.summary !== 'string' ||
-          !fields.summary.trim() || fields.summary.length > policy.maxCharacters) return false;
+      const fields = record && typeof record === 'object' && !Array.isArray(record) ? record as Record<string, unknown> : null;
+      if (!fields || Object.keys(fields).length !== 1 || typeof fields.summary !== 'string' ||
+          !fields.summary.trim() || fields.summary.length > policy.maxCharacters) {
+        evidence?.update({ stage: 'failed', errorStage: 'validation', error: 'Invalid narrative memory response.' });
+        return false;
+      }
       this.value = { version: ++this.revision, text: fields.summary.trim(), updatedAt: now };
       this.pending.splice(0, count);
+      evidence?.update({ stage: 'accepted', parsed: fields, accepted: this.value, availableAt: now });
       return true;
-    } catch {
+    } catch (error) {
+      evidence?.update({ stage: activeSignal.aborted ? 'cancelled' : 'failed', errorStage: stage,
+        error: error instanceof Error ? error.message : 'Narrative memory inference failed.' });
       return false;
     } finally {
       if (generation === this.generation) this.inFlight = false;

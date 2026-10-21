@@ -15,6 +15,8 @@ import { selectStageFrames } from './stage-frame-selection';
 import { validateVisionStageResult } from './vision-output';
 import { DEFAULT_CHAT_PROMPT, DEFAULT_VISION_PROMPT, resolveStageContext, resolveStageTemplate } from './stage-context';
 import type { InferenceProfileValues } from '../shared/inference-profile-contract';
+import type { StageTraceFactory } from './stage-trace-evidence';
+import { traceUsage } from './inference-trace';
 
 const hasRetainedMemory = (value: unknown): boolean =>
   Boolean(value && typeof value === 'object' && 'memory' in value && value.memory);
@@ -161,6 +163,7 @@ export class ScheduledSplitInference {
     events: readonly InferredEvent[];
     observations: readonly CapturedObservation[];
     serial: number;
+    attemptId?: string;
   }>();
   private visionTask: Promise<void> | null = null;
   private visionRevision = 0;
@@ -192,6 +195,7 @@ export class ScheduledSplitInference {
     input: InferenceInput;
     /** Vision revision represented by this immutable Chat request, not later Vision arrivals. */
     visionRevision: number;
+    dependsOn: readonly string[];
   } | null = null;
 
   reset(): void {
@@ -242,6 +246,7 @@ export class ScheduledSplitInference {
     policy: SplitScheduling,
     now: () => number = () => performance.now(),
     work: 'both' | 'vision' | 'chat' = 'both',
+    capture?: StageTraceFactory,
   ): Promise<SplitResult | null> {
     this.visionCadence ??= new StageCadence(policy.visionIntervalMs);
     this.chatCadence ??= new StageCadence(policy.chatIntervalMs);
@@ -280,6 +285,8 @@ export class ScheduledSplitInference {
     const observedAt = snapshot.frames?.at(-1)?.observedAt ?? snapshot.boundary?.throughMs ?? 0;
     if (work !== 'chat' && this.visionCadence.start(now())) {
       const cadence = this.visionCadence;
+      const evidence = capture?.('vision', visionInput, requests.vision, observedAt, []);
+      let failureStage: 'transport' | 'validation' = 'transport';
       const task = (async () => {
         try {
           if (snapshot.frames?.length && !adapters.vision.capabilities.images)
@@ -291,8 +298,12 @@ export class ScheduledSplitInference {
               const result = await adapters.vision.complete(
                 requests.vision,
                 activeSignal,
-                observer,
+                (stage, value) => { observer?.(stage, value); evidence?.observe(stage, value); },
               );
+              evidence?.update({ stage: 'normalization', rawResponse: result.raw,
+                usage: result.usage ?? traceUsage(result.raw), normalized: result.normalized });
+              failureStage = 'validation';
+              evidence?.update({ stage: 'validation' });
               const output = validateVisionStageResult(result.normalized, stages.observer);
               sceneState = output.sceneState;
               return { ...result, normalized: { events: output.events, messages: [] } };
@@ -303,7 +314,12 @@ export class ScheduledSplitInference {
             enforceAudience: false,
             beforeAccept,
           });
-          if (signal.aborted || generation !== this.generation) return;
+          if (signal.aborted || generation !== this.generation) {
+            evidence?.update({ stage: 'cancelled', errorStage: failureStage });
+            return;
+          }
+          evidence?.update({ stage: 'accepted', parsed: output.parsed, accepted: output.accepted,
+            sceneState, usage: output.usage });
           const observations: CapturedObservation[] = sceneState.trim()
             ? [{ source: 'vision', kind: 'visual', description: sceneState.trim(), observedAt }]
             : [];
@@ -316,16 +332,19 @@ export class ScheduledSplitInference {
             observedAt,
             availableAt,
             snapshot.frames?.map((frame) => `${frame.sourceId}:${frame.observedAt}`) ?? [],
+            evidence?.id,
           );
           if (observations.length || output.accepted.events.length) this.visionRevision++;
           this.latest.publish(
-            { events: output.accepted.events, observations, serial: ++this.serial },
+            { events: output.accepted.events, observations, serial: ++this.serial, attemptId: evidence?.id },
             availableAt,
             observedAt,
             identity,
           );
         } catch (error) {
           visionFailure = error;
+          evidence?.update({ stage: signal.aborted || generation !== this.generation ? 'cancelled' : 'failed',
+            errorStage: failureStage, error: error instanceof Error ? error.message : 'Vision inference failed.' });
           // A failed Vision attempt is not an accepted observation. Chat may
           // consume a still-eligible earlier result, according to policy.
         } finally {
@@ -362,6 +381,11 @@ export class ScheduledSplitInference {
       const pending = this.retryPayload?.events ?? this.narrative.pending(now(), policy.maximumAgeMs);
       const observations = this.retryPayload?.observations ?? this.narrative.sceneObservation(now(), policy.maximumAgeMs);
       const events = pending.map((entry) => entry.event);
+      const scene = this.narrative.currentScene(now(), policy.maximumAgeMs);
+      const dependsOn = this.retryPayload?.dependsOn ?? [...new Set(
+        [selected?.attemptId, scene?.attemptId, ...pending.map((entry) => entry.attemptId)]
+          .filter((id): id is string => Boolean(id)),
+      )];
       const chatRequest = this.retryPayload?.request ?? splitRequests({ ...visionInput, chatFrames }, stages).chat(events, observations);
       const chatInput = this.retryPayload?.input ?? frozen({
         ...snapshot,
@@ -371,26 +395,39 @@ export class ScheduledSplitInference {
         recentEvents: [...(snapshot.recentEvents ?? []), ...events],
         observations: [...(snapshot.observations ?? []), ...observations],
       });
-      this.retryPayload ??= { events: pending, observations, request: chatRequest, input: chatInput, visionRevision: admittedVisionRevision };
+      this.retryPayload ??= { events: pending, observations, request: chatRequest, input: chatInput,
+        visionRevision: admittedVisionRevision, dependsOn };
+      const chatEvidence = capture?.('chat', chatInput, chatRequest, observedAt, dependsOn);
       const adapter: UnifiedInferenceAdapter = {
         ...adapters.chat,
         complete: (_request, activeSignal, observer) =>
-          adapters.chat.complete(chatRequest, activeSignal, observer),
+          adapters.chat.complete(chatRequest, activeSignal, (stage, value) => {
+            observer?.(stage, value);
+            chatEvidence?.observe(stage, value);
+          }),
       };
       const output = await this.chatCoordinator.execute(
         chatInput,
         adapter,
-        { signal, beforeAccept },
+        { signal, beforeAccept,
+          onTransport: (raw, normalized) => chatEvidence?.update({ stage: 'validation', rawResponse: raw, normalized }),
+          onParsed: (parsed) => chatEvidence?.update({ stage: 'validation', parsed }),
+        },
       );
       if (signal.aborted || generation !== this.generation) return null;
+      chatEvidence?.update({ stage: 'validation', rawResponse: output.raw, normalized: output.normalized,
+        parsed: output.parsed, usage: output.usage });
       const freshChat = this.narrative.merge(output.accepted.events, 'chat', now());
       this.narrative.acknowledge(pending);
       this.chatVisionRevision = Math.max(this.chatVisionRevision, admittedVisionRevision);
       this.retryPayload = null;
+      chatEvidence?.update({ stage: 'accepted', accepted: output.accepted });
       for (const event of freshChat) this.memory.observe(event.event.summary, event.observedAt);
       if (!signal.aborted && generation === this.generation) {
         // Memory updates happen after time-critical Chat publication, never on its critical path.
-        void this.memory.update(now(), this.memoryPolicy, adapters.memory ?? adapters.chat, signal);
+        void this.memory.update(now(), this.memoryPolicy, adapters.memory ?? adapters.chat, signal,
+          capture ? (request) => capture('memory', chatInput, request, observedAt,
+            [...dependsOn, ...(chatEvidence ? [chatEvidence.id] : [])]) : undefined);
       }
       return {
         visionEvents: events,

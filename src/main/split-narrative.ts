@@ -7,6 +7,7 @@ export interface NarrativeEvent {
   readonly observedAt: number;
   readonly availableAt: number;
   readonly acknowledged: boolean;
+  readonly attemptId?: string;
 }
 
 export interface NarrativeScene {
@@ -15,6 +16,7 @@ export interface NarrativeScene {
   readonly frameIds: readonly string[];
   readonly observedAt: number;
   readonly availableAt: number;
+  readonly attemptId?: string;
 }
 
 /** Owned by one Run. Scene descriptions and discrete reaction triggers never share a queue. */
@@ -42,19 +44,20 @@ export class SplitNarrative {
     observedAt: number,
     availableAt: number,
     frameIds: readonly string[],
+    attemptId?: string,
   ): void {
     if (observedAt < this.lastVisionAt) return;
     const sameFrame = observedAt === this.lastVisionAt;
     if (!sameFrame) this.lastVisionAt = observedAt;
     const trimmed = text.trim();
     if (trimmed && (!sameFrame || !this.scene)) {
-      this.scene = { text: trimmed, sourceModel: 'vision', frameIds: [...frameIds], observedAt, availableAt };
+      this.scene = { text: trimmed, sourceModel: 'vision', frameIds: [...frameIds], observedAt, availableAt, attemptId };
       if (this.interpretations.at(-1)?.text !== trimmed) {
         this.interpretations.push(this.scene);
         this.interpretations = this.interpretations.slice(-256);
       }
     }
-    this.merge(events, 'vision', availableAt, frameIds);
+    this.merge(events, 'vision', availableAt, frameIds, attemptId);
   }
 
   merge(
@@ -62,6 +65,7 @@ export class SplitNarrative {
     sourceModel: 'vision' | 'chat',
     availableAt: number,
     frameIds: readonly string[] = [],
+    attemptId?: string,
   ): readonly NarrativeEvent[] {
     const accepted: NarrativeEvent[] = [];
     for (const event of events) {
@@ -79,6 +83,7 @@ export class SplitNarrative {
         observedAt: event.observedAt,
         availableAt,
         acknowledged: sourceModel === 'chat',
+        attemptId,
       };
       this.events.push(entry);
       accepted.push(entry);

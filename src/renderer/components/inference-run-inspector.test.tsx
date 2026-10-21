@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { InferenceRunInspector } from './inference-run-inspector';
 import type { TraceAttempt, TraceFilter, TraceList } from '../../shared/inference-trace-contract';
 
@@ -271,4 +271,57 @@ it('shows exact selected frame evidence, pending versus published chat, and cros
   fireEvent.click(await screen.findByRole('button', { name: /Run 9 · cycle 2/ }));
   expect(await screen.findByText('Timeline evidence unavailable for this attempt.')).toBeTruthy();
   expect(screen.queryByRole('img', { name: 'Selected frame 1' })).toBeNull();
+});
+
+it('joins Vision and Chat on one Run timeline and opens the correct stage without fetching private data early', async () => {
+  const base: TraceList['attempts'][number] = {
+    id: 'attempt-vision', runId: 12, cycle: 1, attempt: 1,
+    seed: 7, rosterSeed: 8, mode: 'remote', modelId: 'scene',
+    role: 'vision', profileRevision: 4, startedAt: 1700000000100,
+    observedAt: 1700000000000, availableAt: 1700000000300,
+    durationMs: 200, stage: 'accepted', errorStage: null, error: null,
+    usage: null, sourceFrameIds: ['camera:1700000000000:0'],
+  };
+  const chatSummary: TraceList['attempts'][number] = {
+    ...base, id: 'attempt-chat', role: 'chat', modelId: 'chatter',
+    startedAt: 1700000000400, availableAt: 1700000000500,
+    stage: 'scheduled', dependsOn: [base.id],
+  };
+  const details: Record<string, TraceAttempt> = {
+    [base.id]: {
+      ...base, input: {}, settings: {}, promptPreset: null, adaptation: {},
+      request: { role: 'vision' }, rawResponse: {}, normalized: {}, parsed: {},
+      accepted: { events: [{ kind: 'reaction', summary: 'door opens', observedAt: 1700000000000 }] },
+      sceneState: 'door is open', scheduled: null, transportError: null,
+    },
+    [chatSummary.id]: {
+      ...chatSummary, input: {}, settings: {}, promptPreset: null, adaptation: {},
+      request: { role: 'chat' }, rawResponse: {}, normalized: {}, parsed: {},
+      accepted: { messages: [{ author: 'viewer', text: 'Whoa!' }] },
+      scheduled: { enqueuedAt: 1700000000500, events: [], windowMs: 1000,
+        messages: [{ author: 'viewer', text: 'Whoa!', offsetMs: 0 }] },
+      presented: [{ id: 'chat-1', author: 'viewer', text: 'Whoa!', scheduledIndex: 0,
+        presentedAt: 1700000000550 }],
+      transportError: null,
+    },
+  };
+  const get = vi.fn(async (id: string) => details[id] ?? null);
+  window.lonelyChat = {
+    listInferenceTraces: async () => ({ attempts: [base, chatSummary], dropped: 0, bytes: 100 }),
+    onInferenceTraces: () => () => {}, getInferenceTrace: get,
+  } as unknown as typeof window.lonelyChat;
+  render(<InferenceRunInspector />);
+  expect(get).not.toHaveBeenCalled();
+  fireEvent.click(await screen.findByRole('button', { name: /Run 12 · cycle 1 · attempt 1.*CHAT/i }));
+  expect(await screen.findByRole('region', { name: 'Multi-stage Run timeline' })).toBeTruthy();
+  expect(screen.getByText('Scene state updated')).toBeTruthy();
+  expect(screen.getByText('Vision Event · reaction')).toBeTruthy();
+  const joined = within(screen.getByRole('region', { name: 'Multi-stage Run timeline' }));
+  expect(joined.getByText('Chat batch accepted')).toBeTruthy();
+  expect(joined.getByText('Displayed · viewer')).toBeTruthy();
+  expect(screen.getByText('Consumed attempts:')).toBeTruthy();
+  expect(get).toHaveBeenCalledWith(base.id);
+  expect(get).toHaveBeenCalledWith(chatSummary.id);
+  fireEvent.click(screen.getByRole('button', { name: /Vision Event · reaction/ }));
+  expect(await screen.findByRole('region', { name: 'Accepted scene state' })).toBeTruthy();
 });
